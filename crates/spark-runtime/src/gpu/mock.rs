@@ -21,6 +21,10 @@ pub struct MockGpuBackend {
     protected: Mutex<Vec<(u64, u64)>>,
     /// Watermark alloc registry, mirroring the CUDA backend (per-instance).
     tracking: Mutex<(bool, std::collections::HashSet<u64>)>,
+    /// Every `copy_d2d`/`copy_d2d_async` as `(src, dst, bytes, live_allocs
+    /// at issue time)` — the live count lets tests prove that streaming
+    /// migration frees sources between shards, not only at the end.
+    d2d_copies: Mutex<Vec<(u64, u64, usize, usize)>>,
 }
 
 #[derive(Debug, Clone)]
@@ -44,6 +48,7 @@ impl MockGpuBackend {
             launches: Mutex::new(Vec::new()),
             protected: Mutex::new(Vec::new()),
             tracking: Mutex::new((false, std::collections::HashSet::new())),
+            d2d_copies: Mutex::new(Vec::new()),
         }
     }
 
@@ -57,6 +62,11 @@ impl MockGpuBackend {
 
     pub fn read_alloc(&self, ptr: DevicePtr) -> Option<Vec<u8>> {
         self.allocs.lock().get(&ptr.0).map(|a| a.data.clone())
+    }
+
+    /// `(src, dst, bytes, live_allocs)` per device-to-device copy issued.
+    pub fn d2d_copy_log(&self) -> Vec<(u64, u64, usize, usize)> {
+        self.d2d_copies.lock().clone()
     }
 }
 
@@ -143,7 +153,9 @@ impl GpuBackend for MockGpuBackend {
         Ok(())
     }
 
-    fn copy_d2d(&self, _src: DevicePtr, _dst: DevicePtr, _bytes: usize) -> Result<()> {
+    fn copy_d2d(&self, src: DevicePtr, dst: DevicePtr, bytes: usize) -> Result<()> {
+        let live = self.allocs.lock().len();
+        self.d2d_copies.lock().push((src.0, dst.0, bytes, live));
         Ok(())
     }
 

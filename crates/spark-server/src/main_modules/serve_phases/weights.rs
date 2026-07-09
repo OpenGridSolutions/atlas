@@ -132,9 +132,11 @@ pub(crate) fn migrate_weights_to_arena(
 
     let (manifest, stats) = migrate_weight_store(gpu, &arena, store)?;
     tracing::info!(
-        "Arena migration: {} tensors, {:.2} GiB in {} ms ({:.2} GiB/s), \
-         arena used {:.2} GiB, freed {} loader allocations",
+        "Arena migration: {} tensors → {} memcpys in {} shards, {:.2} GiB in {} ms \
+         ({:.2} GiB/s), arena used {:.2} GiB, freed {} loader allocations",
         stats.tensors,
+        stats.copies,
+        stats.shards,
         stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0),
         stats.duration_ms,
         stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0) / (stats.duration_ms.max(1) as f64 / 1000.0),

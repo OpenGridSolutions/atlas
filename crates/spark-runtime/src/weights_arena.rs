@@ -49,6 +49,10 @@ pub struct MigrationStats {
     pub arena_used: usize,
     pub duration_ms: u128,
     pub freed_ptrs: usize,
+    /// memcpys actually issued (after coalescing adjacent ranges).
+    pub copies: usize,
+    /// Copy+free batches the migration streamed through.
+    pub shards: usize,
 }
 
 /// A single mmap-backed bump arena.
@@ -263,10 +267,27 @@ impl WeightsArena {
     }
 }
 
+/// Streaming-migration shard bound (Task 6 Phase 0.1): a shard is flushed —
+/// its streams synced, its source allocations freed — once it reaches either
+/// bound. Peak device footprint stays ≈ weights + one shard instead of the
+/// 2× weights that made dirty-memory boots fail (first real boot: ~94 GiB
+/// transient peak, "only 2.53 GB remains but 4.65 GB needed").
+const MIGRATION_SHARD_BYTES: usize = 1 << 30;
+/// Op-count bound per shard; also bounds the async queue depth (replaces
+/// the old flat "sync every 8192 copies").
+const MIGRATION_SHARD_MAX_OPS: usize = 8192;
+/// Copies within a shard round-robin across this many streams so the copy
+/// engines overlap while the CPU keeps enqueueing — per-copy launch
+/// overhead dominated the first real boot (297,728 copies, 73 s @
+/// 0.65 GiB/s vs the probe's 55 GiB/s).
+const MIGRATION_STREAMS: usize = 4;
+
 /// Migrate every tensor of `store` into `arena` in **name-sorted order**
 /// (deterministic layout — HashMap iteration is not reproducible), re-point
-/// the store's `DevicePtr`s at `arena_base + offset` views, then free the
-/// loader's original per-tensor allocations.
+/// the store's `DevicePtr`s at `arena_base + offset` views, and free the
+/// loader's original per-tensor allocations **shard by shard** as the
+/// copies land, so the transient peak is bounded by one shard instead of a
+/// full second copy of the weights.
 ///
 /// Returns the manifest (one entry per tensor, in layout order) and stats.
 pub fn migrate_weight_store(
@@ -274,14 +295,40 @@ pub fn migrate_weight_store(
     arena: &WeightsArena,
     store: &mut WeightStore,
 ) -> Result<(Vec<ArenaTensorEntry>, MigrationStats)> {
+    migrate_bounded(
+        gpu,
+        arena,
+        store,
+        MIGRATION_SHARD_BYTES,
+        MIGRATION_SHARD_MAX_OPS,
+    )
+}
+
+fn migrate_bounded(
+    gpu: &dyn GpuBackend,
+    arena: &WeightsArena,
+    store: &mut WeightStore,
+    shard_bytes: usize,
+    shard_max_ops: usize,
+) -> Result<(Vec<ArenaTensorEntry>, MigrationStats)> {
     let t0 = Instant::now();
     let names = store.sorted_names();
-    let stream = gpu.default_stream();
 
+    struct CopyOp {
+        src: DevicePtr,
+        dst: DevicePtr,
+        len: usize,
+    }
+
+    // Pass 1 (no GPU work): assign arena offsets in name-sorted order,
+    // re-point the store at the arena views, build the copy list.
     let mut entries = Vec::with_capacity(names.len());
-    let mut old_ptrs = Vec::with_capacity(names.len());
+    let mut ops: Vec<CopyOp> = Vec::with_capacity(names.len());
+    // Free each source at its LAST use: exact-alias tensors (e.g. tied
+    // embeddings) share one allocation across two names and must not be
+    // freed while a later copy still reads from it.
+    let mut last_use = std::collections::HashMap::with_capacity(names.len());
     let mut bytes = 0usize;
-
     for (i, name) in names.iter().enumerate() {
         let tensor = store.get(name)?;
         let len = tensor.byte_size();
@@ -289,8 +336,6 @@ pub fn migrate_weight_store(
             .alloc(len, ARENA_ALIGN)
             .with_context(|| format!("migrating '{name}' ({len} B)"))?;
         let dst = arena.base().offset(offset as usize);
-        gpu.copy_d2d_async(tensor.ptr, dst, len, stream)
-            .with_context(|| format!("copying '{name}' into the arena"))?;
         entries.push(ArenaTensorEntry {
             name: name.clone(),
             offset,
@@ -298,28 +343,75 @@ pub fn migrate_weight_store(
             dtype: tensor.dtype.to_code(),
             shape: tensor.shape.iter().map(|&d| d as u64).collect(),
         });
-        old_ptrs.push(tensor.ptr);
+        ops.push(CopyOp {
+            src: tensor.ptr,
+            dst,
+            len,
+        });
+        last_use.insert(tensor.ptr.0, i);
         bytes += len;
-
-        // Re-point the store at the arena view.
-        let t = store
+        store
             .get_mut(name)
-            .expect("tensor vanished during migration");
-        t.ptr = dst;
+            .expect("tensor vanished during migration")
+            .ptr = dst;
+    }
 
-        // Bound the async queue depth; ~300k outstanding memcpys would
-        // otherwise stall inside random driver calls.
-        if i % 8192 == 8191 {
-            gpu.synchronize(stream)?;
+    // Copy streams, deduped: backends without stream support hand back the
+    // same handle every time. Streams are not destroyed afterwards (no
+    // destroy_stream on the trait) — migration runs once per process.
+    let mut streams = Vec::with_capacity(MIGRATION_STREAMS);
+    for _ in 0..MIGRATION_STREAMS {
+        let s = gpu.create_stream()?;
+        if !streams.contains(&s) {
+            streams.push(s);
         }
     }
 
-    // All copies must complete before the sources are freed.
-    gpu.device_synchronize()?;
-    for ptr in &old_ptrs {
-        gpu.free(*ptr)
-            .with_context(|| format!("freeing pre-migration allocation {ptr}"))?;
+    // Pass 2: stream shard by shard — coalesce ranges that are adjacent in
+    // BOTH source and arena into single memcpys, enqueue them round-robin
+    // across the streams, sync, then immediately free this shard's sources.
+    let mut copies = 0usize;
+    let mut shards = 0usize;
+    let mut freed = 0usize;
+    let mut start = 0usize;
+    while start < ops.len() {
+        let mut end = start;
+        let mut shard_len = 0usize;
+        while end < ops.len() && end - start < shard_max_ops && shard_len < shard_bytes {
+            shard_len += ops[end].len;
+            end += 1;
+        }
+
+        let (mut src, mut dst, mut len) = (ops[start].src, ops[start].dst, ops[start].len);
+        for op in &ops[start + 1..end] {
+            if src.0 + len as u64 == op.src.0 && dst.0 + len as u64 == op.dst.0 {
+                len += op.len;
+            } else {
+                gpu.copy_d2d_async(src, dst, len, streams[copies % streams.len()])
+                    .with_context(|| format!("copying {len} B into the arena at {dst}"))?;
+                copies += 1;
+                (src, dst, len) = (op.src, op.dst, op.len);
+            }
+        }
+        gpu.copy_d2d_async(src, dst, len, streams[copies % streams.len()])
+            .with_context(|| format!("copying {len} B into the arena at {dst}"))?;
+        copies += 1;
+
+        // This shard's copies must land before its sources go away.
+        for s in &streams {
+            gpu.synchronize(*s)?;
+        }
+        for (i, op) in ops[start..end].iter().enumerate() {
+            if last_use.get(&op.src.0) == Some(&(start + i)) {
+                gpu.free(op.src)
+                    .with_context(|| format!("freeing pre-migration allocation {}", op.src))?;
+                freed += 1;
+            }
+        }
+        shards += 1;
+        start = end;
     }
+
     gpu.device_synchronize()?;
 
     Ok((
@@ -329,7 +421,9 @@ pub fn migrate_weight_store(
             bytes,
             arena_used: arena.used(),
             duration_ms: t0.elapsed().as_millis(),
-            freed_ptrs: old_ptrs.len(),
+            freed_ptrs: freed,
+            copies,
+            shards,
         },
     ))
 }
@@ -449,6 +543,105 @@ mod tests {
         for e in &entries {
             assert_eq!(rebuilt.get(&e.name).unwrap().ptr.0, arena.base().0 + e.offset);
         }
+    }
+
+    #[test]
+    fn migration_coalesces_contiguous_ranges() {
+        let gpu = MockGpuBackend::new();
+        // Alloc in name order with 256-multiple sizes: the mock's bump
+        // allocator yields contiguous sources, and the name-sorted arena
+        // layout has no padding gaps — all three must merge into ONE memcpy.
+        let mut map = std::collections::HashMap::new();
+        let mut first_src = 0u64;
+        for (i, (name, len)) in [("a.w", 256usize), ("b.w", 512), ("c.w", 256)]
+            .into_iter()
+            .enumerate()
+        {
+            let ptr = gpu.alloc(len).unwrap();
+            if i == 0 {
+                first_src = ptr.0;
+            }
+            map.insert(
+                name.to_string(),
+                WeightTensor {
+                    ptr,
+                    shape: vec![len / 2],
+                    dtype: WeightDtype::BF16,
+                },
+            );
+        }
+        let mut store = WeightStore::from_map(map);
+        let arena = small_arena();
+        let (entries, stats) = migrate_weight_store(&gpu, &arena, &mut store).unwrap();
+
+        assert_eq!(stats.copies, 1);
+        assert_eq!(stats.shards, 1);
+        assert_eq!(stats.freed_ptrs, 3);
+        assert_eq!(entries.len(), 3);
+        let log = gpu.d2d_copy_log();
+        assert_eq!(log, vec![(first_src, arena.base().0, 1024, 3)]);
+        assert_eq!(gpu.alloc_count(), 0);
+    }
+
+    #[test]
+    fn migration_streams_shards_and_frees_between_them() {
+        let gpu = MockGpuBackend::new();
+        let mut map = std::collections::HashMap::new();
+        // Non-256-multiple sizes: alignment gaps on BOTH ends kill
+        // coalescing, so each tensor is its own memcpy.
+        for (name, len) in [("a.w", 100usize), ("b.w", 200), ("c.w", 300)] {
+            let ptr = gpu.alloc(len).unwrap();
+            map.insert(
+                name.to_string(),
+                WeightTensor {
+                    ptr,
+                    shape: vec![len / 2],
+                    dtype: WeightDtype::BF16,
+                },
+            );
+        }
+        let mut store = WeightStore::from_map(map);
+        let arena = small_arena();
+        // shard_max_ops = 1 → one shard per tensor.
+        let (_, stats) = migrate_bounded(&gpu, &arena, &mut store, usize::MAX, 1).unwrap();
+
+        assert_eq!(stats.shards, 3);
+        assert_eq!(stats.copies, 3);
+        assert_eq!(stats.freed_ptrs, 3);
+        assert_eq!(gpu.alloc_count(), 0);
+        // The live-allocation count at copy time proves each shard's source
+        // was freed BEFORE the next shard's copy was issued (3 → 2 → 1),
+        // i.e. peak = weights + one shard, not 2× weights.
+        let live: Vec<usize> = gpu.d2d_copy_log().iter().map(|c| c.3).collect();
+        assert_eq!(live, vec![3, 2, 1]);
+    }
+
+    #[test]
+    fn migration_frees_aliased_source_only_at_last_use() {
+        let gpu = MockGpuBackend::new();
+        let shared = gpu.alloc(256).unwrap();
+        let mut map = std::collections::HashMap::new();
+        for name in ["a.embed", "z.lm_head"] {
+            map.insert(
+                name.to_string(),
+                WeightTensor {
+                    ptr: shared,
+                    shape: vec![128],
+                    dtype: WeightDtype::BF16,
+                },
+            );
+        }
+        let mut store = WeightStore::from_map(map);
+        let arena = small_arena();
+        let (entries, stats) = migrate_bounded(&gpu, &arena, &mut store, usize::MAX, 1).unwrap();
+
+        // Two copies out of the shared source, freed exactly once — and
+        // only after the second shard's copy (live count still 1 there).
+        assert_eq!(entries.len(), 2);
+        assert_eq!(stats.freed_ptrs, 1);
+        assert_eq!(gpu.alloc_count(), 0);
+        let live: Vec<usize> = gpu.d2d_copy_log().iter().map(|c| c.3).collect();
+        assert_eq!(live, vec![1, 1]);
     }
 
     #[test]
