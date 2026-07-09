@@ -103,7 +103,7 @@ impl SwapCtl {
                     }
                     self.draining = Some((reply, Instant::now() + DRAIN_GRACE));
                 }
-                ControlMsg::Load { reply } => {
+                ControlMsg::Load { reply, .. } => {
                     let _ = reply.send(Err(anyhow::anyhow!(
                         "model is loaded (state: {}); unload first",
                         self.hotswap
@@ -203,15 +203,17 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
 }
 
 /// Unload the model, answer `reply`, then park until a `Load` command or
-/// shutdown. Returns the new model (`Load`, Task 5) or `None` on shutdown.
+/// shutdown. Returns the swap outcome (`Load`, Task 5 / Task 6 Phase 1.3 —
+/// possibly a DIFFERENT model with its own scheduler params) or `None` on
+/// shutdown.
 pub(super) fn unload_and_park(
     model: Box<dyn Model>,
     reply: Reply,
     pending: &Shared,
     hotswap: &Arc<HotswapCtx>,
     session_manager: &mut crate::session_manager::SessionSsmManager,
-    reload: &dyn Fn() -> Result<(Box<dyn Model>, serde_json::Value)>,
-) -> Option<Box<dyn Model>> {
+    reload: &dyn Fn(Option<&str>) -> Result<super::SwapOutcome>,
+) -> Option<super::SwapOutcome> {
     // Session snapshots reference SSM pool slots of the model being dropped.
     session_manager.clear();
 
@@ -245,13 +247,14 @@ pub(super) fn unload_and_park(
                 ControlMsg::Unload { reply } => {
                     let _ = reply.send(Err(anyhow::anyhow!("already unloaded")));
                 }
-                ControlMsg::Load { reply } => {
+                ControlMsg::Load { model, reply } => {
                     hotswap.set_state(SwapState::Loading);
-                    match reload() {
-                        Ok((new_model, stats)) => {
+                    match reload(model.as_deref()) {
+                        Ok(mut outcome) => {
                             hotswap.set_state(SwapState::Running);
+                            let stats = std::mem::take(&mut outcome.stats);
                             let _ = reply.send(Ok(stats));
-                            return Some(new_model);
+                            return Some(outcome);
                         }
                         Err(e) => {
                             hotswap.set_state(SwapState::NoModel);

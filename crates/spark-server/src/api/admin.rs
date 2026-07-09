@@ -31,9 +31,10 @@ pub async fn admin_models_state(State(state): State<Arc<AppState>>) -> Response 
         Ok(c) => c,
         Err(r) => return *r,
     };
+    let active = ctx.active_model();
     Json(serde_json::json!({
         "state": ctx.state().as_str(),
-        "model": ctx.model_id,
+        "model": active.model_id,
         "arena": {
             "base": format!("{:#x}", ctx.arena.base().0),
             "capacity_bytes": ctx.arena.capacity(),
@@ -41,7 +42,10 @@ pub async fn admin_models_state(State(state): State<Arc<AppState>>) -> Response 
             "host_registered": ctx.arena.host_registered(),
         },
         "tensor_count": ctx.manifest.read().len(),
-        "snapshot_path": ctx.snapshot_path().display().to_string(),
+        "snapshot_path": ctx
+            .snapshot_path_for(&active.model_id, &active.model_hash)
+            .display()
+            .to_string(),
     }))
     .into_response()
 }
@@ -86,9 +90,12 @@ pub async fn admin_unload(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
-/// POST /admin/models/load {"model": "..."} — reload the snapshot into the
-/// arena and rebuild the model (same-model scope). Body optional; when
-/// present, `model` must match the model that occupied the arena.
+/// POST /admin/models/load {"model": "..."} — load a model from its
+/// snapshot into the arena and rebuild it. Body optional; `model` may name
+/// a DIFFERENT model than the one that occupied the arena (Task 6 Phase
+/// 1.3): the scheduler-side reloader rebuilds tokenizer, masks and runtime
+/// for it. The target must have a snapshot in `--snapshot-dir` (preseed by
+/// booting it once and POSTing /admin/models/snapshot).
 pub async fn admin_load(
     State(state): State<Arc<AppState>>,
     body: axum::body::Bytes,
@@ -98,8 +105,9 @@ pub async fn admin_load(
         Err(r) => return *r,
     };
     // Optional JSON body {"model": "..."}.
+    let mut requested: Option<String> = None;
     if !body.is_empty() {
-        let requested = match serde_json::from_slice::<serde_json::Value>(&body) {
+        requested = match serde_json::from_slice::<serde_json::Value>(&body) {
             Ok(v) => v.get("model").and_then(|m| m.as_str()).map(String::from),
             Err(e) => {
                 return openai_error_response(
@@ -108,17 +116,6 @@ pub async fn admin_load(
                 );
             }
         };
-        if let Some(requested) = requested
-            && requested != ctx.model_id
-        {
-            return openai_error_response(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "same-model reload only (MVP): arena holds '{}', requested '{requested}'",
-                    ctx.model_id
-                ),
-            );
-        }
     }
     let _admin = ctx.admin_lock.lock().await;
     if ctx.state() != SwapState::NoModel {
@@ -130,18 +127,54 @@ pub async fn admin_load(
             ),
         );
     }
-    // Resolve the snapshot before waking the scheduler: 404 beats a
-    // scheduler-side error for a missing file.
-    let path = ctx.snapshot_path();
-    if !path.exists() {
-        return openai_error_response(
-            StatusCode::NOT_FOUND,
-            format!("no snapshot for '{}' at {}", ctx.model_id, path.display()),
-        );
+    // Cheap snapshot existence pre-check: 404 beats a scheduler-side error
+    // for a missing file. The active model's exact path is known; for a
+    // different model only the id slug is known here (the hash needs the
+    // resolved checkpoint revision), so match on the slug prefix — the
+    // reloader still verifies the exact hash before loading.
+    let active = ctx.active_model();
+    match &requested {
+        Some(r) if *r != active.model_id => {
+            let slug = r.replace('/', "--");
+            let any = std::fs::read_dir(&ctx.snapshot_dir)
+                .ok()
+                .into_iter()
+                .flatten()
+                .flatten()
+                .any(|e| {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    name.starts_with(&format!("{slug}-")) && name.ends_with(".raw")
+                });
+            if !any {
+                return openai_error_response(
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "no snapshot for '{r}' in {} — boot it once and POST \
+                         /admin/models/snapshot",
+                        ctx.snapshot_dir.display()
+                    ),
+                );
+            }
+        }
+        _ => {
+            let path = ctx.snapshot_path_for(&active.model_id, &active.model_hash);
+            if !path.exists() {
+                return openai_error_response(
+                    StatusCode::NOT_FOUND,
+                    format!(
+                        "no snapshot for '{}' at {}",
+                        active.model_id,
+                        path.display()
+                    ),
+                );
+            }
+        }
     }
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    ctx.scheduler
-        .push_control(crate::scheduler::ControlMsg::Load { reply: reply_tx });
+    ctx.scheduler.push_control(crate::scheduler::ControlMsg::Load {
+        model: requested.filter(|r| *r != active.model_id),
+        reply: reply_tx,
+    });
     // Payload read (~50 GiB) + model rebuild (transposes) can take minutes.
     match tokio::time::timeout(std::time::Duration::from_secs(900), reply_rx).await {
         Ok(Ok(Ok(stats))) => Json(stats).into_response(),

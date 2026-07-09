@@ -76,8 +76,10 @@ pub struct AppState {
     /// defaults, …), replaced atomically on model hot-swap. The read
     /// path is hot — `ArcSwap::load_full` is lock-free. Read it ONCE
     /// per request ([`AppState::runtime`]) and thread the snapshot
-    /// through the request's phases.
-    pub runtime: arc_swap::ArcSwap<ModelRuntime>,
+    /// through the request's phases. The cell is `Arc`-shared with the
+    /// scheduler-side reload closure, which installs the new model's
+    /// runtime during a swap.
+    pub runtime: Arc<arc_swap::ArcSwap<ModelRuntime>>,
     pub max_seq_len: usize,
     pub request_tx: mpsc::Sender<InferenceRequest>,
     /// Optional vLLM-style image area cap applied before vision patching.

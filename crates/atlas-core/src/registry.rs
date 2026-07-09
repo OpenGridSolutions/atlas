@@ -100,6 +100,16 @@ unsafe impl Sync for RawCudaFunc {}
 /// Global singleton registry.
 static REGISTRY: OnceLock<std::result::Result<AtlasRegistry, String>> = OnceLock::new();
 
+/// One kernel target's loaded modules (see [`AtlasRegistry::ensure_target`]).
+struct TargetModules {
+    /// cudarc safe-API handles — kept for parity with the boot maps (and
+    /// so the modules stay owned Rust-side), but production kernel lookup
+    /// goes through `raw_modules` only.
+    #[allow(dead_code)]
+    modules: HashMap<&'static str, Arc<CudaModule>>,
+    raw_modules: HashMap<&'static str, *mut c_void>,
+}
+
 /// Cached CUDA modules and a persistent stream.
 pub struct AtlasRegistry {
     pub ctx: Arc<CudaContext>,
@@ -107,14 +117,22 @@ pub struct AtlasRegistry {
     modules: HashMap<&'static str, Arc<CudaModule>>,
     /// Raw CUmodule handles for direct cuLaunchKernel access.
     raw_modules: HashMap<&'static str, *mut c_void>,
+    /// Additional kernel targets loaded after init (model hot-swap to a
+    /// different model family — Task 6 Phase 1.3). Keyed by target key
+    /// (`arch/model/quant`); the boot target stays in the unkeyed maps
+    /// above. Append-only: modules are NEVER unloaded (plan §2 invariant,
+    /// `cuModuleUnload` would invalidate live kernel handles).
+    extra_targets: std::sync::RwLock<HashMap<String, TargetModules>>,
 }
 
-// SAFETY: Same rationale as `RawCudaFunc`: the `raw_modules` map holds
-// CUmodule handles obtained at startup from a single CUcontext. The map is
-// populated once during registry init and is read-only from that point on,
-// so concurrent reads are race-free at the Rust level. CUDA itself
-// serializes kernel launches via the stream the caller supplies — this impl
-// only asserts that the *handle metadata* is shareable across threads.
+// SAFETY: Same rationale as `RawCudaFunc`: the module maps hold CUmodule
+// handles obtained from a single CUcontext. The boot maps are populated
+// once during registry init; `extra_targets` is append-only under its
+// RwLock (a target's map is never mutated after insertion, and modules are
+// never unloaded), so concurrent reads are race-free at the Rust level.
+// CUDA itself serializes kernel launches via the stream the caller
+// supplies — this impl only asserts that the *handle metadata* is
+// shareable across threads.
 unsafe impl Send for AtlasRegistry {}
 unsafe impl Sync for AtlasRegistry {}
 
@@ -143,7 +161,30 @@ impl AtlasRegistry {
     ) -> Result<AtlasRegistry> {
         let ctx = CudaContext::new(ordinal).map_err(AtlasError::CudaDriver)?;
         let stream = ctx.new_stream().map_err(AtlasError::CudaDriver)?;
+        let (modules, raw_modules) = Self::load_blobs(&ctx, kernel_blobs)?;
 
+        Ok(AtlasRegistry {
+            ctx,
+            stream,
+            modules,
+            raw_modules,
+            extra_targets: std::sync::RwLock::new(HashMap::new()),
+        })
+    }
+
+    /// Load a set of PTX/binary kernel blobs into CUDA modules.
+    ///
+    /// The calling thread must have the registry's CUDA context current
+    /// (init runs on the boot thread; `ensure_target` on the scheduler
+    /// thread, which binds the context before swapping models).
+    #[allow(clippy::type_complexity)]
+    fn load_blobs(
+        ctx: &Arc<CudaContext>,
+        kernel_blobs: &[(&'static str, &'static [u8])],
+    ) -> Result<(
+        HashMap<&'static str, Arc<CudaModule>>,
+        HashMap<&'static str, *mut c_void>,
+    )> {
         let mut modules = HashMap::new();
         let mut raw_modules = HashMap::new();
         for &(name, blob) in kernel_blobs {
@@ -189,12 +230,7 @@ impl AtlasRegistry {
             raw_modules.insert(name, raw_mod);
         }
 
-        Ok(AtlasRegistry {
-            ctx,
-            stream,
-            modules,
-            raw_modules,
-        })
+        Ok((modules, raw_modules))
     }
 
     /// Get the cached registry (panics if not initialized).
@@ -204,6 +240,101 @@ impl AtlasRegistry {
             .expect("AtlasRegistry not initialized — call get_or_init first")
             .as_ref()
             .expect("AtlasRegistry initialization failed")
+    }
+
+    /// Get the cached registry, or `None` before `get_or_init` ran.
+    pub fn try_get() -> Option<&'static Self> {
+        REGISTRY.get().and_then(|r| r.as_ref().ok())
+    }
+
+    /// Load an ADDITIONAL kernel target's modules under `key` (model
+    /// hot-swap to a different model family). Idempotent: a key that is
+    /// already loaded is a no-op. Returns `true` when the target was newly
+    /// loaded. Modules are never unloaded for the process lifetime.
+    ///
+    /// The calling thread must have the registry's CUDA context current.
+    pub fn ensure_target(
+        &self,
+        key: &str,
+        kernel_blobs: &[(&'static str, &'static [u8])],
+    ) -> Result<bool> {
+        if self
+            .extra_targets
+            .read()
+            .expect("extra_targets lock poisoned")
+            .contains_key(key)
+        {
+            return Ok(false);
+        }
+        let mut targets = self
+            .extra_targets
+            .write()
+            .expect("extra_targets lock poisoned");
+        if targets.contains_key(key) {
+            return Ok(false);
+        }
+        let (modules, raw_modules) = Self::load_blobs(&self.ctx, kernel_blobs)?;
+        targets.insert(
+            key.to_string(),
+            TargetModules {
+                modules,
+                raw_modules,
+            },
+        );
+        Ok(true)
+    }
+
+    /// Whether `key` was loaded via [`Self::ensure_target`].
+    pub fn has_target(&self, key: &str) -> bool {
+        self.extra_targets
+            .read()
+            .expect("extra_targets lock poisoned")
+            .contains_key(key)
+    }
+
+    /// Resolve a raw CUfunction from a specific kernel target — `None`
+    /// selects the boot target's modules, `Some(key)` a target loaded via
+    /// [`Self::ensure_target`]. Uncached: called at model-init time only;
+    /// layers store the returned handle.
+    pub fn raw_function_for_target(
+        &self,
+        target: Option<&str>,
+        module_name: &str,
+        func_name: &str,
+    ) -> Result<RawCudaFunc> {
+        let raw_mod: *mut c_void = match target {
+            None => *self.raw_modules.get(module_name).ok_or_else(|| {
+                AtlasError::ModuleLoad(format!("Module '{module_name}' not loaded"))
+            })?,
+            Some(key) => {
+                let targets = self
+                    .extra_targets
+                    .read()
+                    .expect("extra_targets lock poisoned");
+                let t = targets.get(key).ok_or_else(|| {
+                    AtlasError::ModuleLoad(format!("Kernel target '{key}' not loaded"))
+                })?;
+                *t.raw_modules.get(module_name).ok_or_else(|| {
+                    AtlasError::ModuleLoad(format!(
+                        "Module '{module_name}' not loaded for target '{key}'"
+                    ))
+                })?
+            }
+        };
+        let c_name = CString::new(func_name).map_err(|e| {
+            AtlasError::ModuleLoad(format!("{module_name}::{func_name}: CString: {e}"))
+        })?;
+        let mut func: *mut c_void = std::ptr::null_mut();
+        // SAFETY: `raw_mod` is a live CUmodule (never unloaded); see the
+        // `.cast()` note in `raw_function_cached`.
+        let status = unsafe { cuModuleGetFunction(&mut func, raw_mod, c_name.as_ptr().cast()) };
+        if status != 0 {
+            return Err(AtlasError::ModuleLoad(format!(
+                "{module_name}::{func_name}: cuModuleGetFunction failed: {}",
+                cuda_error_text(status)
+            )));
+        }
+        Ok(RawCudaFunc(func))
     }
 
     /// Look up a cached function handle (cudarc safe API).

@@ -36,29 +36,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 1. Load model config (supports HF config.json and Mistral params.json)
     let (mut config, config_json) = serve_phases::load_model_config(&model_dir)?;
 
-    // CLI `--lm-head-dtype` override (replaces ATLAS_LMHEAD_BF16). Validate eagerly (PCND).
-    // Sets both `lm_head_bf16_override` (skip/keep-quantized signal consumed by
-    // `skip_lm_head_quantization()`) and `lm_head_fp8` (when quantizing, pick FP8 w8a16
-    // over NVFP4). `fp8` reuses `Some(false)` ("force quantized lm_head") and additionally
-    // routes that quantization to FP8 — additive, leaves nvfp4/bf16/default byte-identical.
-    let (lm_head_bf16_override, lm_head_fp8) = match args.lm_head_dtype.as_str() {
-        "default" => (None, false),
-        "bf16" => (Some(true), false),
-        // `Some(false)` = force the model's NVFP4-packed lm_head (skip_lm_head_quantization
-        // returns false). BF16-out fast path (w4a16_gemv) — NOT use_fp32_logits, which would
-        // force host-side sampling (~6 tok/s). Decode-speed lever; quality-gate for argmax flips.
-        "nvfp4" => (Some(false), false),
-        // FP8: force a quantized lm_head, but use runtime FP8 (E4M3, per-row scales,
-        // w8a16_gemv decode) instead of NVFP4. Mirrors the NVFP4 path's structure.
-        "fp8" => (Some(false), true),
-        other => {
-            anyhow::bail!(
-                "--lm-head-dtype must be 'default', 'bf16', 'nvfp4', or 'fp8', got '{other}'"
-            )
-        }
-    };
-    config.lm_head_bf16_override = lm_head_bf16_override;
-    config.lm_head_fp8 = lm_head_fp8;
+    // CLI `--lm-head-dtype` override — shared with the hot-swap target
+    // preparation (serve_phases::config).
+    serve_phases::apply_lm_head_dtype_override(&args, &mut config)?;
 
     // ModelOpt-exported checkpoints drop a sibling `hf_quant_config.json`
     // whose TOP LEVEL is already the quantization block.
@@ -352,9 +332,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     None
                 },
             });
-    // Hot-swap reload (Task 5) re-runs build_model on the scheduler thread;
-    // clone the two inputs that are moved into this boot-time call.
-    let reload_layer_dtypes = layer_dtypes.clone();
+    // Hot-swap reload re-runs build_model on the scheduler thread; clone
+    // the comm handle that is moved into this boot-time call. (KV dtypes
+    // are recomputed per swap target since Task 6 / 1.3.)
     let reload_comm = comm.clone();
 
     // Watermark alloc registry (hot-swap unload): record every device
@@ -478,6 +458,43 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     let model_name = serve_phases::resolve_model_name(&args, &config_json, &model_dir);
 
+    // Tool call parser resolution: CLI > MODEL.toml > defaults table.
+    let tool_call_parser = serve_phases::resolve_tool_call_parser(&args, &ptx_set, &config)?;
+
+    // Per-model runtime snapshot (Task 6 Phase 1.1) — everything a
+    // different model would need a different value for. Lives in a shared
+    // ArcSwap cell so the hot-swap reloader (below) can replace it and the
+    // HTTP handlers (AppState) read it, one snapshot per request.
+    let model_runtime = Arc::new(crate::main_modules::ModelRuntime {
+        tokenizer,
+        model_name: model_name.clone(),
+        vision_config: config.vision.clone(),
+        default_temperature,
+        default_top_k,
+        default_top_p,
+        default_top_n_sigma,
+        default_min_p,
+        tool_call_parser,
+        reasoning_parser: reasoning_parser_box,
+        think_end_token_id: think_end_token,
+        think_start_token_id: think_start_token,
+        sampling_presets,
+        tool_call_start_token_id: tool_call_start_token,
+        // Behavior and effective_context from MODEL.toml, embedded at build time.
+        effective_context: 0, // TODO: embed effective_context in TargetPtxSet
+        behavior: {
+            let mut b = ptx_set.behavior.clone();
+            if let Some(cli_budget) = args.max_thinking_budget {
+                b.max_thinking_budget = cli_budget;
+            }
+            if let Some(cli_disable) = args.disable_tool_grammar {
+                b.disable_tool_grammar = cli_disable;
+            }
+            b
+        },
+    });
+    let runtime_cell = Arc::new(arc_swap::ArcSwap::new(model_runtime));
+
     // Readiness gate + scheduler handle are shared with the hot-swap
     // context, so both exist before the scheduler thread and AppState.
     let model_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -509,30 +526,44 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     });
 
     // Model reloader for hot-swap load: runs on the scheduler thread while
-    // parked (state NoModel, CUDA context bound). Reads the snapshot payload
-    // into the arena (io_uring + O_DIRECT), rebuilds the WeightStore as
-    // arena views, and re-runs build_model. PTX modules are NOT reloaded:
-    // AtlasCudaBackend::new reuses the AtlasRegistry singleton.
+    // parked (state NoModel, CUDA context bound). `None` reloads the model
+    // that occupied the arena; `Some(id)` swaps to a DIFFERENT model (Task 6
+    // Phase 1.3): per-model prep rebuilds config/tokenizer/masks/parsers,
+    // the snapshot payload streams into the arena (io_uring + O_DIRECT),
+    // and the model is rebuilt against its own kernel target. PTX modules
+    // are never unloaded; a new target's modules load additively into the
+    // AtlasRegistry singleton on first use.
     #[cfg(feature = "cuda")]
     let reload: scheduler::ModelReloader = {
         let ctx = hotswap_ctx.clone();
         let reload_args = args.clone();
-        let reload_config = config.clone();
-        let reload_modules = ptx_set.modules.clone();
-        Box::new(move || {
+        let boot_target_key = serve_phases::target_key(&ptx_set.target);
+        let boot_modules = ptx_set.modules.clone();
+        let reload_runtime_cell = runtime_cell.clone();
+        Box::new(move |requested: Option<&str>| {
             let ctx = ctx
                 .as_ref()
                 .ok_or_else(|| anyhow::anyhow!("hot-swap context missing"))?;
             let t0 = std::time::Instant::now();
-            let path = ctx.snapshot_path();
+            let target_id = match requested {
+                Some(id) => id.to_string(),
+                None => ctx.active_model().model_id,
+            };
+
+            // Per-model CPU prep. Installs the target's scheduler masks /
+            // watchdog params (safe: scheduler is parked, state != Running).
+            let prep = serve_phases::prepare_swap_target(&reload_args, &target_id)?;
+
+            let path = ctx.snapshot_path_for(&prep.model_id, &prep.model_hash);
             if !path.exists() {
                 anyhow::bail!(
-                    "snapshot not found: {} — POST /admin/models/snapshot before unloading",
-                    path.display()
+                    "snapshot not found: {} — boot '{}' once and POST /admin/models/snapshot",
+                    path.display(),
+                    prep.model_id,
                 );
             }
             let (header, manifest) = spark_runtime::snapshot::read_snapshot_meta(&path)?;
-            if header.model_version_hash != ctx.model_hash {
+            if header.model_version_hash != prep.model_hash {
                 anyhow::bail!(
                     "snapshot {} was written for a different (model, revision, layout) — \
                      refusing to load",
@@ -549,28 +580,57 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             )?;
             let store =
                 spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
-            *ctx.manifest.write() = Arc::new(manifest);
+            let mut config = prep.config;
+            serve_phases::auto_detect_weight_prefix(&store, &mut config);
 
-            let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(
-                spark_runtime::cuda_backend::AtlasCudaBackend::new(
-                    reload_args.gpu_ordinal,
-                    &reload_modules,
-                )?,
-            );
+            // Backend handle bound to the target's kernel modules. The boot
+            // target reuses the registry's default maps; any other target
+            // loads its modules additively on first swap.
+            let gpu: Box<dyn spark_runtime::gpu::GpuBackend> =
+                if prep.target_key == boot_target_key {
+                    Box::new(spark_runtime::cuda_backend::AtlasCudaBackend::new(
+                        reload_args.gpu_ordinal,
+                        &boot_modules,
+                    )?)
+                } else {
+                    Box::new(spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
+                        &prep.target_key,
+                        &prep.modules,
+                    )?)
+                };
+            // Same fail-fast as boot: every KV kernel the target's dtypes
+            // dispatch to must resolve before the model is built.
+            {
+                let mut distinct: Vec<spark_runtime::kv_cache::KvCacheDtype> =
+                    vec![prep.kv_dtype];
+                for d in &prep.layer_dtypes {
+                    if !distinct.contains(d) {
+                        distinct.push(*d);
+                    }
+                }
+                for d in distinct {
+                    spark_model::layers::qwen3_attention::validate_required_kv_kernels(
+                        gpu.as_ref(),
+                        d,
+                        config.head_dim,
+                    )
+                    .context("kv-cache kernel preflight failed for swap target")?;
+                }
+            }
             // Track the rebuild's derived-buffer allocations for the next
             // unload (same window as the boot build).
             gpu.set_alloc_tracking(true);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let model = serve_phases::build_model(
                 &reload_args,
-                &reload_config,
+                &config,
                 &store,
                 gpu,
                 max_batch_tokens,
-                kv_dtype,
+                prep.kv_dtype,
                 inference_reserve,
-                reload_layer_dtypes.clone(),
-                hss_cache_blocks_per_seq,
+                prep.layer_dtypes.clone(),
+                prep.hss_cache_blocks_per_seq,
                 prefix_cache,
                 reload_comm.clone(),
                 None, // dflash out of hot-swap scope
@@ -578,28 +638,45 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             if let Some(g) = model.gpu_backend() {
                 g.set_alloc_tracking(false);
             }
+
+            // Install the target's per-request CPU state and identity —
+            // handlers snapshot the new ModelRuntime from here on.
+            reload_runtime_cell.store(Arc::new(prep.model_runtime));
+            *ctx.manifest.write() = Arc::new(manifest);
+            *ctx.active.write() = crate::main_modules::hotswap::ActiveModel {
+                model_id: prep.model_id.clone(),
+                model_hash: prep.model_hash,
+            };
+
             let duration_ms = t0.elapsed().as_millis() as u64;
             let stats = serde_json::json!({
-                "model": ctx.model_id,
+                "model": prep.model_id,
+                "kernel_target": prep.target_key,
                 "bytes_read": read_stats.bytes_read,
                 "read_ms": read_stats.duration_ms as u64,
                 "gib_per_s": (read_stats.gib_per_s * 100.0).round() / 100.0,
                 "duration_ms": duration_ms,
             });
             tracing::info!(
-                "Hot-swap load: {:.2} GiB payload in {} ms ({:.2} GiB/s), model rebuilt in \
-                 {} ms total",
+                "Hot-swap load '{}': {:.2} GiB payload in {} ms ({:.2} GiB/s), model rebuilt \
+                 in {} ms total (kernel target {})",
+                prep.model_id,
                 read_stats.bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
                 read_stats.duration_ms,
                 read_stats.gib_per_s,
                 duration_ms,
+                prep.target_key,
             );
-            Ok((model, stats))
+            Ok(scheduler::SwapOutcome {
+                model,
+                params: prep.scheduler_params,
+                stats,
+            })
         })
     };
     #[cfg(not(feature = "cuda"))]
     let reload: scheduler::ModelReloader =
-        Box::new(|| anyhow::bail!("hot-swap reload requires the CUDA backend"));
+        Box::new(|_| anyhow::bail!("hot-swap reload requires the CUDA backend"));
 
     let scheduler_model = model;
     let scheduler_eos = eos_tokens;
@@ -707,6 +784,18 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    // Per-model scheduler params — handed over as one unit so a hot-swap
+    // load can install a different model's tokens/grammar (Task 6 / 1.3).
+    let scheduler_params = scheduler::SchedulerModelParams {
+        eos_tokens: scheduler_eos,
+        think_end_token,
+        think_start_token,
+        code_fence_token,
+        tool_call_start_token,
+        tool_call_end_token,
+        grammar_engine,
+        spontaneous_think_budget: scheduler_spontaneous_think_budget,
+    };
     let scheduler_run_handle = scheduler_handle.clone();
     let scheduler_hotswap = hotswap_ctx.clone();
     let scheduler_model_ready = model_ready.clone();
@@ -718,7 +807,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             scheduler_hotswap,
             scheduler_model_ready,
             reload,
-            scheduler_eos,
+            scheduler_params,
             max_batch_size,
             use_speculative,
             num_drafts,
@@ -730,20 +819,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             swap_space_gb,
             high_speed_swap_cfg,
             block_size,
-            think_end_token,
-            think_start_token,
-            code_fence_token,
-            tool_call_start_token,
-            tool_call_end_token,
-            grammar_engine,
             adaptive_sampling,
             session_manager,
-            scheduler_spontaneous_think_budget,
         );
     });
-
-    // Tool call parser resolution: CLI > MODEL.toml > defaults table.
-    let tool_call_parser = serve_phases::resolve_tool_call_parser(&args, &ptx_set, &config)?;
 
     // 8. Build app state (model_ready created earlier, next to the
     // scheduler handle, so the hot-swap context shares both).
@@ -757,39 +836,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(max_pixels) = vision_max_pixels {
         tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
     }
-    // Per-model runtime snapshot (Task 6 Phase 1.1) — everything a
-    // different model would need a different value for. Swapped atomically
-    // by the hot-swap handover; handlers read one snapshot per request.
-    let model_runtime = Arc::new(crate::main_modules::ModelRuntime {
-        tokenizer,
-        model_name,
-        vision_config: config.vision.clone(),
-        default_temperature,
-        default_top_k,
-        default_top_p,
-        default_top_n_sigma,
-        default_min_p,
-        tool_call_parser,
-        reasoning_parser: reasoning_parser_box,
-        think_end_token_id: think_end_token,
-        think_start_token_id: think_start_token,
-        sampling_presets,
-        tool_call_start_token_id: tool_call_start_token,
-        // Behavior and effective_context from MODEL.toml, embedded at build time.
-        effective_context: 0, // TODO: embed effective_context in TargetPtxSet
-        behavior: {
-            let mut b = ptx_set.behavior.clone();
-            if let Some(cli_budget) = args.max_thinking_budget {
-                b.max_thinking_budget = cli_budget;
-            }
-            if let Some(cli_disable) = args.disable_tool_grammar {
-                b.disable_tool_grammar = cli_disable;
-            }
-            b
-        },
-    });
     let state = Arc::new(AppState {
-        runtime: arc_swap::ArcSwap::new(model_runtime),
+        // Created next to the reload closure — the hot-swap handover
+        // stores a new ModelRuntime into the same cell.
+        runtime: runtime_cell,
         max_seq_len: args.max_seq_len,
         request_tx,
         vision_max_pixels,
@@ -879,7 +929,7 @@ fn resolve_vision_max_pixels(args: &cli::ServeArgs) -> Result<Option<usize>> {
 /// the heuristics needed across ModelOpt + compressed-tensors checkpoints.
 /// Returns `"bf16"` when no quant config is present (the HF default for
 /// unquantized BF16 weights).
-fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String {
+pub(crate) fn canonicalize_model_quant(config: &atlas_core::config::ModelConfig) -> String {
     let Some(qc) = config.quantization_config.as_ref() else {
         return "bf16".to_string();
     };
@@ -954,7 +1004,7 @@ fn describe_quant_source(config: &atlas_core::config::ModelConfig) -> String {
 /// canonical home for this list will eventually be MODEL.toml
 /// `[kernel].supported_quants` — until then, hardcode keeps the
 /// fail-fast working without a build-time plumb-through.
-fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bool {
+pub(crate) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bool {
     if kernel_quant == model_quant {
         return true;
     }

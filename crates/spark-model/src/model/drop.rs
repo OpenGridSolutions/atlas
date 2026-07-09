@@ -29,6 +29,44 @@ use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl Drop for TransformerModel {
     fn drop(&mut self) {
+        self.destroy_captured_graphs();
         self.drop_pinned_staging();
+    }
+}
+
+impl TransformerModel {
+    /// Destroy every captured CUDA graph exec (`cuGraphExecDestroy`).
+    ///
+    /// Graph exec objects pin device memory (baked-in buffers, the graph
+    /// structure itself). Nothing destroyed them before — irrelevant for a
+    /// process-lifetime model, but a per-swap leak once hot-swap drops and
+    /// rebuilds models repeatedly (Task 6 Phase 1.3 teardown; the
+    /// 100-cycle MemFree-drift test watches exactly this).
+    fn destroy_captured_graphs(&self) {
+        let mut graphs: Vec<GraphHandle> = Vec::new();
+        graphs.extend(self.decode_graph.lock().drain().map(|(_, g)| g));
+        graphs.extend(self.batch_decode_graphs.lock().drain().map(|(_, g)| g));
+        graphs.extend(self.verify2_graph.lock().drain().map(|(_, g)| g));
+        graphs.extend(self.verify3_graph.lock().drain().map(|(_, g)| g));
+        graphs.extend(self.verify4_graph.lock().drain().map(|(_, g)| g));
+        graphs.extend(self.verify_kgamma_graph.lock().drain().map(|(_, g)| g));
+        // GraphHandle(0) is the no-graph sentinel of backends without
+        // capture support (mock/metal) — nothing to destroy.
+        let mut destroyed = 0usize;
+        let mut failed = 0usize;
+        for g in graphs.into_iter().filter(|g| g.0 != 0) {
+            match self.gpu.destroy_graph(g) {
+                Ok(()) => destroyed += 1,
+                Err(e) => {
+                    failed += 1;
+                    tracing::warn!("cuGraphExecDestroy failed on model drop: {e}");
+                }
+            }
+        }
+        if destroyed + failed > 0 {
+            tracing::info!(
+                "Model drop: destroyed {destroyed} captured CUDA graph execs ({failed} failed)"
+            );
+        }
     }
 }

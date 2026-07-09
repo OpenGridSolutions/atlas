@@ -45,18 +45,27 @@ impl SwapState {
     }
 }
 
+/// Identity of the model currently occupying the arena. Swapped as one
+/// unit by the reloader when a different model is installed (Task 6 / 1.3).
+#[derive(Clone)]
+pub struct ActiveModel {
+    /// HF id of the model occupying the arena.
+    pub model_id: String,
+    /// Identity of (model id, revision, arena layout version).
+    pub model_hash: [u8; 32],
+}
+
 /// Shared hot-swap state. Constructed at boot when the weights arena is
 /// enabled; `None` in `AppState` means `--weights-arena-gb 0` and every
 /// /admin/models endpoint answers 503.
 pub struct HotswapCtx {
     pub arena: Arc<WeightsArena>,
-    /// Arena layout recorded by the boot migration (name-sorted order).
-    /// Same-model scope: fixed for the process lifetime.
+    /// Arena layout recorded by the boot migration or the last snapshot
+    /// load (name-sorted order).
     pub manifest: parking_lot::RwLock<Arc<Vec<ArenaTensorEntry>>>,
-    /// HF id of the model occupying the arena.
-    pub model_id: String,
-    /// Identity of (model id, revision, arena layout version).
-    pub model_hash: [u8; 32],
+    /// Model currently occupying the arena; replaced on a different-model
+    /// swap together with `manifest`.
+    pub active: parking_lot::RwLock<ActiveModel>,
     pub snapshot_dir: PathBuf,
     state: AtomicU8,
     /// Serializes admin operations (snapshot/unload/load) against each other.
@@ -81,8 +90,10 @@ impl HotswapCtx {
         Self {
             arena,
             manifest: parking_lot::RwLock::new(Arc::new(manifest)),
-            model_id,
-            model_hash,
+            active: parking_lot::RwLock::new(ActiveModel {
+                model_id,
+                model_hash,
+            }),
             snapshot_dir,
             state: AtomicU8::new(SwapState::Running as u8),
             admin_lock: tokio::sync::Mutex::new(()),
@@ -99,19 +110,31 @@ impl HotswapCtx {
         self.state.store(s as u8, Ordering::Release);
     }
 
-    /// Default on-disk location for this model's snapshot.
+    /// Snapshot of the active model's identity (one consistent read).
+    pub fn active_model(&self) -> ActiveModel {
+        self.active.read().clone()
+    }
+
+    /// Default on-disk location for the ACTIVE model's snapshot.
     pub fn snapshot_path(&self) -> PathBuf {
+        let active = self.active_model();
+        self.snapshot_path_for(&active.model_id, &active.model_hash)
+    }
+
+    /// On-disk snapshot location for an arbitrary (model, hash).
+    pub fn snapshot_path_for(&self, model_id: &str, model_hash: &[u8; 32]) -> PathBuf {
         self.snapshot_dir
-            .join(snapshot_file_name(&self.model_id, &self.model_hash))
+            .join(snapshot_file_name(model_id, model_hash))
     }
 
     /// Blocking snapshot write (call from `spawn_blocking`). Requires the
     /// admin lock to be held by the caller; safe while serving (weights are
     /// read-only during inference).
     pub fn snapshot_blocking(&self) -> Result<(PathBuf, SnapshotWriteStats)> {
-        let path = self.snapshot_path();
+        let active = self.active_model();
+        let path = self.snapshot_path_for(&active.model_id, &active.model_hash);
         let manifest = self.manifest.read().clone();
-        let stats = write_snapshot(&path, &self.arena, &manifest, self.model_hash)
+        let stats = write_snapshot(&path, &self.arena, &manifest, active.model_hash)
             .with_context(|| format!("writing snapshot {}", path.display()))?;
         tracing::info!(
             "Snapshot written: {} ({:.2} GiB in {} ms, {:.2} GiB/s, xxh3 {:#018x}, O_DIRECT {})",

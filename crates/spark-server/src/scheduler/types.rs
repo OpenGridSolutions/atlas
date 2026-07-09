@@ -36,9 +36,14 @@ pub enum ControlMsg {
     Unload {
         reply: tokio::sync::oneshot::Sender<Result<serde_json::Value>>,
     },
-    /// Rebuild the model from the arena/snapshot and reopen the scheduler.
+    /// Rebuild a model from its snapshot and reopen the scheduler.
     /// Only honoured while parked (state `NoModel`).
     Load {
+        /// Target model id. `None` = reload the model that occupied the
+        /// arena; `Some(id)` = different-model swap (Task 6 Phase 1.3) —
+        /// the reloader rebuilds tokenizer, masks, ModelRuntime and
+        /// scheduler params for that model.
+        model: Option<String>,
         reply: tokio::sync::oneshot::Sender<Result<serde_json::Value>>,
     },
 }

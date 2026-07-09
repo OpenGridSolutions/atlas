@@ -156,6 +156,12 @@ pub struct AtlasCudaBackend {
     default_stream: u64,
     /// CUDA context handle for cross-thread binding.
     cuda_ctx: u64,
+    /// Kernel target this handle resolves modules from: `None` = the boot
+    /// target loaded at registry init; `Some(key)` = a target loaded later
+    /// via `AtlasRegistry::ensure_target` (different-model hot-swap,
+    /// Task 6 Phase 1.3). Kernel lookups happen at model-init time only;
+    /// layers store the resolved handles.
+    pub(crate) target_key: Option<String>,
 }
 
 /// Arena-owned `[base, base+len)` ranges: `free()` on an interior pointer is
@@ -244,6 +250,43 @@ impl AtlasCudaBackend {
         Ok(Self {
             default_stream,
             cuda_ctx,
+            target_key: None,
+        })
+    }
+
+    /// Backend handle bound to a DIFFERENT kernel target than the boot one
+    /// (model hot-swap across model families, Task 6 Phase 1.3). Loads the
+    /// target's PTX modules into the registry on first use (never
+    /// unloaded); kernel lookups through this handle resolve that target's
+    /// modules. Same CUDA context and default stream as every other handle.
+    ///
+    /// The calling thread must have the CUDA context current (the swap
+    /// runs on the scheduler thread, which binds it).
+    pub fn new_for_target(
+        target_key: &str,
+        ptx_modules: &[(&'static str, &'static [u8])],
+    ) -> Result<Self> {
+        let registry = AtlasRegistry::try_get()
+            .ok_or_else(|| anyhow::anyhow!("AtlasRegistry not initialized — boot first"))?;
+        let newly = registry
+            .ensure_target(target_key, ptx_modules)
+            .map_err(|e| anyhow::anyhow!("loading kernel target '{target_key}': {e}"))?;
+        if newly {
+            tracing::info!(
+                "Kernel target '{target_key}' loaded: {} PTX modules (kept for process lifetime)",
+                ptx_modules.len()
+            );
+        }
+        let default_stream = registry.raw_stream();
+        let mut cuda_ctx: u64 = 0;
+        let status = unsafe { cuCtxGetCurrent(&mut cuda_ctx) };
+        if status != 0 || cuda_ctx == 0 {
+            bail!("cuCtxGetCurrent failed: status {status}, ctx {cuda_ctx:#x}");
+        }
+        Ok(Self {
+            default_stream,
+            cuda_ctx,
+            target_key: Some(target_key.to_string()),
         })
     }
 

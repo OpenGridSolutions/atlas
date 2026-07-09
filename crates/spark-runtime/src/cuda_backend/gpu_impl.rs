@@ -30,7 +30,6 @@
 //! exception.
 
 use std::ffi::c_void;
-use std::sync::OnceLock;
 
 use anyhow::{Result, bail};
 use atlas_core::registry::{AtlasRegistry, RawCudaFunc, cuda_error_text};
@@ -235,11 +234,12 @@ impl GpuBackend for AtlasCudaBackend {
     }
 
     fn kernel(&self, module: &str, func_name: &str) -> Result<KernelHandle> {
-        // Ephemeral OnceLock — no cross-call caching, but kernel() is only
-        // called at model init time. Layers store the returned KernelHandle.
-        let cache: OnceLock<RawCudaFunc> = OnceLock::new();
+        // Uncached: kernel() is only called at model init time; layers
+        // store the returned KernelHandle. Resolves from this handle's
+        // kernel target (None = boot target) so a hot-swapped model gets
+        // ITS target's modules, not the boot model's.
         let registry = AtlasRegistry::get();
-        match registry.raw_function_cached(&cache, module, func_name) {
+        match registry.raw_function_for_target(self.target_key.as_deref(), module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true);
                 Ok(KernelHandle(raw.0 as u64))

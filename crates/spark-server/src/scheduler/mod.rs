@@ -107,10 +107,34 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
-/// Rebuilds the model for a hot-swap `load` (constructed in serve.rs, runs
-/// on the scheduler thread). Returns the new model + JSON stats.
-pub type ModelReloader =
-    Box<dyn Fn() -> Result<(Box<dyn Model>, serde_json::Value)> + Send + Sync>;
+/// Everything per-model the scheduler loop holds besides the model itself.
+/// Handed over as one unit on a hot-swap load so a different model installs
+/// ITS tokenizer-derived tokens and grammar engine (Task 6 Phase 1.3) —
+/// keeping model A's `</think>` id while decoding model B would be silently
+/// wrong sampling.
+pub struct SchedulerModelParams {
+    pub eos_tokens: Vec<u32>,
+    pub think_end_token: Option<u32>,
+    pub think_start_token: Option<u32>,
+    pub code_fence_token: Option<u32>,
+    pub tool_call_start_token: Option<u32>,
+    pub tool_call_end_token: Option<u32>,
+    pub grammar_engine: Option<GrammarEngine>,
+    pub spontaneous_think_budget: u32,
+}
+
+/// Result of a hot-swap load: the rebuilt model, its scheduler params, and
+/// the JSON stats answered to the admin endpoint.
+pub struct SwapOutcome {
+    pub model: Box<dyn Model>,
+    pub params: SchedulerModelParams,
+    pub stats: serde_json::Value,
+}
+
+/// Rebuilds a model for a hot-swap `load` (constructed in serve.rs, runs
+/// on the scheduler thread). `None` reloads the model that occupied the
+/// arena; `Some(id)` swaps to a different model from its snapshot.
+pub type ModelReloader = Box<dyn Fn(Option<&str>) -> Result<SwapOutcome> + Send + Sync>;
 
 /// External handle onto the scheduler's queue: lets the admin endpoints
 /// push hot-swap control commands and wake the (possibly idle) loop.
@@ -154,7 +178,7 @@ pub fn run(
     hotswap: Option<Arc<crate::main_modules::hotswap::HotswapCtx>>,
     model_ready: Arc<std::sync::atomic::AtomicBool>,
     reload: ModelReloader,
-    eos_tokens: Vec<u32>,
+    params: SchedulerModelParams,
     max_batch_size: usize,
     use_speculative: bool,
     num_drafts: usize,
@@ -166,16 +190,21 @@ pub fn run(
     swap_space_gb: usize,
     high_speed_swap_cfg: Option<spark_storage::HighSpeedSwapConfig>,
     block_size: usize,
-    think_end_token: Option<u32>,
-    think_start_token: Option<u32>,
-    code_fence_token: Option<u32>,
-    tool_call_start_token: Option<u32>,
-    tool_call_end_token: Option<u32>,
-    mut grammar_engine: Option<GrammarEngine>,
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
-    spontaneous_think_budget: u32,
 ) {
+    // Per-model scheduler state — every binding here is REBOUND when a
+    // hot-swap load installs a different model (see the swap arm below).
+    let SchedulerModelParams {
+        mut eos_tokens,
+        mut think_end_token,
+        mut think_start_token,
+        mut code_fence_token,
+        mut tool_call_start_token,
+        mut tool_call_end_token,
+        mut grammar_engine,
+        mut spontaneous_think_budget,
+    } = params;
     let mut model = model;
     model
         .bind_gpu_to_thread()
@@ -298,8 +327,20 @@ pub fn run(
                 &mut session_manager,
                 reload.as_ref(),
             ) {
-                Some(new_model) => {
-                    model = new_model;
+                Some(outcome) => {
+                    model = outcome.model;
+                    // Install the (possibly different) model's scheduler
+                    // params — tokenizer-derived token ids, EOS set,
+                    // grammar engine, thinking budget (Task 6 Phase 1.3).
+                    let p = outcome.params;
+                    eos_tokens = p.eos_tokens;
+                    think_end_token = p.think_end_token;
+                    think_start_token = p.think_start_token;
+                    code_fence_token = p.code_fence_token;
+                    tool_call_start_token = p.tool_call_start_token;
+                    tool_call_end_token = p.tool_call_end_token;
+                    grammar_engine = p.grammar_engine;
+                    spontaneous_think_budget = p.spontaneous_think_budget;
                     model
                         .bind_gpu_to_thread()
                         .expect("Failed to re-bind CUDA context after hot-swap load");
