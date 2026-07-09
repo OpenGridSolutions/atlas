@@ -139,6 +139,7 @@ mod tests {
             0,
             None,
             None, // dflash_args
+            None, // kv_pool_bytes_override
         );
         match result {
             Err(e) => assert!(e.to_string().contains("Unsupported model type: 'llama'")),
