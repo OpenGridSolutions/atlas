@@ -87,9 +87,14 @@ pub(super) fn drain_pending_requests(
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
     if active.is_empty() && prefilling.is_empty() {
-        // Block until signalled (no busy-wait, no polling).
-        while g.requests.is_empty() && !g.closed {
+        // Block until signalled (no busy-wait, no polling). A hot-swap
+        // control command must wake the idle scheduler too — the caller
+        // handles it at the top of the next loop iteration.
+        while g.requests.is_empty() && !g.closed && g.control.is_empty() {
             cv.wait(&mut g);
+        }
+        if !g.control.is_empty() {
+            return Vec::new();
         }
         if g.closed && g.requests.is_empty() {
             return Vec::new();

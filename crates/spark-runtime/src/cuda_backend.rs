@@ -167,6 +167,56 @@ pub struct AtlasCudaBackend {
 /// path another). All handles must agree on what is arena-owned.
 static PROTECTED_RANGES: std::sync::RwLock<Vec<(u64, u64)>> = std::sync::RwLock::new(Vec::new());
 
+/// Watermark allocation registry (see `GpuBackend::set_alloc_tracking`).
+/// Process-global for the same multiple-handles reason as
+/// `PROTECTED_RANGES`: allocations recorded through the model's backend
+/// handle must be drainable through any other handle at unload.
+struct AllocTracker {
+    recording: bool,
+    live: std::collections::HashSet<u64>,
+}
+
+static ALLOC_TRACKER: std::sync::LazyLock<std::sync::Mutex<AllocTracker>> =
+    std::sync::LazyLock::new(|| {
+        std::sync::Mutex::new(AllocTracker {
+            recording: false,
+            live: std::collections::HashSet::new(),
+        })
+    });
+
+pub(super) fn tracker_record(ptr: u64) {
+    let mut t = ALLOC_TRACKER.lock().expect("ALLOC_TRACKER poisoned");
+    if t.recording {
+        t.live.insert(ptr);
+    }
+}
+
+/// Unrecord on free — unconditionally, so tracked build-time allocations
+/// freed later (e.g. MoE transpose originals) never double-free at unload.
+pub(super) fn tracker_unrecord(ptr: u64) {
+    ALLOC_TRACKER
+        .lock()
+        .expect("ALLOC_TRACKER poisoned")
+        .live
+        .remove(&ptr);
+}
+
+pub(super) fn tracker_set_recording(on: bool) {
+    ALLOC_TRACKER
+        .lock()
+        .expect("ALLOC_TRACKER poisoned")
+        .recording = on;
+}
+
+pub(super) fn tracker_drain() -> Vec<u64> {
+    ALLOC_TRACKER
+        .lock()
+        .expect("ALLOC_TRACKER poisoned")
+        .live
+        .drain()
+        .collect()
+}
+
 impl AtlasCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///

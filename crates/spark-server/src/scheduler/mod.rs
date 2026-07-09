@@ -14,6 +14,7 @@
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod confidence;
 mod decode_logits_content;
+mod hotswap_ctl;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
@@ -76,6 +77,7 @@ use sample_step::*;
 use spec_step::*;
 use ssm_decode_ring::SsmDecodeRing;
 use types::*;
+pub use types::ControlMsg;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
@@ -105,11 +107,53 @@ use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
 use crate::scheduling_policy::SchedulingPolicy;
 
+/// Rebuilds the model for a hot-swap `load` (constructed in serve.rs, runs
+/// on the scheduler thread). Returns the new model + JSON stats.
+pub type ModelReloader =
+    Box<dyn Fn() -> Result<(Box<dyn Model>, serde_json::Value)> + Send + Sync>;
+
+/// External handle onto the scheduler's queue: lets the admin endpoints
+/// push hot-swap control commands and wake the (possibly idle) loop.
+#[derive(Clone)]
+pub struct SchedulerHandle {
+    shared: Arc<(Mutex<PendingQueue>, Condvar)>,
+}
+
+impl Default for SchedulerHandle {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl SchedulerHandle {
+    pub fn new() -> Self {
+        Self {
+            shared: Arc::new((
+                Mutex::new(PendingQueue {
+                    requests: Vec::new(),
+                    closed: false,
+                    control: Vec::new(),
+                }),
+                Condvar::new(),
+            )),
+        }
+    }
+
+    pub fn push_control(&self, msg: ControlMsg) {
+        self.shared.0.lock().control.push(msg);
+        self.shared.1.notify_one();
+    }
+}
+
 /// Run the scheduler loop on the current thread.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     model: Box<dyn Model>,
     request_rx: tokio::sync::mpsc::Receiver<InferenceRequest>,
+    handle: SchedulerHandle,
+    hotswap: Option<Arc<crate::main_modules::hotswap::HotswapCtx>>,
+    model_ready: Arc<std::sync::atomic::AtomicBool>,
+    reload: ModelReloader,
     eos_tokens: Vec<u32>,
     max_batch_size: usize,
     use_speculative: bool,
@@ -132,6 +176,7 @@ pub fn run(
     mut session_manager: crate::session_manager::SessionSsmManager,
     spontaneous_think_budget: u32,
 ) {
+    let mut model = model;
     model
         .bind_gpu_to_thread()
         .expect("Failed to bind CUDA context to scheduler thread");
@@ -184,13 +229,9 @@ pub fn run(
         tracing::info!("ATLAS_HOLO_ALWAYS_MIXED=on: fused mixed step always-on (slice-budget)");
     }
 
-    let pending = Arc::new((
-        Mutex::new(PendingQueue {
-            requests: Vec::new(),
-            closed: false,
-        }),
-        Condvar::new(),
-    ));
+    // Shared queue lives in the handle so admin endpoints can push
+    // hot-swap control commands and wake this loop.
+    let pending = Arc::clone(&handle.shared);
 
     // Receiver thread: blocks on channel, signals scheduler via condvar.
     let p = Arc::clone(&pending);
@@ -205,10 +246,11 @@ pub fn run(
     });
 
     // Dedicated CUDA stream + event for prefill compute-copy overlap.
-    let prefill_stream = model
+    // `mut`: recreated when a hot-swap load installs a fresh model.
+    let mut prefill_stream = model
         .create_stream()
         .expect("Failed to create prefill CUDA stream");
-    let prefill_event = model
+    let mut prefill_event = model
         .create_event()
         .expect("Failed to create prefill CUDA event");
 
@@ -233,7 +275,51 @@ pub fn run(
 
     install_high_speed_swap(&*model, high_speed_swap_cfg);
 
+    let mut swap = hotswap_ctl::SwapCtl::new(hotswap.clone(), model_ready.clone());
+
     loop {
+        // ── Hot-swap: drain-and-unload control (plan Task 4/5) ──
+        if let Some(unload_reply) = swap.poll(
+            &pending,
+            &*model,
+            &mut active,
+            &mut prefilling,
+            &mut swapped,
+            &mut spill_manager,
+        ) {
+            let ctx = hotswap
+                .as_ref()
+                .expect("SwapCtl only accepts unload with a hotswap ctx");
+            match hotswap_ctl::unload_and_park(
+                model,
+                unload_reply,
+                &pending,
+                ctx,
+                &mut session_manager,
+                reload.as_ref(),
+            ) {
+                Some(new_model) => {
+                    model = new_model;
+                    model
+                        .bind_gpu_to_thread()
+                        .expect("Failed to re-bind CUDA context after hot-swap load");
+                    // Per-run objects tied to the old model.
+                    prefill_stream = model
+                        .create_stream()
+                        .expect("Failed to recreate prefill stream after hot-swap load");
+                    prefill_event = model
+                        .create_event()
+                        .expect("Failed to recreate prefill event after hot-swap load");
+                    model_ready.store(true, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!("Hot-swap: scheduler reopened with reloaded model");
+                }
+                None => {
+                    tracing::info!("Scheduler stopped (shutdown while unloaded)");
+                    return;
+                }
+            }
+        }
+
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);

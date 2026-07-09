@@ -6,16 +6,27 @@ use super::*;
 
 /// Send final response and free GPU resources for a completed sequence.
 pub fn finish_sequence(model: &dyn Model, a: &mut ActiveSeq) {
+    finish_sequence_with_reason(model, a, None)
+}
+
+/// Like [`finish_sequence`], but `reason_override` replaces the locally
+/// computed finish_reason — the hot-swap drain finishes still-running
+/// sequences with `"model_swap"` (HOTSWAP_MVP_PLAN.md Task 4).
+pub fn finish_sequence_with_reason(
+    model: &dyn Model,
+    a: &mut ActiveSeq,
+    reason_override: Option<&str>,
+) {
     let last_tok = a.output_tokens.last().copied();
     let is_eos = last_tok.is_some_and(|t| a.eos_tokens.contains(&t));
     let is_tool_call_end = last_tok == a.tool_call_end_token;
-    let reason = if is_eos {
+    let reason = reason_override.unwrap_or(if is_eos {
         "stop"
     } else if is_tool_call_end {
         "tool_calls"
     } else {
         "length"
-    };
+    });
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;

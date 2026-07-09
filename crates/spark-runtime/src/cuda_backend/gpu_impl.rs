@@ -60,6 +60,7 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
+        super::tracker_record(dptr);
         Ok(DevicePtr(dptr))
     }
 
@@ -73,6 +74,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
+        super::tracker_record(dptr);
         Ok(DevicePtr(dptr))
     }
 
@@ -87,11 +89,20 @@ impl GpuBackend for AtlasCudaBackend {
             tracing::debug!("free({ptr}) suppressed: pointer is arena-owned");
             return Ok(());
         }
+        super::tracker_unrecord(ptr.0);
         let status = unsafe { cuMemFree_v2(ptr.0) };
         if status != 0 {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
+    }
+
+    fn set_alloc_tracking(&self, on: bool) {
+        super::tracker_set_recording(on);
+    }
+
+    fn take_tracked_allocs(&self) -> Vec<DevicePtr> {
+        super::tracker_drain().into_iter().map(DevicePtr).collect()
     }
 
     fn device_synchronize(&self) -> Result<()> {

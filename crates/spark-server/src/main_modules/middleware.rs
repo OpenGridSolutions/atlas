@@ -73,6 +73,51 @@ pub(crate) async fn openai_observability_middleware(
 /// timings. The error body matches the OpenAI shape so client SDKs
 /// surface "missing_api_key" / "invalid_api_key" the same way they do
 /// against `api.openai.com`.
+/// Inference-endpoint gate for hot-swap (plan Task 4): while a model swap
+/// is in progress or no model is loaded, inference requests get an
+/// immediate 503 + `Retry-After: 1` with a JSON body naming the state,
+/// instead of queueing into a scheduler that will fail them anyway.
+pub(crate) async fn model_state_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if let Some(ctx) = state.hotswap.as_ref() {
+        let swap_state = ctx.state();
+        if swap_state != crate::main_modules::hotswap::SwapState::Running {
+            const GATED: [&str; 5] = [
+                "/v1/chat/completions",
+                "/v1/completions",
+                "/v1/responses",
+                "/v1/messages",
+                "/v1/embeddings",
+            ];
+            if GATED.contains(&req.uri().path()) {
+                let body = serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "no model available (state: {}); retry shortly",
+                            swap_state.as_str()
+                        ),
+                        "type": "server_error",
+                        "param": null,
+                        "code": "model_unavailable",
+                    },
+                    "state": swap_state.as_str(),
+                });
+                return (
+                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                    [(axum::http::header::RETRY_AFTER, "1")],
+                    axum::Json(body),
+                )
+                    .into_response();
+            }
+        }
+    }
+    next.run(req).await
+}
+
 pub(crate) async fn require_auth_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::extract::Request,

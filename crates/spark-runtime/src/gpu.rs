@@ -190,6 +190,21 @@ pub trait GpuBackend: Send + Sync {
     /// an arena.
     fn protect_range(&self, _base: u64, _len: usize) {}
 
+    /// Watermark allocation registry (hot-swap unload). While recording is
+    /// on, every successful `alloc`/`alloc_managed` is remembered; `free`
+    /// always unrecords, on or off. `build_model` makes ~178 allocations
+    /// (transposes, dequant, KV/SSM pools, …) that nothing frees on model
+    /// drop — unload walks this registry instead (trace.md §5).
+    fn set_alloc_tracking(&self, _on: bool) {}
+
+    /// Drain the registry: every still-live allocation recorded since
+    /// tracking was last enabled. Caller frees them (the arena free-guard
+    /// keeps arena views safe, but arena offsets are never allocated
+    /// through `alloc`, so they never appear here anyway).
+    fn take_tracked_allocs(&self) -> Vec<DevicePtr> {
+        Vec::new()
+    }
+
     /// Get the default stream handle.
     fn default_stream(&self) -> u64;
 

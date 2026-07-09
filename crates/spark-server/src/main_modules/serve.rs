@@ -352,6 +352,11 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     None
                 },
             });
+    // Watermark alloc registry (hot-swap unload): record every device
+    // allocation build_model makes (~178: transposes, dequants, KV/SSM
+    // pools, buffers) so unload can free exactly the derived buffers.
+    // Frees always unrecord, so build-time self-frees never double-free.
+    gpu.set_alloc_tracking(true);
     let model = serve_phases::build_model(
         &args,
         &config,
@@ -366,6 +371,12 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         comm,
         dflash_args,
     )?;
+    // Stop recording: serving-time allocations come from pre-allocated
+    // pools (runtime invariant); anything allocated after this line is not
+    // owned by the model build and must not be freed at unload.
+    if let Some(g) = model.gpu_backend() {
+        g.set_alloc_tracking(false);
+    }
 
     // Kernel load audit: print the table of every kernel resolved during model
     // construction (grouped by module/operation family) + flag any MISSING
@@ -462,10 +473,21 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     let model_name = serve_phases::resolve_model_name(&args, &config_json, &model_dir);
 
+    // Readiness gate + scheduler handle are shared with the hot-swap
+    // context, so both exist before the scheduler thread and AppState.
+    let model_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let scheduler_handle = scheduler::SchedulerHandle::new();
+
     // Hot-swap context: arena + manifest recorded by the boot migration.
     // The model revision is the HF snapshot hash (model_dir's last path
     // component), so snapshots stop resolving after a checkpoint update.
-    let hotswap_ctx = _hotswap_arena.map(|arena_state| {
+    // EP multi-rank and DFlash are out of hot-swap scope (worker ranks and
+    // the drafter's second WeightStore are not arena-managed).
+    let hotswap_enabled = ep_size == 1 && !args.dflash;
+    if !hotswap_enabled && _hotswap_arena.is_some() {
+        tracing::warn!("Hot-swap endpoints disabled: EP world_size > 1 or --dflash set");
+    }
+    let hotswap_ctx = _hotswap_arena.filter(|_| hotswap_enabled).map(|arena_state| {
         let revision = model_dir
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
@@ -476,7 +498,14 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             model_name.clone(),
             &revision,
             std::path::PathBuf::from(&args.snapshot_dir),
+            scheduler_handle.clone(),
+            model_ready.clone(),
         ))
+    });
+
+    // Model reloader for hot-swap load — lands with Task 5.
+    let reload: scheduler::ModelReloader = Box::new(|| {
+        anyhow::bail!("model reload not implemented yet (HOTSWAP Task 5)")
     });
 
     let scheduler_model = model;
@@ -585,10 +614,17 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let scheduler_spontaneous_think_budget = args
         .max_thinking_budget
         .unwrap_or(ptx_set.behavior.max_thinking_budget);
+    let scheduler_run_handle = scheduler_handle.clone();
+    let scheduler_hotswap = hotswap_ctx.clone();
+    let scheduler_model_ready = model_ready.clone();
     std::thread::spawn(move || {
         scheduler::run(
             scheduler_model,
             request_rx,
+            scheduler_run_handle,
+            scheduler_hotswap,
+            scheduler_model_ready,
+            reload,
             scheduler_eos,
             max_batch_size,
             use_speculative,
@@ -616,8 +652,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // Tool call parser resolution: CLI > MODEL.toml > defaults table.
     let tool_call_parser = serve_phases::resolve_tool_call_parser(&args, &ptx_set, &config)?;
 
-    // 8. Build app state
-    let model_ready = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    // 8. Build app state (model_ready created earlier, next to the
+    // scheduler handle, so the hot-swap context shares both).
     let response_store = response_store::ResponseStore::from_env();
     let rate_limiter = rate_limiter::RateLimiter::from_env();
     let conversation_store = conversation_store::ConversationStore::from_env();

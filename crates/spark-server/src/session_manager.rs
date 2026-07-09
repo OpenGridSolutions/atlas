@@ -39,6 +39,13 @@ impl SessionSsmManager {
         }
     }
 
+    /// Forget every session. Hot-swap unload: the tracked snapshot slots
+    /// reference SSM pools inside the model being dropped, so the whole map
+    /// is stale after a swap.
+    pub fn clear(&mut self) {
+        self.sessions.clear();
+    }
+
     /// Register a snapshot slot as belonging to a session.
     pub fn save_snapshot(&mut self, session_hash: u64, slot_id: usize) {
         let entry = self

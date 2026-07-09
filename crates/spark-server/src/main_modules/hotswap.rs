@@ -61,6 +61,10 @@ pub struct HotswapCtx {
     state: AtomicU8,
     /// Serializes admin operations (snapshot/unload/load) against each other.
     pub admin_lock: tokio::sync::Mutex<()>,
+    /// Pushes control commands into (and wakes) the scheduler loop.
+    pub scheduler: crate::scheduler::SchedulerHandle,
+    /// The router-level readiness gate (also read by /health).
+    pub model_ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl HotswapCtx {
@@ -70,6 +74,8 @@ impl HotswapCtx {
         model_id: String,
         model_revision: &str,
         snapshot_dir: PathBuf,
+        scheduler: crate::scheduler::SchedulerHandle,
+        model_ready: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         let model_hash = model_version_hash(&model_id, model_revision);
         Self {
@@ -80,6 +86,8 @@ impl HotswapCtx {
             snapshot_dir,
             state: AtomicU8::new(SwapState::Running as u8),
             admin_lock: tokio::sync::Mutex::new(()),
+            scheduler,
+            model_ready,
         }
     }
 

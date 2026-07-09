@@ -14,7 +14,8 @@ use crate::anthropic;
 use crate::api;
 use crate::main_modules::AppState;
 use crate::main_modules::middleware::{
-    openai_observability_middleware, rate_limit_middleware, require_auth_middleware,
+    model_state_middleware, openai_observability_middleware, rate_limit_middleware,
+    require_auth_middleware,
 };
 
 pub(crate) async fn build_and_serve(
@@ -105,6 +106,7 @@ pub(crate) async fn build_and_serve(
         // middleware.rs, which includes /admin explicitly.
         .route("/admin/models", get(api::admin::admin_models_state))
         .route("/admin/models/snapshot", post(api::admin::admin_snapshot))
+        .route("/admin/models/unload", post(api::admin::admin_unload))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
         .route("/health", get(api::health))
@@ -120,6 +122,10 @@ pub(crate) async fn build_and_serve(
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            model_state_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

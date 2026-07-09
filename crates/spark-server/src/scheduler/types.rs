@@ -21,6 +21,26 @@ use crate::openai::RepetitionDetectionParams;
 pub(super) struct PendingQueue {
     pub requests: Vec<InferenceRequest>,
     pub closed: bool,
+    /// Hot-swap control commands (admin endpoints → scheduler thread).
+    /// Shares this queue's mutex + condvar so a command wakes an idle
+    /// scheduler exactly like a request does.
+    pub control: Vec<ControlMsg>,
+}
+
+/// Admin → scheduler control commands (HOTSWAP_MVP_PLAN.md Tasks 4/5).
+/// The reply carries a JSON stats object back to the HTTP handler.
+pub enum ControlMsg {
+    /// Drain (≤2000 ms grace), tear down the model's device allocations,
+    /// drop the model + weight-store index, reset the arena, park until
+    /// `Load`.
+    Unload {
+        reply: tokio::sync::oneshot::Sender<Result<serde_json::Value>>,
+    },
+    /// Rebuild the model from the arena/snapshot and reopen the scheduler.
+    /// Only honoured while parked (state `NoModel`).
+    Load {
+        reply: tokio::sync::oneshot::Sender<Result<serde_json::Value>>,
+    },
 }
 
 /// Per-request slice of a co-dispatched batched-ViT encode. When >=2 image

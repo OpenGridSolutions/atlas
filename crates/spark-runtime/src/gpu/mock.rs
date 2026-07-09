@@ -19,6 +19,8 @@ pub struct MockGpuBackend {
     /// Per-instance (unlike the CUDA backend's process-global list) so
     /// parallel tests stay isolated.
     protected: Mutex<Vec<(u64, u64)>>,
+    /// Watermark alloc registry, mirroring the CUDA backend (per-instance).
+    tracking: Mutex<(bool, std::collections::HashSet<u64>)>,
 }
 
 #[derive(Debug, Clone)]
@@ -41,6 +43,7 @@ impl MockGpuBackend {
             next_ptr: Mutex::new(0x1000_0000),
             launches: Mutex::new(Vec::new()),
             protected: Mutex::new(Vec::new()),
+            tracking: Mutex::new((false, std::collections::HashSet::new())),
         }
     }
 
@@ -94,6 +97,12 @@ impl GpuBackend for MockGpuBackend {
                 data: vec![0u8; bytes],
             },
         );
+        {
+            let mut t = self.tracking.lock();
+            if t.0 {
+                t.1.insert(ptr);
+            }
+        }
         Ok(DevicePtr(ptr))
     }
 
@@ -111,6 +120,7 @@ impl GpuBackend for MockGpuBackend {
         {
             return Ok(());
         }
+        self.tracking.lock().1.remove(&ptr.0);
         self.allocs.lock().remove(&ptr.0);
         Ok(())
     }
@@ -188,5 +198,13 @@ impl GpuBackend for MockGpuBackend {
 
     fn protect_range(&self, base: u64, len: usize) {
         self.protected.lock().push((base, len as u64));
+    }
+
+    fn set_alloc_tracking(&self, on: bool) {
+        self.tracking.lock().0 = on;
+    }
+
+    fn take_tracked_allocs(&self) -> Vec<DevicePtr> {
+        self.tracking.lock().1.drain().map(DevicePtr).collect()
     }
 }

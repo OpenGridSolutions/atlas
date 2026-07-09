@@ -161,6 +161,9 @@ impl Model for TransformerModel {
     fn bind_gpu_to_thread(&self) -> Result<()> {
         self.bind_gpu_to_thread_dispatch()
     }
+    fn gpu_backend(&self) -> Option<&dyn spark_runtime::gpu::GpuBackend> {
+        Some(self.gpu.as_ref())
+    }
     fn alloc_sequence(&self) -> Result<SequenceState> {
         self.alloc_sequence_dispatch()
     }

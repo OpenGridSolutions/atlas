@@ -46,6 +46,46 @@ pub async fn admin_models_state(State(state): State<Arc<AppState>>) -> Response 
     .into_response()
 }
 
+/// POST /admin/models/unload — drain (≤2000 ms), free the model's device
+/// allocations, drop the model index, reset the arena. The arena mapping
+/// itself is never returned to the kernel.
+pub async fn admin_unload(State(state): State<Arc<AppState>>) -> Response {
+    let ctx = match ctx_or_503(&state) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    let _admin = ctx.admin_lock.lock().await;
+    if ctx.state() != SwapState::Running {
+        return openai_error_response(
+            StatusCode::CONFLICT,
+            format!(
+                "cannot unload while model state is '{}' (need 'running')",
+                ctx.state().as_str()
+            ),
+        );
+    }
+    // Gate inference immediately — the scheduler confirms Draining when it
+    // picks the command up, but new requests must bounce right away.
+    ctx.set_state(SwapState::Draining);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    ctx.scheduler
+        .push_control(crate::scheduler::ControlMsg::Unload { reply: reply_tx });
+    match tokio::time::timeout(std::time::Duration::from_secs(60), reply_rx).await {
+        Ok(Ok(Ok(stats))) => Json(stats).into_response(),
+        Ok(Ok(Err(e))) => {
+            openai_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("unload failed: {e:#}"))
+        }
+        Ok(Err(_)) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "unload reply channel dropped (scheduler died?)".to_string(),
+        ),
+        Err(_) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "unload timed out after 60 s".to_string(),
+        ),
+    }
+}
+
 /// POST /admin/models/snapshot — dump the arena as an ATLASRAW file.
 /// Returns `{path, bytes, payload_xxh3, duration_ms}`.
 pub async fn admin_snapshot(State(state): State<Arc<AppState>>) -> Response {

@@ -214,6 +214,14 @@ pub trait Model: Send + Sync {
     /// Must be called from any thread other than the one that created the model.
     fn bind_gpu_to_thread(&self) -> Result<()>;
 
+    /// The GPU backend this model allocates through. The hot-swap unload
+    /// path uses it to synchronize and free the model's device allocations
+    /// before dropping the model (nothing frees GPU memory on Drop).
+    /// Default `None` for models without a backend (test mocks).
+    fn gpu_backend(&self) -> Option<&dyn spark_runtime::gpu::GpuBackend> {
+        None
+    }
+
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
