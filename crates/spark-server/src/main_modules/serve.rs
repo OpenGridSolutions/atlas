@@ -523,16 +523,43 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if !hotswap_enabled && _hotswap_arena.is_some() {
         tracing::warn!("Hot-swap endpoints disabled: EP world_size > 1 or --dflash set");
     }
+    // Model registry (Task 6 Phase 2): boot model + preseed list, deduped.
+    // Lazy request-time swaps and the listing APIs only see these.
+    let boot_revision = model_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "local".to_string());
+    let mut model_registry = vec![crate::main_modules::hotswap::RegisteredModel {
+        model_id: model_name.clone(),
+        model_hash: spark_runtime::snapshot::model_version_hash(&model_name, &boot_revision),
+    }];
+    #[cfg(feature = "cuda")]
+    for id in &preseed_models {
+        if model_registry.iter().any(|m| m.model_id == *id) {
+            continue;
+        }
+        model_registry.push(serve_phases::registered_model(&args, id)?);
+    }
+    #[cfg(not(feature = "cuda"))]
+    if !preseed_models.is_empty() {
+        anyhow::bail!("--preseed-model / ATLAS_PRESEED_MODELS requires the CUDA backend");
+    }
+    let lazy_enabled = !preseed_models.is_empty();
+    if lazy_enabled && !hotswap_enabled {
+        anyhow::bail!(
+            "preseed/lazy multi-model mode requires hot-swap (weights arena enabled, \
+             no EP world_size > 1, no --dflash)"
+        );
+    }
+
     let hotswap_ctx = _hotswap_arena.filter(|_| hotswap_enabled).map(|arena_state| {
-        let revision = model_dir
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "local".to_string());
         Arc::new(crate::main_modules::hotswap::HotswapCtx::new(
             arena_state.arena,
             arena_state.manifest,
             model_name.clone(),
-            &revision,
+            &boot_revision,
+            model_registry.clone(),
+            lazy_enabled,
             std::path::PathBuf::from(&args.snapshot_dir),
             scheduler_handle.clone(),
             model_ready.clone(),
@@ -837,6 +864,18 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             session_manager,
         );
     });
+
+    // ── Task 6 Phase 2.2: boot preseed ──
+    // Snapshot the boot model, unload it, snapshot every other registered
+    // model (one at a time in the arena), and leave the server IDLE:
+    // state `unloaded`, arena empty. Requests then lazy-load (Phase 3).
+    #[cfg(feature = "cuda")]
+    if lazy_enabled {
+        let ctx = hotswap_ctx
+            .as_ref()
+            .context("preseed requires the weights arena (--weights-arena-gb > 0)")?;
+        serve_phases::run_boot_preseed(&args, ctx, &ptx_set.modules).await?;
+    }
 
     // 8. Build app state (model_ready created earlier, next to the
     // scheduler handle, so the hot-swap context shares both).

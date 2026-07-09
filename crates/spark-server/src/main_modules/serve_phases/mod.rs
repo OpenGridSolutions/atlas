@@ -8,6 +8,8 @@ mod build;
 mod config;
 mod kv_cache;
 mod preflight;
+#[cfg(feature = "cuda")]
+mod preseed;
 mod runtime;
 #[cfg(feature = "cuda")]
 mod swap_target;
@@ -23,6 +25,8 @@ pub(super) use config::{
     apply_lm_head_dtype_override, apply_model_default_num_drafts, cap_vocab_size_to_tokenizer,
     load_model_config, merge_sidecar_quant_config, resolve_model_dir,
 };
+#[cfg(feature = "cuda")]
+pub(super) use preseed::{registered_model, run_boot_preseed};
 #[cfg(feature = "cuda")]
 pub(super) use swap_target::{prepare_swap_target, target_key};
 pub(super) use kv_cache::{

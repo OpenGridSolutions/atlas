@@ -55,6 +55,16 @@ pub struct ActiveModel {
     pub model_hash: [u8; 32],
 }
 
+/// One entry of the boot-time model registry (Task 6 Phase 2): the boot
+/// model plus every preseeded model. Only registered models may be
+/// lazy-loaded at request time — an unregistered id is a 404, never an
+/// implicit safetensors init.
+#[derive(Clone)]
+pub struct RegisteredModel {
+    pub model_id: String,
+    pub model_hash: [u8; 32],
+}
+
 /// Shared hot-swap state. Constructed at boot when the weights arena is
 /// enabled; `None` in `AppState` means `--weights-arena-gb 0` and every
 /// /admin/models endpoint answers 503.
@@ -66,6 +76,13 @@ pub struct HotswapCtx {
     /// Model currently occupying the arena; replaced on a different-model
     /// swap together with `manifest`.
     pub active: parking_lot::RwLock<ActiveModel>,
+    /// Boot model + preseeded models, fixed at boot. Lazy request-time
+    /// swaps and the listing APIs only ever see these.
+    pub registry: Vec<RegisteredModel>,
+    /// True when a preseed list was configured: the request-time lazy-load
+    /// interceptor is active and unregistered model ids get a 404. False =
+    /// single-model behaviour, byte-identical to before Phase 3.
+    pub lazy_enabled: bool,
     pub snapshot_dir: PathBuf,
     state: AtomicU8,
     /// Serializes admin operations (snapshot/unload/load) against each other.
@@ -77,11 +94,14 @@ pub struct HotswapCtx {
 }
 
 impl HotswapCtx {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         arena: Arc<WeightsArena>,
         manifest: Vec<ArenaTensorEntry>,
         model_id: String,
         model_revision: &str,
+        registry: Vec<RegisteredModel>,
+        lazy_enabled: bool,
         snapshot_dir: PathBuf,
         scheduler: crate::scheduler::SchedulerHandle,
         model_ready: Arc<std::sync::atomic::AtomicBool>,
@@ -94,12 +114,19 @@ impl HotswapCtx {
                 model_id,
                 model_hash,
             }),
+            registry,
+            lazy_enabled,
             snapshot_dir,
             state: AtomicU8::new(SwapState::Running as u8),
             admin_lock: tokio::sync::Mutex::new(()),
             scheduler,
             model_ready,
         }
+    }
+
+    /// Registry entry for `model_id`, if registered.
+    pub fn registered(&self, model_id: &str) -> Option<&RegisteredModel> {
+        self.registry.iter().find(|m| m.model_id == model_id)
     }
 
     pub fn state(&self) -> SwapState {
