@@ -66,6 +66,83 @@ unsafe extern "C" {
     pub(super) fn cuEventRecord(hEvent: u64, hStream: u64) -> i32;
     pub(super) fn cuStreamWaitEvent(hStream: u64, hEvent: u64, flags: u32) -> i32;
     pub(super) fn cuEventDestroy_v2(hEvent: u64) -> i32;
+    // Host-memory registration + pointer introspection (weights-arena work,
+    // HOTSWAP_MVP_PLAN.md Task 1.5). Additive only.
+    pub(super) fn cuMemHostRegister_v2(p: *mut c_void, bytesize: usize, flags: u32) -> i32;
+    pub(super) fn cuMemHostUnregister(p: *mut c_void) -> i32;
+    pub(super) fn cuPointerGetAttribute(data: *mut c_void, attribute: u32, ptr: u64) -> i32;
+}
+
+// ── Host-memory registration + pointer introspection ──
+//
+// Public wrappers (same pattern as `cuda_free_memory_bytes`) so examples and
+// the weights-arena code can reach these without going through `GpuBackend`.
+// Errors carry the raw CUDA status: probes treat "CUDA does not know this
+// pointer" as data, not failure.
+
+/// `cuPointerGetAttribute` attribute ids (cuda.h `CUpointer_attribute`).
+pub mod pointer_attr {
+    /// `CU_POINTER_ATTRIBUTE_MEMORY_TYPE` — u32: 1=host, 2=device, 3=array, 4=unified.
+    pub const MEMORY_TYPE: u32 = 2;
+    /// `CU_POINTER_ATTRIBUTE_DEVICE_POINTER` — u64 device pointer for the allocation.
+    pub const DEVICE_POINTER: u32 = 3;
+    /// `CU_POINTER_ATTRIBUTE_IS_MANAGED` — u32 boolean.
+    pub const IS_MANAGED: u32 = 8;
+}
+
+/// `cuMemHostRegister` flags (cuda.h `CU_MEMHOSTREGISTER_*`).
+pub mod host_register_flags {
+    pub const PORTABLE: u32 = 1;
+    pub const DEVICEMAP: u32 = 2;
+    pub const READ_ONLY: u32 = 8;
+}
+
+/// Page-lock and register an existing host range (e.g. an anonymous mmap) with
+/// the CUDA driver via `cuMemHostRegister_v2`.
+///
+/// # Safety
+/// `ptr..ptr+bytes` must be a live, page-aligned host mapping that stays
+/// mapped until [`cuda_host_unregister`] is called on the same `ptr`.
+pub unsafe fn cuda_host_register(ptr: *mut c_void, bytes: usize, flags: u32) -> Result<()> {
+    let status = unsafe { cuMemHostRegister_v2(ptr, bytes, flags) };
+    if status != 0 {
+        bail!("cuMemHostRegister_v2 failed: status {status}, ptr {ptr:p}, {bytes} bytes, flags {flags:#x}");
+    }
+    Ok(())
+}
+
+/// Undo [`cuda_host_register`].
+///
+/// # Safety
+/// `ptr` must be the exact base previously registered and still mapped.
+pub unsafe fn cuda_host_unregister(ptr: *mut c_void) -> Result<()> {
+    let status = unsafe { cuMemHostUnregister(ptr) };
+    if status != 0 {
+        bail!("cuMemHostUnregister failed: status {status}, ptr {ptr:p}");
+    }
+    Ok(())
+}
+
+/// Query a 32-bit `cuPointerGetAttribute` value (see [`pointer_attr`]).
+pub fn cuda_pointer_attribute_u32(attribute: u32, ptr: u64) -> Result<u32> {
+    let mut data: u32 = 0;
+    let status =
+        unsafe { cuPointerGetAttribute(&mut data as *mut u32 as *mut c_void, attribute, ptr) };
+    if status != 0 {
+        bail!("cuPointerGetAttribute({attribute}) failed: status {status}, ptr {ptr:#x}");
+    }
+    Ok(data)
+}
+
+/// Query a 64-bit `cuPointerGetAttribute` value (see [`pointer_attr`]).
+pub fn cuda_pointer_attribute_u64(attribute: u32, ptr: u64) -> Result<u64> {
+    let mut data: u64 = 0;
+    let status =
+        unsafe { cuPointerGetAttribute(&mut data as *mut u64 as *mut c_void, attribute, ptr) };
+    if status != 0 {
+        bail!("cuPointerGetAttribute({attribute}) failed: status {status}, ptr {ptr:#x}");
+    }
+    Ok(data)
 }
 
 /// Production GPU backend wrapping AtlasRegistry + raw CUDA driver API.

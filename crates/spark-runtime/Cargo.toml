@@ -23,6 +23,16 @@ name = "bench_fast_weights"
 path = "benches/bench_fast_weights.rs"
 required-features = ["test-utils"]
 
+# HOTSWAP Task 1.5 spike (permanent per plan Task 6): proves the GPU can
+# read/write an anonymous mmap via ATS with the host VA as a kernel arg,
+# with and without cuMemHostRegister_v2, and reports bandwidth vs a
+# cuMemAlloc baseline. Needs the GPU:
+#   cargo run --release -p spark-runtime --example arena_ats_probe
+[[example]]
+name = "arena_ats_probe"
+path = "examples/arena_ats_probe.rs"
+required-features = ["cuda"]
+
 # Standalone smoke binary for the metal backend. Loads layer 3 of
 # `mlx-community/Qwen3.5-4B-MLX-8bit` from `~/models/...` (override
 # via `$ATLAS_MLX_MODEL_DIR`) and runs a single full-attention
