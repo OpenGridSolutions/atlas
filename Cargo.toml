@@ -74,6 +74,12 @@ anyhow = "1"
 # overhead — just standardizes the API across the workspace.
 parking_lot = "0.12"
 
+# Lock-free atomic Arc swapping — the per-model runtime state (tokenizer,
+# chat template, sampling defaults) is read on every request (hot) and
+# replaced only at model hot-swap time (rare). ArcSwap::load is a plain
+# atomic read; handlers take one consistent snapshot per request.
+arc-swap = "1"
+
 # Workspace crates
 # atlas-core: `default-features = false` so each consumer crate forwards the
 # right backend feature explicitly (cuda or metal). Without this, every

@@ -64,7 +64,7 @@ use clap::Parser;
 use crate::cli::{Cli, Command};
 use crate::main_modules::serve;
 
-pub(crate) use crate::main_modules::AppState;
+pub(crate) use crate::main_modules::{AppState, ModelRuntime};
 
 /// Re-export for convenience in api.rs / anthropic.rs.
 pub type ModelBehavior = atlas_kernels::ModelBehavior;

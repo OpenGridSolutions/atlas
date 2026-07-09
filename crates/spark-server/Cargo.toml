@@ -54,6 +54,7 @@ tokio-stream = "0.1"
 futures = "0.3"
 rayon = "1.12"
 parking_lot = { workspace = true }
+arc-swap = { workspace = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokenizers = { version = "0.23", default-features = false, features = ["onig"] }

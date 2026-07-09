@@ -13,16 +13,20 @@ use crate::{
     tool_parser,
 };
 
-/// Shared application state accessible from all HTTP handlers.
-pub struct AppState {
+/// Every piece of per-model CPU state a request handler reads. Swapped
+/// atomically at model hot-swap time (Task 6 Phase 1.1): handlers take ONE
+/// snapshot per request via [`AppState::runtime`] so a swap mid-request can
+/// never mix model A's tokenizer with model B's masks or defaults.
+///
+/// CLI-derived, model-independent values (max_seq_len, tool_max_tokens,
+/// vision_max_pixels, auto_compact_threshold, request_timeout, …) stay on
+/// [`AppState`] — move a field here only if a different model would need a
+/// different value.
+pub struct ModelRuntime {
     pub tokenizer: ChatTokenizer,
     pub model_name: String,
-    pub max_seq_len: usize,
-    pub request_tx: mpsc::Sender<InferenceRequest>,
     /// Vision config for VL models — None for text-only models.
     pub vision_config: Option<atlas_core::config::VisionConfig>,
-    /// Optional vLLM-style image area cap applied before vision patching.
-    pub vision_max_pixels: Option<usize>,
     /// Default sampling temperature from generation_config.json.
     pub default_temperature: f32,
     /// Default top-k from generation_config.json.
@@ -51,25 +55,41 @@ pub struct AppState {
     /// detection Atlas would never enforce `max_thinking_budget` and
     /// the model can ramble for the full `max_tokens`.
     pub think_start_token_id: Option<u32>,
-    /// Max output tokens for tool-calling requests (CLI --tool-max-tokens).
-    pub tool_max_tokens: usize,
-    /// Model-specific sampling presets from MODEL.toml (per-category defaults).
+    /// Model-specific sampling presets from MODEL.toml (per-category
+    /// defaults). Per kernel target — and the target is selected per
+    /// model, so these swap with the model.
     pub sampling_presets: atlas_kernels::SamplingPresets,
     /// Token ID for `<tool_call>` — used for logit bias boost when tools are active.
     pub tool_call_start_token_id: Option<u32>,
+    /// Effective context length for agentic tasks (from MODEL.toml).
+    /// Compaction triggers when prompt exceeds 50% of this value.
+    /// 0 = use max_seq_len instead.
+    pub effective_context: usize,
+    /// Model-specific behavior overrides from MODEL.toml `[behavior]`
+    /// (with CLI overlays applied). Embedded at build time via atlas-kernels.
+    pub behavior: atlas_kernels::ModelBehavior,
+}
+
+/// Shared application state accessible from all HTTP handlers.
+pub struct AppState {
+    /// Per-model runtime state (tokenizer, chat template, sampling
+    /// defaults, …), replaced atomically on model hot-swap. The read
+    /// path is hot — `ArcSwap::load_full` is lock-free. Read it ONCE
+    /// per request ([`AppState::runtime`]) and thread the snapshot
+    /// through the request's phases.
+    pub runtime: arc_swap::ArcSwap<ModelRuntime>,
+    pub max_seq_len: usize,
+    pub request_tx: mpsc::Sender<InferenceRequest>,
+    /// Optional vLLM-style image area cap applied before vision patching.
+    pub vision_max_pixels: Option<usize>,
+    /// Max output tokens for tool-calling requests (CLI --tool-max-tokens).
+    pub tool_max_tokens: usize,
     /// Auto-compact threshold (fraction of max_seq_len). None = disabled.
     pub auto_compact_threshold: Option<f32>,
     /// Readiness flag: true after model is loaded and scheduler is running.
     pub model_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
-    /// Effective context length for agentic tasks (from MODEL.toml).
-    /// Compaction triggers when prompt exceeds 50% of this value.
-    /// 0 = use max_seq_len instead.
-    pub effective_context: usize,
-    /// Model-specific behavior overrides from MODEL.toml `[behavior]`.
-    /// Embedded at build time via atlas-kernels.
-    pub behavior: atlas_kernels::ModelBehavior,
     /// Global kill switch for thinking / reasoning output. When true,
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
@@ -97,6 +117,15 @@ pub struct AppState {
     /// Hot-swap context (weights arena + snapshot/unload/load state).
     /// `None` ⇒ `--weights-arena-gb 0`; /admin/models endpoints answer 503.
     pub hotswap: Option<Arc<crate::main_modules::hotswap::HotswapCtx>>,
+}
+
+impl AppState {
+    /// One consistent per-model snapshot for this request. Take it once at
+    /// handler entry and pass it down — re-loading mid-request could
+    /// observe a hot-swap and mix two models' tokenizers/defaults.
+    pub fn runtime(&self) -> Arc<ModelRuntime> {
+        self.runtime.load_full()
+    }
 }
 
 /// Re-export for convenience in api.rs / anthropic.rs.

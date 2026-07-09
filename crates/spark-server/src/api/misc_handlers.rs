@@ -130,7 +130,8 @@ pub async fn metrics_handler() -> impl IntoResponse {
 /// GET /health — readiness probe (503 while model is loading).
 pub async fn health(State(state): State<Arc<AppState>>) -> Response {
     if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
-        Json(serde_json::json!({"status": "ready", "model": &state.model_name})).into_response()
+        Json(serde_json::json!({"status": "ready", "model": &state.runtime().model_name}))
+            .into_response()
     } else {
         (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -160,8 +161,9 @@ pub async fn tokenize(
         }
     };
 
+    let rt = state.runtime();
     let tokens = if let Some(ref prompt) = req.prompt {
-        match state.tokenizer.encode(prompt) {
+        match rt.tokenizer.encode(prompt) {
             Ok(t) => t,
             Err(e) => {
                 return openai_error_response(
@@ -175,11 +177,11 @@ pub async fn tokenize(
             .iter()
             .map(|m| serde_json::json!({"role": m.role, "content": m.content.text}))
             .collect();
-        match state.tokenizer.apply_chat_template_jinja(
+        match rt.tokenizer.apply_chat_template_jinja(
             &json_messages,
             None,
             false,
-            state.behavior.disable_tool_steering,
+            rt.behavior.disable_tool_steering,
         ) {
             Ok(t) => t,
             Err(e) => {
@@ -220,7 +222,7 @@ pub async fn detokenize(
             );
         }
     };
-    match state.tokenizer.decode(&req.tokens) {
+    match state.runtime().tokenizer.decode(&req.tokens) {
         Ok(text) => Json(serde_json::json!({"text": text})).into_response(),
         Err(e) => (
             StatusCode::BAD_REQUEST,

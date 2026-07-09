@@ -9,8 +9,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use std::sync::Arc;
 
-use crate::AppState;
 use crate::openai::ChatCompletionRequest;
+use crate::{AppState, ModelRuntime};
 use crate::tool_parser;
 
 use super::super::compact::openai_error_response;
@@ -61,6 +61,7 @@ fn tool_choice_required_for_parser(
 #[allow(clippy::result_large_err)]
 pub(super) fn build_sampling(
     state: &Arc<AppState>,
+    rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     enable_thinking: bool,
     tools_active: bool,
@@ -69,11 +70,11 @@ pub(super) fn build_sampling(
 ) -> Result<SamplingSetup, Response> {
     // Preset selection.
     let preset = if tools_active {
-        &state.sampling_presets.tools
+        &rt.sampling_presets.tools
     } else if enable_thinking {
-        &state.sampling_presets.thinking_text
+        &rt.sampling_presets.thinking_text
     } else {
-        &state.sampling_presets.non_thinking
+        &rt.sampling_presets.non_thinking
     };
     // ATLAS_FORCE_TEMP_ZERO=1 — diagnostic override that forces fully greedy
     // deterministic decoding, ignoring client params AND MODEL.toml presets.
@@ -86,7 +87,7 @@ pub(super) fn build_sampling(
         .unwrap_or(false);
 
     // Core sampling (temp/top_k/top_p) defaults to the model's shipped
-    // generation_config.json (state.default_*) — matching vLLM and the model
+    // generation_config.json (rt.default_*) — matching vLLM and the model
     // author's recommended config — instead of the hand-curated MODEL.toml
     // [sampling] presets. The lower preset temps (e.g. Holo thinking/tools =
     // 0.6 vs generation_config 1.0) made the model over-commit to tool calls
@@ -97,27 +98,27 @@ pub(super) fn build_sampling(
     let temperature = if force_temp_zero {
         0.0
     } else {
-        req.temperature.unwrap_or(state.default_temperature)
+        req.temperature.unwrap_or(rt.default_temperature)
     };
     let top_k = if force_temp_zero {
         0
     } else {
-        req.top_k.unwrap_or(state.default_top_k)
+        req.top_k.unwrap_or(rt.default_top_k)
     };
     let top_p = if force_temp_zero {
         1.0
     } else {
-        req.top_p.unwrap_or(state.default_top_p)
+        req.top_p.unwrap_or(rt.default_top_p)
     };
     let top_n_sigma = if force_temp_zero {
         0.0
     } else {
-        req.top_n_sigma.unwrap_or(state.default_top_n_sigma)
+        req.top_n_sigma.unwrap_or(rt.default_top_n_sigma)
     };
     let min_p = if force_temp_zero {
         0.0
     } else {
-        req.min_p.unwrap_or(state.default_min_p)
+        req.min_p.unwrap_or(rt.default_min_p)
     };
     let repetition_penalty = if force_temp_zero {
         1.0
@@ -141,13 +142,13 @@ pub(super) fn build_sampling(
     // into repetition loops; measured 2026-06-07: 0.05 → 4 watchdog fires
     // become 0). 0.0 = disabled (no-op). Skipped under force_temp_zero (that
     // diagnostic override deliberately drives greedy).
-    let min_p = if !force_temp_zero && state.behavior.min_p_floor > 0.0 {
-        min_p.max(state.behavior.min_p_floor)
+    let min_p = if !force_temp_zero && rt.behavior.min_p_floor > 0.0 {
+        min_p.max(rt.behavior.min_p_floor)
     } else {
         min_p
     };
-    let temperature = if !force_temp_zero && state.behavior.temperature_max > 0.0 {
-        temperature.min(state.behavior.temperature_max)
+    let temperature = if !force_temp_zero && rt.behavior.temperature_max > 0.0 {
+        temperature.min(rt.behavior.temperature_max)
     } else {
         temperature
     };
@@ -194,7 +195,7 @@ pub(super) fn build_sampling(
     if !force_temp_zero
         && tools_active
         && !suppress_tool_call
-        && let Some(tc_id) = state.tool_call_start_token_id
+        && let Some(tc_id) = rt.tool_call_start_token_id
     {
         let bias = match tool_call_repeat_count {
             0 | 1 => 3.0,
@@ -234,13 +235,13 @@ pub(super) fn build_sampling(
     // parity: generation continues past a closed call until natural EOS so
     // the model can emit parallel calls; the scheduler's tool watchdogs
     // (post-completion open cap, prose budget, loop detectors) bound run-on.
-    let stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
+    let stop_tokens = tokenize_stop_sequences(&rt.tokenizer, &req.stop);
 
     // Tool-choice + parser-driven required mode.
     let tool_choice_required = tool_choice_required_for_parser(
         tools_active,
         req.tool_choice.as_ref(),
-        state.tool_call_parser.as_ref().map(|p| p.name()),
+        rt.tool_call_parser.as_ref().map(|p| p.name()),
     );
 
     // response_format + tools coexistence.
@@ -276,7 +277,7 @@ pub(super) fn build_sampling(
             }
             crate::openai::ResponseFormat::Text => None,
         }
-    } else if tools_active && state.behavior.disable_tool_grammar {
+    } else if tools_active && rt.behavior.disable_tool_grammar {
         // Structure-snowballing escape hatch (arXiv:2604.06066): this
         // model tool-calls more reliably unconstrained. Tool calls are
         // still parsed from the output — just not grammar-enforced.
@@ -290,7 +291,7 @@ pub(super) fn build_sampling(
                  the user/system message for best results)."
             );
         }
-        let parser = state.tool_call_parser.as_ref().map(std::sync::Arc::clone);
+        let parser = rt.tool_call_parser.as_ref().map(std::sync::Arc::clone);
         let mut tools = req.tools.as_ref().cloned().unwrap_or_default();
         if let Some(tool_parser::ToolChoice::Specific { ref function }) = req.tool_choice {
             tools.retain(|t| t.function.name == function.name);

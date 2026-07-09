@@ -757,13 +757,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(max_pixels) = vision_max_pixels {
         tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
     }
-    let state = Arc::new(AppState {
+    // Per-model runtime snapshot (Task 6 Phase 1.1) — everything a
+    // different model would need a different value for. Swapped atomically
+    // by the hot-swap handover; handlers read one snapshot per request.
+    let model_runtime = Arc::new(crate::main_modules::ModelRuntime {
         tokenizer,
         model_name,
-        max_seq_len: args.max_seq_len,
-        request_tx,
         vision_config: config.vision.clone(),
-        vision_max_pixels,
         default_temperature,
         default_top_k,
         default_top_p,
@@ -773,12 +773,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         reasoning_parser: reasoning_parser_box,
         think_end_token_id: think_end_token,
         think_start_token_id: think_start_token,
-        tool_max_tokens: args.tool_max_tokens,
         sampling_presets,
         tool_call_start_token_id: tool_call_start_token,
-        auto_compact_threshold: args.auto_compact,
-        model_ready: model_ready.clone(),
-        request_timeout: args.request_timeout,
         // Behavior and effective_context from MODEL.toml, embedded at build time.
         effective_context: 0, // TODO: embed effective_context in TargetPtxSet
         behavior: {
@@ -791,6 +787,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             }
             b
         },
+    });
+    let state = Arc::new(AppState {
+        runtime: arc_swap::ArcSwap::new(model_runtime),
+        max_seq_len: args.max_seq_len,
+        request_tx,
+        vision_max_pixels,
+        tool_max_tokens: args.tool_max_tokens,
+        auto_compact_threshold: args.auto_compact,
+        model_ready: model_ready.clone(),
+        request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,
         default_chat_template_kwargs: args
             .default_chat_template_kwargs

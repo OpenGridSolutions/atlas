@@ -10,8 +10,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use std::sync::Arc;
 
-use crate::AppState;
 use crate::openai::ChatCompletionRequest;
+use crate::{AppState, ModelRuntime};
 
 use super::super::compact::{compact_messages, openai_error_response};
 use super::msg_entry::MsgEntry;
@@ -29,6 +29,7 @@ pub(super) struct TemplateOut {
 #[allow(clippy::result_large_err)]
 pub(super) fn render_template(
     state: &Arc<AppState>,
+    rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     messages: &[MsgEntry],
     image_pad_counts: &[usize],
@@ -96,13 +97,13 @@ pub(super) fn render_template(
         .map(|t| t > 0.0)
         .unwrap_or(false);
     let json_messages = if auto_compact_active && json_messages.len() > 4 {
-        let trial_tokens = state
+        let trial_tokens = rt
             .tokenizer
             .apply_chat_template_openai(
                 &json_messages,
                 jinja_tools.as_deref(),
                 template_thinking,
-                state.behavior.disable_tool_steering,
+                rt.behavior.disable_tool_steering,
             )
             .map(|t| t.len())
             .unwrap_or(0);
@@ -115,11 +116,11 @@ pub(super) fn render_template(
         json_messages
     };
 
-    let prompt_tokens = match state.tokenizer.apply_chat_template_openai(
+    let prompt_tokens = match rt.tokenizer.apply_chat_template_openai(
         &json_messages,
         jinja_tools.as_deref(),
         template_thinking,
-        state.behavior.disable_tool_steering,
+        rt.behavior.disable_tool_steering,
     ) {
         Ok(t) => t,
         Err(e) => {
@@ -132,18 +133,17 @@ pub(super) fn render_template(
 
     // Expand image pads when needed.
     let prompt_tokens = if image_pad_counts.iter().any(|&c| c > 1) {
-        state
-            .tokenizer
+        rt.tokenizer
             .expand_image_pads(prompt_tokens, image_pad_counts)
     } else {
         prompt_tokens
     };
 
     // Template-forced thinking detection.
-    let (enable_thinking, thinking_budget) = if let Some(think_start) = state.think_start_token_id {
+    let (enable_thinking, thinking_budget) = if let Some(think_start) = rt.think_start_token_id {
         let tail = &prompt_tokens[prompt_tokens.len().saturating_sub(8)..];
         let last_start = tail.iter().rposition(|t| *t == think_start);
-        let has_unclosed_think = match (last_start, state.think_end_token_id) {
+        let has_unclosed_think = match (last_start, rt.think_end_token_id) {
             (Some(si), Some(end_tok)) => !tail[si + 1..].contains(&end_tok),
             (Some(_), None) => true,
             (None, _) => false,
@@ -152,9 +152,9 @@ pub(super) fn render_template(
             tracing::info!(
                 "Template-forced thinking detected (unclosed \\<think\\> in prompt tail) — \
                  overriding enable_thinking=true with budget={}",
-                state.behavior.max_thinking_budget,
+                rt.behavior.max_thinking_budget,
             );
-            (true, Some(state.behavior.max_thinking_budget))
+            (true, Some(rt.behavior.max_thinking_budget))
         } else {
             (enable_thinking, thinking_budget)
         }

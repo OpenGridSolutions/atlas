@@ -35,9 +35,9 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::AppState;
 use crate::openai::ChatCompletionChunk;
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 use super::inference_types::{GrammarSpec, InferenceRequest, StreamEvent};
 
@@ -47,6 +47,7 @@ use state::StreamState;
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn chat_completions_stream(
     state: Arc<AppState>,
+    rt: Arc<ModelRuntime>,
     prompt_tokens: Vec<u32>,
     session_hash: u64,
     image_pixels: Vec<(Vec<f32>, usize, usize)>,
@@ -160,7 +161,7 @@ pub(crate) async fn chat_completions_stream(
     })?;
 
     let chunk_id = crate::openai::new_chunk_id();
-    let model_name = state.model_name.clone();
+    let model_name = rt.model_name.clone();
 
     // First chunk: role announcement
     let role_chunk = ChatCompletionChunk::role_chunk(&model_name, &chunk_id);
@@ -170,7 +171,7 @@ pub(crate) async fn chat_completions_stream(
     // setup. `'static` slices so we borrow by reference throughout the
     // stream without cloning. If no parser is active, the sanitizer runs
     // in pass-through mode via the fast-path in `sanitize_content_chunk`.
-    let leak_markers: tool_parser::LeakMarkers = state
+    let leak_markers: tool_parser::LeakMarkers = rt
         .tool_call_parser
         .as_ref()
         .map(|p| p.leak_markers())
@@ -200,6 +201,7 @@ pub(crate) async fn chat_completions_stream(
 
     let ctx = StreamCtx {
         state: state.clone(),
+        rt: rt.clone(),
         model: model_name.clone(),
         id: chunk_id.clone(),
         prompt_len,
@@ -209,7 +211,7 @@ pub(crate) async fn chat_completions_stream(
         stop_strings,
         stop_string_buffer_len,
         leak_markers,
-        wants_typed_arguments: state
+        wants_typed_arguments: rt
             .tool_call_parser
             .as_ref()
             .is_some_and(|p| p.wants_typed_arguments()),

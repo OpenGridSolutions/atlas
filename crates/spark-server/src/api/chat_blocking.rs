@@ -13,8 +13,8 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 
-use crate::AppState;
 use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
+use crate::{AppState, ModelRuntime};
 use crate::tool_parser;
 
 use super::compact::openai_error_response;
@@ -23,6 +23,8 @@ use super::inference_types::{GrammarSpec, InferenceRequest};
 
 pub(super) struct BlockingPathArgs {
     pub state: Arc<AppState>,
+    /// Per-model snapshot taken at handler entry (hot-swap consistency).
+    pub rt: Arc<ModelRuntime>,
     pub req: ChatCompletionRequest,
     pub req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     pub dump_seq: Option<u64>,
@@ -59,6 +61,7 @@ pub(super) struct BlockingPathArgs {
 pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
     let BlockingPathArgs {
         state,
+        rt,
         req,
         req_ctx,
         dump_seq,
@@ -184,11 +187,11 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         total_cached_prompt_tokens = total_cached_prompt_tokens.max(response.cached_prompt_tokens);
 
         let (reasoning_content_i, output_text_i) =
-            decode_response_text(&state, &response, enable_thinking);
+            decode_response_text(&rt, &response, enable_thinking);
         let output_text_i = strip_stop_sequences(output_text_i, &req.stop);
 
         let (message, finish_reason_i) = build_choice_message(
-            &state,
+            &rt,
             &req,
             &response,
             reasoning_content_i,
@@ -203,12 +206,13 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             index: choice_idx,
             message,
             finish_reason: finish_reason_i,
-            logprobs: build_logprobs(&state, &response),
+            logprobs: build_logprobs(&rt, &response),
         });
     }
 
     finalize_response(
         state,
+        rt,
         req,
         req_ctx,
         dump_seq,
@@ -230,11 +234,11 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
 /// inside `<think>...</think>` when it ignores a closed-thinking
 /// prefill (issue #40).
 fn decode_response_text(
-    state: &AppState,
+    rt: &ModelRuntime,
     response: &super::inference_types::InferenceResponse,
     enable_thinking: bool,
 ) -> (Option<String>, String) {
-    if let Some(think_tok) = state.think_end_token_id {
+    if let Some(think_tok) = rt.think_end_token_id {
         let last_think_pos = if enable_thinking {
             response.output_tokens.iter().rposition(|&t| t == think_tok)
         } else {
@@ -244,15 +248,14 @@ fn decode_response_text(
             let thinking_tokens = &response.output_tokens[..pos];
             let content_tokens = &response.output_tokens[pos + 1..];
             let reasoning = if !thinking_tokens.is_empty() {
-                state
-                    .tokenizer
+                rt.tokenizer
                     .decode(thinking_tokens)
                     .ok()
                     .filter(|s| !s.trim().is_empty())
             } else {
                 None
             };
-            let content = state
+            let content = rt
                 .tokenizer
                 .decode(content_tokens)
                 .unwrap_or_default()
@@ -260,17 +263,17 @@ fn decode_response_text(
                 .to_string();
             return (reasoning, content);
         }
-        let text = state
+        let text = rt
             .tokenizer
             .decode(&response.output_tokens)
             .unwrap_or_default();
         (None, text)
     } else {
-        let text = state
+        let text = rt
             .tokenizer
             .decode(&response.output_tokens)
             .unwrap_or_default();
-        extract_thinking(&text, enable_thinking, state.reasoning_parser.as_deref())
+        extract_thinking(&text, enable_thinking, rt.reasoning_parser.as_deref())
     }
 }
 
@@ -279,7 +282,7 @@ fn decode_response_text(
 /// here.
 #[allow(clippy::too_many_arguments)]
 async fn build_choice_message(
-    state: &AppState,
+    rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     response: &super::inference_types::InferenceResponse,
     reasoning_content_i: Option<String>,
@@ -335,7 +338,7 @@ async fn build_choice_message(
         if !tool_calls_i.is_empty() {
             let tools_ref = req.tools.as_ref().cloned().unwrap_or_default();
             tool_parser::backfill_required_params(&mut tool_calls_i, &tools_ref);
-            if state
+            if rt
                 .tool_call_parser
                 .as_ref()
                 .is_some_and(|p| p.wants_typed_arguments())
@@ -406,7 +409,7 @@ async fn build_choice_message(
 
 /// Convert internal logprobs to OpenAI `ChoiceLogprobs` format.
 fn build_logprobs(
-    state: &AppState,
+    rt: &ModelRuntime,
     response: &super::inference_types::InferenceResponse,
 ) -> Option<crate::openai::ChoiceLogprobs> {
     if response.logprobs.is_empty() {
@@ -417,7 +420,7 @@ fn build_logprobs(
             .logprobs
             .iter()
             .map(|lp| {
-                let token_str = state.tokenizer.decode(&[lp.token_id]).unwrap_or_default();
+                let token_str = rt.tokenizer.decode(&[lp.token_id]).unwrap_or_default();
                 crate::openai::TokenLogprobInfo {
                     token: token_str,
                     logprob: lp.logprob,
@@ -426,7 +429,7 @@ fn build_logprobs(
                         .top
                         .iter()
                         .map(|&(tid, lp_val)| crate::openai::TopLogprob {
-                            token: state.tokenizer.decode(&[tid]).unwrap_or_default(),
+                            token: rt.tokenizer.decode(&[tid]).unwrap_or_default(),
                             logprob: lp_val,
                             bytes: None,
                         })
@@ -442,6 +445,7 @@ fn build_logprobs(
 #[allow(clippy::too_many_arguments)]
 fn finalize_response(
     state: Arc<AppState>,
+    rt: Arc<ModelRuntime>,
     req: ChatCompletionRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     dump_seq: Option<u64>,
@@ -482,7 +486,7 @@ fn finalize_response(
         id: completion_id.clone(),
         object: "chat.completion".to_string(),
         created: created_at,
-        model: state.model_name.clone(),
+        model: rt.model_name.clone(),
         system_fingerprint: Some("fp_atlas".to_string()),
         choices: all_choices,
         usage: usage.clone(),
@@ -506,7 +510,7 @@ fn finalize_response(
             .insert(crate::response_store::StoredEntry {
                 id: completion_id,
                 kind: crate::response_store::StoredKind::ChatCompletion,
-                model: state.model_name.clone(),
+                model: rt.model_name.clone(),
                 created_at,
                 messages: Vec::new(),
                 body,

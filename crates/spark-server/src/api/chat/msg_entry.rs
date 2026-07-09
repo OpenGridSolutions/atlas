@@ -12,7 +12,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use std::sync::Arc;
 
-use crate::AppState;
+use crate::{AppState, ModelRuntime};
 use crate::openai::ChatCompletionRequest;
 
 use super::super::compact::openai_error_response;
@@ -54,6 +54,7 @@ pub(super) struct BuildOut {
 #[allow(clippy::result_large_err)]
 pub(super) fn build_msg_entries(
     state: &Arc<AppState>,
+    rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     tools_active: bool,
 ) -> Result<BuildOut, Response> {
@@ -237,7 +238,7 @@ pub(super) fn build_msg_entries(
     // Preprocess images if a vision config is available.
     let mut image_pixels: Vec<(Vec<f32>, usize, usize)> = Vec::new();
     if !all_images.is_empty()
-        && let Some(vcfg) = &state.vision_config
+        && let Some(vcfg) = &rt.vision_config
     {
         for (idx, uri) in all_images.iter().enumerate() {
             match spark_model::vision_preprocess::preprocess_image_with_max_pixels(

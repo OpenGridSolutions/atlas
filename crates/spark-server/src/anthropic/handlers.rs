@@ -189,8 +189,10 @@ pub async fn count_tokens(
         }
     };
 
+    // One consistent per-model snapshot for this request (hot-swap safety).
+    let rt = state.runtime();
     let tools_active =
-        state.tool_call_parser.is_some() && req.tools.as_ref().is_some_and(|t| !t.is_empty());
+        rt.tool_call_parser.is_some() && req.tools.as_ref().is_some_and(|t| !t.is_empty());
     let enable_thinking = if state.disable_thinking {
         false
     } else {
@@ -199,12 +201,12 @@ pub async fn count_tokens(
         let base = match from_body {
             Some("enabled") => true,
             Some("disabled") => false,
-            _ => state.behavior.thinking_default,
+            _ => rt.behavior.thinking_default,
         };
         // MODEL.toml `thinking_in_tools=false` is the DEFAULT for tool-active
         // turns — an explicit `thinking.type="enabled"` from the client still
         // opts in. See api.rs for rationale.
-        if tools_active && !state.behavior.thinking_in_tools && !explicit {
+        if tools_active && !rt.behavior.thinking_in_tools && !explicit {
             false
         } else {
             base
@@ -247,7 +249,7 @@ pub async fn count_tokens(
 
         // Mirror the same transformations as the real /v1/messages path
         // so the token count matches what actually gets sent to the model.
-        if role == "assistant" && state.tokenizer.supports_thinking() {
+        if role == "assistant" && rt.tokenizer.supports_thinking() {
             text = format!("<think>\n\n</think>\n\n{text}");
         }
         let tool_calls_json =
@@ -331,11 +333,11 @@ pub async fn count_tokens(
         None
     };
 
-    let input_tokens = match state.tokenizer.apply_chat_template_jinja(
+    let input_tokens = match rt.tokenizer.apply_chat_template_jinja(
         &json_messages,
         jinja_tools.as_deref(),
         enable_thinking,
-        state.behavior.disable_tool_steering,
+        rt.behavior.disable_tool_steering,
     ) {
         Ok(t) => t.len(),
         Err(_) => 0,

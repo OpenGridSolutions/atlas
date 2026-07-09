@@ -87,13 +87,17 @@ pub(crate) async fn chat_completions_inner(
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
 
+    // One consistent per-model snapshot for this whole request (Task 6
+    // Phase 1.1) — a hot-swap mid-request must not mix two models' state.
+    let rt = state.runtime();
+
     // ── Input validation + cross-turn F-feature guards ──
     if let Err(resp) = super::chat_phases::validate_input(&req) {
         return resp;
     }
 
     // Tool-active gating.
-    let tools_active = state.tool_call_parser.is_some()
+    let tools_active = rt.tool_call_parser.is_some()
         && req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
@@ -122,7 +126,7 @@ pub(crate) async fn chat_completions_inner(
     // prompt ("you MAY call one or more functions... don't make assumptions"),
     // which the GDN model needs to correctly DECLINE on irrelevance prompts. With
     // it (and compact tool-JSON) hallucination returns to ~96 (vs 30/64 without).
-    if tools_active && let Some(ref parser) = state.tool_call_parser {
+    if tools_active && let Some(ref parser) = rt.tool_call_parser {
         let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
         let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
         let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
@@ -156,7 +160,7 @@ pub(crate) async fn chat_completions_inner(
         cwd_hint,
         image_pixels,
         image_pad_counts,
-    } = match msg_entry::build_msg_entries(&state, &req, tools_active) {
+    } = match msg_entry::build_msg_entries(&state, &rt, &req, tools_active) {
         Ok(o) => o,
         Err(resp) => return resp,
     };
@@ -174,7 +178,8 @@ pub(crate) async fn chat_completions_inner(
     }
 
     // ── Phase 2: thinking resolution (pre-template) ─────────────
-    let (enable_thinking, thinking_budget) = thinking::resolve_thinking(&state, &req, tools_active);
+    let (enable_thinking, thinking_budget) =
+        thinking::resolve_thinking(&state, &rt, &req, tools_active);
 
     // ── Phase 4: generic loop / spinning detection + task pin ───
     let loop_detect::LoopDetectOut {
@@ -189,6 +194,7 @@ pub(crate) async fn chat_completions_inner(
         thinking_budget,
     } = match template::render_template(
         &state,
+        &rt,
         &req,
         &messages,
         &image_pad_counts,
@@ -240,6 +246,7 @@ pub(crate) async fn chat_completions_inner(
         top_logprobs,
     } = match sampling_setup::build_sampling(
         &state,
+        &rt,
         &req,
         enable_thinking,
         tools_active,
@@ -254,6 +261,7 @@ pub(crate) async fn chat_completions_inner(
     if req.stream {
         return super::chat_stream_dispatch::dispatch_streaming(
             state,
+            rt,
             &req,
             req_ctx,
             dump_seq,
@@ -290,6 +298,7 @@ pub(crate) async fn chat_completions_inner(
 
     super::chat_blocking::run_blocking_path(super::chat_blocking::BlockingPathArgs {
         state,
+        rt,
         req,
         req_ctx,
         dump_seq,

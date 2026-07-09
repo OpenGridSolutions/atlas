@@ -119,7 +119,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
 
     // ── Thinking-phase: token-ID based </think> detection ────────────
     if !state.thinking_done {
-        if let Some(end_id) = ctx.state.think_end_token_id
+        if let Some(end_id) = ctx.rt.think_end_token_id
             && tok == end_id
         {
             state.thinking_done = true;
@@ -131,7 +131,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             // re-emitting the full text here would double it.
             if ctx.enable_thinking && state.all_toks.len() > 1 {
                 let full = ctx
-                    .state
+                    .rt
                     .tokenizer
                     .decode(&state.all_toks[..state.all_toks.len() - 1])
                     .unwrap_or_default();
@@ -190,7 +190,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
             }
             // Open thinking: emit as reasoning_content
             let full = ctx
-                .state
+                .rt
                 .tokenizer
                 .decode(&state.all_toks)
                 .unwrap_or_default();
@@ -352,7 +352,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
     // reset at `</think>` (line 147), so this slice references the
     // post-thinking content only.
     let full = ctx
-        .state
+        .rt
         .tokenizer
         .decode(&state.all_toks)
         .unwrap_or_default();

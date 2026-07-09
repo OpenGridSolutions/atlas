@@ -10,24 +10,25 @@
 
 use std::sync::Arc;
 
-use crate::AppState;
 use crate::openai::ChatCompletionRequest;
+use crate::{AppState, ModelRuntime};
 
 pub(super) fn resolve_thinking(
     state: &Arc<AppState>,
+    rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     tools_active: bool,
 ) -> (bool, Option<u32>) {
     if state.disable_thinking {
         return (false, None);
     }
-    let (et, tb) = req.resolve_thinking(state.behavior.thinking_default);
+    let (et, tb) = req.resolve_thinking(rt.behavior.thinking_default);
     let mt = req.max_tokens as u32;
-    let max_budget = state.behavior.max_thinking_budget;
+    let max_budget = rt.behavior.max_thinking_budget;
     // `thinking_in_tools=false` is the MODEL.toml DEFAULT for tool-
     // active turns: it suppresses thinking when the client is silent.
     let et = if tools_active
-        && !state.behavior.thinking_in_tools
+        && !rt.behavior.thinking_in_tools
         && !req.thinking_explicitly_requested()
     {
         false

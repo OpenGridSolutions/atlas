@@ -11,7 +11,7 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::AppState;
+use crate::{AppState, ModelRuntime};
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
     CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, PromptInput, Usage,
@@ -54,11 +54,11 @@ use super::sanitizer::*;
 /// an out-of-range ID fails fast with a 400 rather than indexing out of
 /// bounds into the embedding table.
 fn resolve_prompt_tokens(
-    state: &AppState,
+    rt: &ModelRuntime,
     prompt: &PromptInput,
 ) -> Result<Vec<u32>, (StatusCode, String)> {
     match prompt {
-        PromptInput::Text(s) => state
+        PromptInput::Text(s) => rt
             .tokenizer
             .encode(s)
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}"))),
@@ -66,13 +66,12 @@ fn resolve_prompt_tokens(
             // Join with no separator, matching the prior `Vec<String>`
             // behavior (`v.join("")`), then tokenize once.
             let joined = parts.concat();
-            state
-                .tokenizer
+            rt.tokenizer
                 .encode(&joined)
                 .map_err(|e| (StatusCode::BAD_REQUEST, format!("Tokenization error: {e}")))
         }
         PromptInput::TokenIds(ids) => {
-            validate_token_ids(state, ids)?;
+            validate_token_ids(rt, ids)?;
             Ok(ids.clone())
         }
         PromptInput::TokenIdBatch(batch) => {
@@ -80,7 +79,7 @@ fn resolve_prompt_tokens(
             // sequence (concatenation), matching how `TextArray` joins
             // multiple string prompts into one.
             let flat: Vec<u32> = batch.iter().flatten().copied().collect();
-            validate_token_ids(state, &flat)?;
+            validate_token_ids(rt, &flat)?;
             Ok(flat)
         }
     }
@@ -89,8 +88,8 @@ fn resolve_prompt_tokens(
 /// Fail-fast validation that every supplied token ID is within the model
 /// vocabulary. The tokenizer is the authoritative source of vocab size
 /// (SSOT); an OOB ID would index past the embedding table.
-fn validate_token_ids(state: &AppState, ids: &[u32]) -> Result<(), (StatusCode, String)> {
-    let vocab_size = state.tokenizer.inner().get_vocab_size(true) as u32;
+fn validate_token_ids(rt: &ModelRuntime, ids: &[u32]) -> Result<(), (StatusCode, String)> {
+    let vocab_size = rt.tokenizer.inner().get_vocab_size(true) as u32;
     if let Some(&bad) = ids.iter().find(|&&id| id >= vocab_size) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -113,7 +112,9 @@ pub async fn completions(
             );
         }
     };
-    let prompt_tokens = match resolve_prompt_tokens(&state, &req.prompt) {
+    // One consistent per-model snapshot for this request (hot-swap safety).
+    let rt = state.runtime();
+    let prompt_tokens = match resolve_prompt_tokens(&rt, &req.prompt) {
         Ok(t) => t,
         Err((status, msg)) => return openai_error_response(status, msg),
     };
@@ -129,14 +130,14 @@ pub async fn completions(
         );
     }
 
-    let temperature = req.temperature.unwrap_or(state.default_temperature);
-    let top_k = req.top_k.unwrap_or(state.default_top_k);
-    let top_p = req.top_p.unwrap_or(state.default_top_p);
-    let top_n_sigma = req.top_n_sigma.unwrap_or(state.default_top_n_sigma);
-    let min_p = req.min_p.unwrap_or(state.default_min_p);
+    let temperature = req.temperature.unwrap_or(rt.default_temperature);
+    let top_k = req.top_k.unwrap_or(rt.default_top_k);
+    let top_p = req.top_p.unwrap_or(rt.default_top_p);
+    let top_n_sigma = req.top_n_sigma.unwrap_or(rt.default_top_n_sigma);
+    let min_p = req.min_p.unwrap_or(rt.default_min_p);
     let repetition_penalty = req
         .repetition_penalty
-        .unwrap_or(state.sampling_presets.non_thinking.repetition_penalty);
+        .unwrap_or(rt.sampling_presets.non_thinking.repetition_penalty);
     let presence_penalty = req.presence_penalty.unwrap_or(0.0);
     let frequency_penalty = req.frequency_penalty.unwrap_or(0.0);
     // Convert logit_bias from OpenAI format (string keys) to Vec<(u32, f32)>
@@ -145,11 +146,12 @@ pub async fn completions(
             .filter_map(|(k, &v)| k.parse::<u32>().ok().map(|id| (id, v)))
             .collect()
     });
-    let stop_tokens = tokenize_stop_sequences(&state.tokenizer, &req.stop);
+    let stop_tokens = tokenize_stop_sequences(&rt.tokenizer, &req.stop);
 
     if req.stream {
         return match completions_stream(
             state,
+            rt,
             prompt_tokens,
             req.max_tokens,
             temperature,
@@ -243,7 +245,7 @@ pub async fn completions(
         }
     };
 
-    let output_text = match state.tokenizer.decode(&response.output_tokens) {
+    let output_text = match rt.tokenizer.decode(&response.output_tokens) {
         Ok(t) => t,
         Err(e) => {
             return openai_error_response(
@@ -280,7 +282,7 @@ pub async fn completions(
     };
 
     Json(CompletionResponse::new(
-        &state.model_name,
+        &rt.model_name,
         output_text,
         usage,
         &response.finish_reason,
@@ -291,6 +293,7 @@ pub async fn completions(
 /// SSE streaming path for legacy completions.
 pub(super) async fn completions_stream(
     state: Arc<AppState>,
+    rt: Arc<ModelRuntime>,
     prompt_tokens: Vec<u32>,
     max_tokens: usize,
     temperature: f32,
@@ -359,7 +362,7 @@ pub(super) async fn completions_stream(
     })?;
 
     let chunk_id = crate::openai::new_completion_id();
-    let model_name = state.model_name.clone();
+    let model_name = rt.model_name.clone();
 
     let model = model_name.clone();
     let id = chunk_id.clone();
@@ -368,7 +371,7 @@ pub(super) async fn completions_stream(
     let token_stream = ReceiverStream::new(token_rx).map(move |event| match event {
         StreamEvent::Token(tok) | StreamEvent::TokenWithLogprobs(tok, _) => {
             all_toks.push(tok);
-            let full = state.tokenizer.decode(&all_toks).unwrap_or_default();
+            let full = rt.tokenizer.decode(&all_toks).unwrap_or_default();
             let stable_end = full.trim_end_matches('\u{FFFD}').len();
             if stable_end <= emitted {
                 let chunk = CompletionChunk::text_chunk(&model, &id, String::new());
@@ -431,10 +434,11 @@ pub(super) async fn completions_stream(
 
 /// GET /v1/models
 pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
+    let rt = state.runtime();
     Json(ModelListResponse {
         object: "list".to_string(),
         data: vec![ModelInfo {
-            id: state.model_name.clone(),
+            id: rt.model_name.clone(),
             object: "model".to_string(),
             created: crate::openai::unix_timestamp(),
             owned_by: "atlas-spark".to_string(),
@@ -447,9 +451,10 @@ pub async fn get_model(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(model_id): axum::extract::Path<String>,
 ) -> Response {
-    if model_id == state.model_name {
+    let rt = state.runtime();
+    if model_id == rt.model_name {
         Json(serde_json::json!({
-            "id": state.model_name,
+            "id": rt.model_name,
             "object": "model",
             "created": crate::openai::unix_timestamp(),
             "owned_by": "atlas-spark",

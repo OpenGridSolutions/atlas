@@ -7,11 +7,15 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use crate::AppState;
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 pub(super) struct StreamCtx {
     pub(super) state: Arc<AppState>,
+    /// Per-model snapshot taken at request setup — the stream handlers
+    /// read tokenizer/think-token state from here so a hot-swap cannot
+    /// change them mid-stream.
+    pub(super) rt: Arc<ModelRuntime>,
     pub(super) model: String,
     pub(super) id: String,
     pub(super) prompt_len: usize,

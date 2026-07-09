@@ -11,9 +11,9 @@ use std::sync::Arc;
 use axum::http::StatusCode;
 use axum::response::Response;
 
-use crate::AppState;
 use crate::openai::ChatCompletionRequest;
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 use super::chat_stream::chat_completions_stream;
 use super::compact::openai_error_response;
@@ -21,6 +21,7 @@ use super::inference_types::GrammarSpec;
 
 pub(super) async fn dispatch_streaming(
     state: Arc<AppState>,
+    rt: Arc<ModelRuntime>,
     req: &ChatCompletionRequest,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     dump_seq: Option<u64>,
@@ -74,6 +75,7 @@ pub(super) async fn dispatch_streaming(
     let repetition_detection = req.repetition_detection();
     match chat_completions_stream(
         state,
+        rt,
         prompt_tokens,
         session_hash,
         image_pixels,
