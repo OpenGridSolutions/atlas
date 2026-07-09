@@ -26,7 +26,7 @@ use axum::response::{IntoResponse, Response};
 
 use super::compact::openai_error_response;
 use crate::main_modules::AppState;
-use crate::main_modules::hotswap::{HotswapCtx, SwapState};
+use crate::main_modules::hotswap::{HotswapCtx, LazyPhase, SwapState};
 
 /// Response-header name carrying the swap latency a request paid.
 pub const SWAP_HEADER: &str = "x-atlas-model-swap";
@@ -65,15 +65,91 @@ pub async fn ensure_model_active(
         return Err((StatusCode::NOT_FOUND, axum::Json(body)).into_response());
     }
 
-    let t0 = std::time::Instant::now();
-    let from = ctx.active_model().model_id;
-    swap_to(ctx, requested).await?;
-    let ms = t0.elapsed().as_millis() as u64;
-    tracing::info!(
-        "Lazy swap: request for '{requested}' triggered a model swap (from '{from}') — \
-         {ms} ms paid by this request"
-    );
-    Ok(Some(ms))
+    // ── Swap state machine (Phase 3.2): Idle | Swapping{to} ──
+    // Exactly one request claims the swap; same-target requests wait on it
+    // (and pass through once it settles, paying no header); a request for
+    // a THIRD model while a swap is in flight gets 503 + Retry-After.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(950);
+    loop {
+        if std::time::Instant::now() > deadline {
+            return Err(swap_error(format!(
+                "gave up waiting for '{requested}' to become active"
+            )));
+        }
+        // Re-check the fast path each round — a waited-on swap may have
+        // just installed our target.
+        if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
+            return Ok(None);
+        }
+        enum Action {
+            Claim(Arc<tokio::sync::Notify>),
+            Wait(Arc<tokio::sync::Notify>),
+            Reject(String),
+        }
+        let action = {
+            let mut phase = ctx.lazy_phase.lock();
+            match &*phase {
+                LazyPhase::Idle => {
+                    let done = Arc::new(tokio::sync::Notify::new());
+                    *phase = LazyPhase::Swapping {
+                        to: requested.to_string(),
+                        done: done.clone(),
+                    };
+                    Action::Claim(done)
+                }
+                LazyPhase::Swapping { to, done } if to == requested => {
+                    Action::Wait(done.clone())
+                }
+                LazyPhase::Swapping { to, .. } => Action::Reject(to.clone()),
+            }
+        };
+        match action {
+            Action::Claim(done) => {
+                let t0 = std::time::Instant::now();
+                let from = ctx.active_model().model_id;
+                let result = swap_to(ctx, requested).await;
+                *ctx.lazy_phase.lock() = LazyPhase::Idle;
+                done.notify_waiters();
+                result?;
+                let ms = t0.elapsed().as_millis() as u64;
+                tracing::info!(
+                    "Lazy swap: request for '{requested}' triggered a model swap (from \
+                     '{from}') — {ms} ms paid by this request"
+                );
+                return Ok(Some(ms));
+            }
+            Action::Wait(done) => {
+                // Notify is only an accelerator: a bounded timeout guards
+                // the register-after-notify race, and the loop re-checks.
+                let _ = tokio::time::timeout(
+                    std::time::Duration::from_secs(2),
+                    done.notified(),
+                )
+                .await;
+                continue;
+            }
+            Action::Reject(to) => {
+                let body = serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "a model swap to '{to}' is in flight; '{requested}' cannot be \
+                             served right now — retry shortly",
+                        ),
+                        "type": "server_error",
+                        "param": "model",
+                        "code": "model_swap_in_flight",
+                    },
+                    "swapping_to": to,
+                });
+                return Err((
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    [(axum::http::header::RETRY_AFTER, "10")],
+                    axum::Json(body),
+                )
+                    .into_response());
+            }
+        }
+    }
 }
 
 /// Perform (or piggyback on) the unload→load sequence. Serialized against

@@ -65,6 +65,25 @@ pub struct RegisteredModel {
     pub model_hash: [u8; 32],
 }
 
+/// Request-time lazy-swap coordination (Task 6 Phase 3.2). Concurrency
+/// contract:
+/// - requests for the model being swapped IN wait on `done` and then
+///   proceed (exactly one swap runs — no double-swap);
+/// - requests for a THIRD model while a swap is in flight are rejected
+///   with 503 + `Retry-After` (deliberate: queueing them would serialize
+///   unbounded A/B/C thrash where every request pays a multi-second swap;
+///   an honest 503 lets clients back off and re-batch by model).
+pub enum LazyPhase {
+    Idle,
+    Swapping {
+        to: String,
+        /// Notified when the swap settles (success or failure). Waiters
+        /// re-check state afterwards — a failed swap leaves the target
+        /// inactive and the next waiter claims a retry.
+        done: Arc<tokio::sync::Notify>,
+    },
+}
+
 /// Shared hot-swap state. Constructed at boot when the weights arena is
 /// enabled; `None` in `AppState` means `--weights-arena-gb 0` and every
 /// /admin/models endpoint answers 503.
@@ -83,6 +102,8 @@ pub struct HotswapCtx {
     /// interceptor is active and unregistered model ids get a 404. False =
     /// single-model behaviour, byte-identical to before Phase 3.
     pub lazy_enabled: bool,
+    /// Lazy-swap state machine (`Idle` | `Swapping{to}`) — see [`LazyPhase`].
+    pub lazy_phase: parking_lot::Mutex<LazyPhase>,
     pub snapshot_dir: PathBuf,
     state: AtomicU8,
     /// Serializes admin operations (snapshot/unload/load) against each other.
@@ -116,6 +137,7 @@ impl HotswapCtx {
             }),
             registry,
             lazy_enabled,
+            lazy_phase: parking_lot::Mutex::new(LazyPhase::Idle),
             snapshot_dir,
             state: AtomicU8::new(SwapState::Running as u8),
             admin_lock: tokio::sync::Mutex::new(()),
