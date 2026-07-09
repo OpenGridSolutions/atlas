@@ -30,6 +30,19 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
     // shares page cache with the GPU pool, so eviction is unnecessary.
 }
 
+/// Whether `ATLAS_SKIP_OOM_PREFLIGHT` downgrades the pre-flight `bail!` to a warning.
+///
+/// On GB10's unified memory, `cudaMemGetInfo` (and `/proc/meminfo MemAvailable`)
+/// cannot see reclaimable UVM pages left by a previous process, so `free_memory()`
+/// under-reports badly after a restart — a false OOM on a model that fits. The
+/// per-shard [`check_oom_guard`] and the UVM fallback stay active either way, so
+/// skipping the estimate trades a bad prediction for the real, measured guards.
+pub(crate) fn skip_oom_preflight() -> bool {
+    std::env::var("ATLAS_SKIP_OOM_PREFLIGHT")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 /// Data type of a weight tensor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeightDtype {

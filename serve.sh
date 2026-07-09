@@ -25,6 +25,10 @@ cargo build --release -p spark-server
 command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
 
 echo "==> [3/3] serving ${MODEL} for testing ..."
+# GB10 unified memory: cudaMemGetInfo cannot see reclaimable UVM pages from a
+# previous run, so the loader's OOM pre-flight false-negatives after a restart.
+# The per-shard OOM guard and the UVM fallback are the real safety nets.
+export ATLAS_SKIP_OOM_PREFLIGHT=1
 exec "${BIN}" serve "${MODEL}" \
     --bind 0.0.0.0 \
     --port 11434 \

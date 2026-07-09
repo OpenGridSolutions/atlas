@@ -100,19 +100,39 @@ impl WeightLoader for SafetensorsLoader {
                 has_fp8,
             );
             if peak_estimated + oom_reserve_bytes > free {
-                bail!(
-                    "OOM pre-flight: model peak memory ({:.2} GB = {:.2} GB weights × {:.1}x \
-                     model-building overhead) + {:.1} GB reserve = {:.2} GB, \
-                     but only {:.2} GB GPU memory is available. \
-                     This model is too large. Use a smaller quantization (NVFP4 instead of FP8) \
-                     or add more GPUs for expert parallelism.",
-                    peak_gb,
-                    est_gb,
-                    overhead_multiplier,
-                    reserve_gb,
-                    peak_gb + reserve_gb,
-                    free_gb,
-                );
+                if super::skip_oom_preflight() {
+                    tracing::warn!(
+                        "OOM pre-flight would fail: model peak memory ({:.2} GB = {:.2} GB \
+                         weights × {:.1}x model-building overhead) + {:.1} GB reserve = {:.2} GB, \
+                         but only {:.2} GB GPU memory is available — continuing anyway \
+                         (ATLAS_SKIP_OOM_PREFLIGHT). Per-shard OOM guard and UVM fallback \
+                         remain active.",
+                        peak_gb,
+                        est_gb,
+                        overhead_multiplier,
+                        reserve_gb,
+                        peak_gb + reserve_gb,
+                        free_gb,
+                    );
+                } else {
+                    bail!(
+                        "OOM pre-flight: model peak memory ({:.2} GB = {:.2} GB weights × {:.1}x \
+                         model-building overhead) + {:.1} GB reserve = {:.2} GB, \
+                         but only {:.2} GB GPU memory is available. \
+                         This model is too large. Use a smaller quantization (NVFP4 instead of FP8) \
+                         or add more GPUs for expert parallelism. \
+                         On unified-memory hardware (GB10) free memory is under-reported because \
+                         reclaimable UVM pages from a previous run are invisible to cudaMemGetInfo; \
+                         if the model is known to fit, set ATLAS_SKIP_OOM_PREFLIGHT=1 to downgrade \
+                         this check to a warning.",
+                        peak_gb,
+                        est_gb,
+                        overhead_multiplier,
+                        reserve_gb,
+                        peak_gb + reserve_gb,
+                        free_gb,
+                    );
+                }
             }
         }
 

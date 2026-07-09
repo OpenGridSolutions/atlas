@@ -19,7 +19,7 @@
 use crate::gpu::GpuBackend;
 use crate::weights::{
     WeightLoader, WeightStore, WeightTensor, check_oom_guard, estimate_has_fp8,
-    estimate_load_bytes, evict_page_cache, parse_expert_index,
+    estimate_load_bytes, evict_page_cache, parse_expert_index, skip_oom_preflight,
 };
 use anyhow::{Context, Result, bail};
 use std::collections::HashMap;
@@ -150,13 +150,28 @@ impl WeightLoader for FastSafetensorsLoader {
                 has_fp8,
             );
             if peak + oom_reserve_bytes > free {
-                bail!(
-                    "OOM pre-flight: peak {:.2} GB + {:.2} GB reserve exceeds {:.2} GB free. \
-                     Use a smaller quantization or add more GPUs for EP.",
-                    gib(peak),
-                    gib(oom_reserve_bytes),
-                    gib(free),
-                );
+                if skip_oom_preflight() {
+                    tracing::warn!(
+                        "OOM pre-flight would fail: peak {:.2} GB + {:.2} GB reserve exceeds \
+                         {:.2} GB free — continuing anyway (ATLAS_SKIP_OOM_PREFLIGHT). \
+                         Per-shard OOM guard and UVM fallback remain active.",
+                        gib(peak),
+                        gib(oom_reserve_bytes),
+                        gib(free),
+                    );
+                } else {
+                    bail!(
+                        "OOM pre-flight: peak {:.2} GB + {:.2} GB reserve exceeds {:.2} GB free. \
+                         Use a smaller quantization or add more GPUs for EP. \
+                         On unified-memory hardware (GB10) free memory is under-reported because \
+                         reclaimable UVM pages from a previous run are invisible to cudaMemGetInfo; \
+                         if the model is known to fit, set ATLAS_SKIP_OOM_PREFLIGHT=1 to downgrade \
+                         this check to a warning.",
+                        gib(peak),
+                        gib(oom_reserve_bytes),
+                        gib(free),
+                    );
+                }
             }
         }
 
