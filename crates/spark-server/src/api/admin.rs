@@ -32,9 +32,32 @@ pub async fn admin_models_state(State(state): State<Arc<AppState>>) -> Response 
         Err(r) => return *r,
     };
     let active = ctx.active_model();
+    // Per-model registry view (Task 6 Phase 4.1). At most one model is
+    // "running" (the active one, and only while the server state is
+    // Running); after a preseed boot, none is.
+    let running_state = ctx.state();
+    let models: Vec<serde_json::Value> = ctx
+        .registry
+        .iter()
+        .map(|m| {
+            let running = running_state == SwapState::Running && active.model_id == m.model_id;
+            let hash_hex: String = m.model_hash.iter().map(|b| format!("{b:02x}")).collect();
+            serde_json::json!({
+                "id": m.model_id,
+                "state": if running { "running" } else { "unloaded" },
+                "used_bytes": if running { ctx.arena.used() } else { 0 },
+                "snapshot_present": ctx
+                    .snapshot_path_for(&m.model_id, &m.model_hash)
+                    .exists(),
+                "model_version_hash": hash_hex,
+            })
+        })
+        .collect();
     Json(serde_json::json!({
-        "state": ctx.state().as_str(),
+        "state": running_state.as_str(),
         "model": active.model_id,
+        "lazy_swap_enabled": ctx.lazy_enabled,
+        "models": models,
         "arena": {
             "base": format!("{:#x}", ctx.arena.base().0),
             "capacity_bytes": ctx.arena.capacity(),

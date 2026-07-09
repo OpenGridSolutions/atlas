@@ -444,17 +444,26 @@ pub(super) async fn completions_stream(
         .into_response())
 }
 
-/// GET /v1/models
+/// GET /v1/models — every registered model (boot model + preseed list) in
+/// OpenAI shape, so multi-model clients can discover the swap targets
+/// (Task 6 Phase 4.1). Single-model servers list exactly the active model,
+/// as before.
 pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
-    let rt = state.runtime();
+    let ids: Vec<String> = match state.hotswap.as_ref() {
+        Some(ctx) => ctx.registry.iter().map(|m| m.model_id.clone()).collect(),
+        None => vec![state.runtime().model_name.clone()],
+    };
     Json(ModelListResponse {
         object: "list".to_string(),
-        data: vec![ModelInfo {
-            id: rt.model_name.clone(),
-            object: "model".to_string(),
-            created: crate::openai::unix_timestamp(),
-            owned_by: "atlas-spark".to_string(),
-        }],
+        data: ids
+            .into_iter()
+            .map(|id| ModelInfo {
+                id,
+                object: "model".to_string(),
+                created: crate::openai::unix_timestamp(),
+                owned_by: "atlas-spark".to_string(),
+            })
+            .collect(),
     })
 }
 
@@ -463,10 +472,13 @@ pub async fn get_model(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(model_id): axum::extract::Path<String>,
 ) -> Response {
-    let rt = state.runtime();
-    if model_id == rt.model_name {
+    let known = match state.hotswap.as_ref() {
+        Some(ctx) => ctx.registered(&model_id).is_some(),
+        None => model_id == state.runtime().model_name,
+    };
+    if known {
         Json(serde_json::json!({
-            "id": rt.model_name,
+            "id": model_id,
             "object": "model",
             "created": crate::openai::unix_timestamp(),
             "owned_by": "atlas-spark",
