@@ -86,6 +86,79 @@ pub async fn admin_unload(State(state): State<Arc<AppState>>) -> Response {
     }
 }
 
+/// POST /admin/models/load {"model": "..."} — reload the snapshot into the
+/// arena and rebuild the model (same-model scope). Body optional; when
+/// present, `model` must match the model that occupied the arena.
+pub async fn admin_load(
+    State(state): State<Arc<AppState>>,
+    body: axum::body::Bytes,
+) -> Response {
+    let ctx = match ctx_or_503(&state) {
+        Ok(c) => c,
+        Err(r) => return *r,
+    };
+    // Optional JSON body {"model": "..."}.
+    if !body.is_empty() {
+        let requested = match serde_json::from_slice::<serde_json::Value>(&body) {
+            Ok(v) => v.get("model").and_then(|m| m.as_str()).map(String::from),
+            Err(e) => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("invalid JSON body: {e}"),
+                );
+            }
+        };
+        if let Some(requested) = requested
+            && requested != ctx.model_id
+        {
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "same-model reload only (MVP): arena holds '{}', requested '{requested}'",
+                    ctx.model_id
+                ),
+            );
+        }
+    }
+    let _admin = ctx.admin_lock.lock().await;
+    if ctx.state() != SwapState::NoModel {
+        return openai_error_response(
+            StatusCode::CONFLICT,
+            format!(
+                "cannot load while model state is '{}' (need 'unloaded')",
+                ctx.state().as_str()
+            ),
+        );
+    }
+    // Resolve the snapshot before waking the scheduler: 404 beats a
+    // scheduler-side error for a missing file.
+    let path = ctx.snapshot_path();
+    if !path.exists() {
+        return openai_error_response(
+            StatusCode::NOT_FOUND,
+            format!("no snapshot for '{}' at {}", ctx.model_id, path.display()),
+        );
+    }
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    ctx.scheduler
+        .push_control(crate::scheduler::ControlMsg::Load { reply: reply_tx });
+    // Payload read (~50 GiB) + model rebuild (transposes) can take minutes.
+    match tokio::time::timeout(std::time::Duration::from_secs(900), reply_rx).await {
+        Ok(Ok(Ok(stats))) => Json(stats).into_response(),
+        Ok(Ok(Err(e))) => {
+            openai_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("load failed: {e:#}"))
+        }
+        Ok(Err(_)) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "load reply channel dropped (scheduler died?)".to_string(),
+        ),
+        Err(_) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "load timed out after 900 s".to_string(),
+        ),
+    }
+}
+
 /// POST /admin/models/snapshot — dump the arena as an ATLASRAW file.
 /// Returns `{path, bytes, payload_xxh3, duration_ms}`.
 pub async fn admin_snapshot(State(state): State<Arc<AppState>>) -> Response {

@@ -161,6 +161,14 @@ impl WeightsArena {
         self.used.store(0, Ordering::Relaxed);
     }
 
+    /// Restore the bump cursor after a snapshot reload: the payload was
+    /// written into `[0, bytes)` directly (offsets come from the manifest,
+    /// not from `alloc`), and a later snapshot must know the used extent.
+    pub fn set_used(&self, bytes: usize) {
+        assert!(bytes <= self.capacity, "set_used beyond arena capacity");
+        self.used.store(bytes, Ordering::Relaxed);
+    }
+
     /// True if `ptr` points anywhere inside the arena mapping (capacity, not
     /// just the used prefix: stale views after `reset()` must still be
     /// recognised as arena-owned by the free-guard).

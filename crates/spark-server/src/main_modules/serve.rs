@@ -352,6 +352,11 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     None
                 },
             });
+    // Hot-swap reload (Task 5) re-runs build_model on the scheduler thread;
+    // clone the two inputs that are moved into this boot-time call.
+    let reload_layer_dtypes = layer_dtypes.clone();
+    let reload_comm = comm.clone();
+
     // Watermark alloc registry (hot-swap unload): record every device
     // allocation build_model makes (~178: transposes, dequants, KV/SSM
     // pools, buffers) so unload can free exactly the derived buffers.
@@ -503,10 +508,98 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ))
     });
 
-    // Model reloader for hot-swap load — lands with Task 5.
-    let reload: scheduler::ModelReloader = Box::new(|| {
-        anyhow::bail!("model reload not implemented yet (HOTSWAP Task 5)")
-    });
+    // Model reloader for hot-swap load: runs on the scheduler thread while
+    // parked (state NoModel, CUDA context bound). Reads the snapshot payload
+    // into the arena (io_uring + O_DIRECT), rebuilds the WeightStore as
+    // arena views, and re-runs build_model. PTX modules are NOT reloaded:
+    // AtlasCudaBackend::new reuses the AtlasRegistry singleton.
+    #[cfg(feature = "cuda")]
+    let reload: scheduler::ModelReloader = {
+        let ctx = hotswap_ctx.clone();
+        let reload_args = args.clone();
+        let reload_config = config.clone();
+        let reload_modules = ptx_set.modules.clone();
+        Box::new(move || {
+            let ctx = ctx
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("hot-swap context missing"))?;
+            let t0 = std::time::Instant::now();
+            let path = ctx.snapshot_path();
+            if !path.exists() {
+                anyhow::bail!(
+                    "snapshot not found: {} — POST /admin/models/snapshot before unloading",
+                    path.display()
+                );
+            }
+            let (header, manifest) = spark_runtime::snapshot::read_snapshot_meta(&path)?;
+            if header.model_version_hash != ctx.model_hash {
+                anyhow::bail!(
+                    "snapshot {} was written for a different (model, revision, layout) — \
+                     refusing to load",
+                    path.display()
+                );
+            }
+            ctx.arena.reset();
+            let read_stats = spark_runtime::snapshot::read_payload_into_arena(
+                &path,
+                &ctx.arena,
+                &header,
+                256 * 1024 * 1024,
+                reload_args.snapshot_read_qd,
+            )?;
+            let store =
+                spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
+            *ctx.manifest.write() = Arc::new(manifest);
+
+            let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = Box::new(
+                spark_runtime::cuda_backend::AtlasCudaBackend::new(
+                    reload_args.gpu_ordinal,
+                    &reload_modules,
+                )?,
+            );
+            // Track the rebuild's derived-buffer allocations for the next
+            // unload (same window as the boot build).
+            gpu.set_alloc_tracking(true);
+            let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
+            let model = serve_phases::build_model(
+                &reload_args,
+                &reload_config,
+                &store,
+                gpu,
+                max_batch_tokens,
+                kv_dtype,
+                inference_reserve,
+                reload_layer_dtypes.clone(),
+                hss_cache_blocks_per_seq,
+                prefix_cache,
+                reload_comm.clone(),
+                None, // dflash out of hot-swap scope
+            )?;
+            if let Some(g) = model.gpu_backend() {
+                g.set_alloc_tracking(false);
+            }
+            let duration_ms = t0.elapsed().as_millis() as u64;
+            let stats = serde_json::json!({
+                "model": ctx.model_id,
+                "bytes_read": read_stats.bytes_read,
+                "read_ms": read_stats.duration_ms as u64,
+                "gib_per_s": (read_stats.gib_per_s * 100.0).round() / 100.0,
+                "duration_ms": duration_ms,
+            });
+            tracing::info!(
+                "Hot-swap load: {:.2} GiB payload in {} ms ({:.2} GiB/s), model rebuilt in \
+                 {} ms total",
+                read_stats.bytes_read as f64 / (1024.0 * 1024.0 * 1024.0),
+                read_stats.duration_ms,
+                read_stats.gib_per_s,
+                duration_ms,
+            );
+            Ok((model, stats))
+        })
+    };
+    #[cfg(not(feature = "cuda"))]
+    let reload: scheduler::ModelReloader =
+        Box::new(|| anyhow::bail!("hot-swap reload requires the CUDA backend"));
 
     let scheduler_model = model;
     let scheduler_eos = eos_tokens;

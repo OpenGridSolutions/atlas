@@ -73,6 +73,9 @@ pub(crate) fn build_model(
         args.ssm_checkpoint_interval,
         hss_cache_blocks_per_seq,
         dflash_args,
+        args.kv_pool_gb
+            .filter(|&gb| gb > 0.0)
+            .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as usize),
     )
     .context("Failed to build model")
 }

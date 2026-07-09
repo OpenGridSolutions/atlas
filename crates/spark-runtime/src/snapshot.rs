@@ -298,6 +298,222 @@ pub fn read_snapshot_meta(path: &Path) -> Result<(SnapshotHeader, Vec<ArenaTenso
     Ok((header, manifest))
 }
 
+#[derive(Debug)]
+pub struct SnapshotReadStats {
+    /// Payload bytes delivered into the arena (padded to 4096).
+    pub bytes_read: u64,
+    pub duration_ms: u128,
+    pub gib_per_s: f64,
+}
+
+/// Read the snapshot payload straight into the arena with io_uring +
+/// O_DIRECT (plan Task 5): `chunk_bytes` per read, `queue_depth` reads in
+/// flight. File offsets, lengths, and destinations are all 4096-aligned
+/// (header is 4096 B, payload is padded, the arena base is page-aligned).
+/// Verifies `payload_xxh3` and restores the arena's used extent.
+///
+/// The caller must be the only arena writer (scheduler thread, no model).
+#[cfg(target_os = "linux")]
+pub fn read_payload_into_arena(
+    path: &Path,
+    arena: &WeightsArena,
+    header: &SnapshotHeader,
+    chunk_bytes: usize,
+    queue_depth: usize,
+) -> Result<SnapshotReadStats> {
+    use io_uring::{IoUring, opcode, types};
+    use std::os::unix::io::AsRawFd;
+
+    ensure!(queue_depth >= 1, "queue depth must be >= 1");
+    ensure!(
+        chunk_bytes >= HEADER_LEN && chunk_bytes.is_multiple_of(HEADER_LEN),
+        "chunk_bytes must be a positive multiple of 4096"
+    );
+    let payload = header.payload_size as usize;
+    let padded = payload.div_ceil(HEADER_LEN) * HEADER_LEN;
+    ensure!(
+        padded <= arena.capacity(),
+        "snapshot payload ({payload} B) exceeds arena capacity ({} B)",
+        arena.capacity()
+    );
+
+    let t0 = Instant::now();
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECT)
+        .open(path)
+        .with_context(|| {
+            format!(
+                "opening snapshot {} with O_DIRECT (required for the reload path)",
+                path.display()
+            )
+        })?;
+    let fd = types::Fd(file.as_raw_fd());
+
+    // Per-chunk state; partial completions resubmit their remainder.
+    struct Chunk {
+        file_off: u64,
+        arena_off: usize,
+        remaining: usize,
+    }
+    let mut chunks: Vec<Chunk> = (0..padded)
+        .step_by(chunk_bytes)
+        .map(|off| Chunk {
+            file_off: (HEADER_LEN + off) as u64,
+            arena_off: off,
+            remaining: (padded - off).min(chunk_bytes),
+        })
+        .collect();
+
+    let mut ring = match IoUring::new(queue_depth as u32) {
+        Ok(r) => r,
+        Err(e) => {
+            // Sandboxed kernels/seccomp profiles return ENOSYS/EPERM here.
+            // Keep the reload functional: sequential O_DIRECT preads still
+            // saturate most NVMe close to io_uring for 256 MiB chunks.
+            tracing::warn!(
+                "io_uring unavailable ({e}); snapshot reload falling back to \
+                 sequential O_DIRECT preads"
+            );
+            return read_payload_pread(&file, arena, header, chunk_bytes, t0);
+        }
+    };
+    let base = arena.base().0 as *mut u8;
+    let mut next = 0usize; // next chunk to submit
+    let mut done = 0usize;
+    let mut in_flight = 0usize;
+
+    while done < chunks.len() {
+        // Fill the submission queue.
+        while in_flight < queue_depth && next < chunks.len() {
+            let c = &chunks[next];
+            // Safety: dest is inside the arena mapping ([arena_off,
+            // arena_off+remaining) <= padded <= capacity); sole writer.
+            let sqe = opcode::Read::new(fd, unsafe { base.add(c.arena_off) }, c.remaining as u32)
+                .offset(c.file_off)
+                .build()
+                .user_data(next as u64);
+            // Safety: the buffer (arena) and fd outlive the ring.
+            unsafe { ring.submission().push(&sqe).context("io_uring push")? };
+            next += 1;
+            in_flight += 1;
+        }
+        ring.submit_and_wait(1).context("io_uring submit_and_wait")?;
+        // Drain completions; resubmit partial reads.
+        let mut resubmit: Vec<usize> = Vec::new();
+        for cqe in ring.completion() {
+            in_flight -= 1;
+            let idx = cqe.user_data() as usize;
+            let res = cqe.result();
+            let c = &mut chunks[idx];
+            if res < 0 {
+                bail!(
+                    "io_uring read failed at file offset {}: {}",
+                    c.file_off,
+                    std::io::Error::from_raw_os_error(-res)
+                );
+            }
+            let got = res as usize;
+            ensure!(
+                got > 0 && got <= c.remaining && got.is_multiple_of(512),
+                "unexpected io_uring read result {got} (remaining {})",
+                c.remaining
+            );
+            c.remaining -= got;
+            c.file_off += got as u64;
+            c.arena_off += got;
+            if c.remaining == 0 {
+                done += 1;
+            } else {
+                resubmit.push(idx);
+            }
+        }
+        for idx in resubmit {
+            let c = &chunks[idx];
+            let sqe = opcode::Read::new(fd, unsafe { base.add(c.arena_off) }, c.remaining as u32)
+                .offset(c.file_off)
+                .build()
+                .user_data(idx as u64);
+            unsafe { ring.submission().push(&sqe).context("io_uring push (resubmit)")? };
+            in_flight += 1;
+        }
+    }
+
+    // Integrity: xxh3 over the true payload must match the header.
+    // Safety: read-only view; reads are complete (ring drained).
+    let bytes = unsafe { std::slice::from_raw_parts(arena.base().0 as *const u8, payload) };
+    let got = xxh3_64(bytes);
+    ensure!(
+        got == header.payload_xxh3,
+        "payload checksum mismatch after reload: got {got:#018x}, header says {:#018x}",
+        header.payload_xxh3
+    );
+    arena.set_used(payload);
+
+    let duration_ms = t0.elapsed().as_millis();
+    let gib_per_s =
+        padded as f64 / (1024.0 * 1024.0 * 1024.0) / (duration_ms.max(1) as f64 / 1000.0);
+    Ok(SnapshotReadStats {
+        bytes_read: padded as u64,
+        duration_ms,
+        gib_per_s,
+    })
+}
+
+/// Fallback payload reader when io_uring is unavailable (sandboxed
+/// kernels): sequential O_DIRECT `pread`s into the arena, same alignment
+/// contract, same checksum verification.
+#[cfg(target_os = "linux")]
+fn read_payload_pread(
+    file: &File,
+    arena: &WeightsArena,
+    header: &SnapshotHeader,
+    chunk_bytes: usize,
+    t0: Instant,
+) -> Result<SnapshotReadStats> {
+    use std::os::unix::io::AsRawFd;
+
+    let payload = header.payload_size as usize;
+    let padded = payload.div_ceil(HEADER_LEN) * HEADER_LEN;
+    let base = arena.base().0 as *mut u8;
+    let fd = file.as_raw_fd();
+    let mut off = 0usize;
+    while off < padded {
+        let want = (padded - off).min(chunk_bytes);
+        // Safety: dest inside the arena mapping; sole writer.
+        let got = unsafe {
+            libc::pread(
+                fd,
+                base.add(off) as *mut libc::c_void,
+                want,
+                (HEADER_LEN + off) as libc::off_t,
+            )
+        };
+        ensure!(
+            got > 0,
+            "pread failed at payload offset {off}: {}",
+            std::io::Error::last_os_error()
+        );
+        off += got as usize;
+    }
+
+    let bytes = unsafe { std::slice::from_raw_parts(arena.base().0 as *const u8, payload) };
+    let got = xxh3_64(bytes);
+    ensure!(
+        got == header.payload_xxh3,
+        "payload checksum mismatch after reload: got {got:#018x}, header says {:#018x}",
+        header.payload_xxh3
+    );
+    arena.set_used(payload);
+    let duration_ms = t0.elapsed().as_millis();
+    Ok(SnapshotReadStats {
+        bytes_read: padded as u64,
+        duration_ms,
+        gib_per_s: padded as f64 / (1024.0 * 1024.0 * 1024.0)
+            / (duration_ms.max(1) as f64 / 1000.0),
+    })
+}
+
 /// One page-aligned page, for O_DIRECT writes of small unaligned sources.
 struct AlignedPage(*mut u8);
 
@@ -415,6 +631,43 @@ mod tests {
         f.write_all_at(b"XXXX", len - 4).unwrap();
         let err = read_snapshot_meta(&path).unwrap_err().to_string();
         assert!(err.contains("footer magic"), "{err}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn payload_roundtrip_via_io_uring() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, arena, _) = write_tiny(dir.path());
+        // Keep the original bytes, wipe the arena, reload via io_uring.
+        let before: Vec<u8> =
+            unsafe { std::slice::from_raw_parts(arena.base().0 as *const u8, 612) }.to_vec();
+        let (header, _manifest) = read_snapshot_meta(&path).unwrap();
+        arena.reset();
+        unsafe { std::slice::from_raw_parts_mut(arena.base().0 as *mut u8, 4096) }.fill(0);
+        let stats = read_payload_into_arena(&path, &arena, &header, 4096, 4).unwrap();
+        assert_eq!(stats.bytes_read, 4096);
+        let after = unsafe { std::slice::from_raw_parts(arena.base().0 as *const u8, 612) };
+        assert_eq!(before.as_slice(), after);
+        assert_eq!(arena.used(), 612);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn payload_reload_detects_corruption() {
+        let dir = tempfile::tempdir().unwrap();
+        let (path, arena, _) = write_tiny(dir.path());
+        let (header, _) = read_snapshot_meta(&path).unwrap();
+        // Corrupt one payload byte on disk (offset inside [4096, 4096+612)).
+        {
+            use std::os::unix::fs::FileExt;
+            let f = OpenOptions::new().write(true).open(&path).unwrap();
+            f.write_all_at(&[0xEE], (HEADER_LEN + 40) as u64).unwrap();
+        }
+        arena.reset();
+        let err = read_payload_into_arena(&path, &arena, &header, 4096, 4)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("payload checksum mismatch"), "{err}");
     }
 
     #[test]

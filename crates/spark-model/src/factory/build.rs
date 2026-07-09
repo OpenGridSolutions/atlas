@@ -49,6 +49,9 @@ pub fn build_model(
     // DFlash speculative-decoding pairing. `None` = no DFlash; existing
     // MTP / no-spec paths unchanged.
     dflash_args: Option<DflashBuildArgs<'_>>,
+    // `Some(bytes)` pins the KV pool budget (--kv-pool-gb), bypassing the
+    // free-memory measurement whose baseline is stale on hot-swap reloads.
+    kv_pool_bytes_override: Option<usize>,
 ) -> Result<Box<dyn Model>> {
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
@@ -331,10 +334,20 @@ pub fn build_model(
         }
     }
     let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
-    let kv_budget = total_budget
-        .saturating_sub(used_so_far)
-        .saturating_sub(inference_reserve)
-        .min(actual_free.saturating_sub(inference_reserve));
+    let kv_budget = if let Some(pinned) = kv_pool_bytes_override {
+        // --kv-pool-gb: deterministic KV sizing for hot-swap reloads, where
+        // the free-memory measurement's boot-time baseline is stale.
+        tracing::info!(
+            "KV budget pinned to {:.2} GB (--kv-pool-gb; free-memory measurement skipped)",
+            gib(pinned)
+        );
+        pinned.min(actual_free.saturating_sub(inference_reserve))
+    } else {
+        total_budget
+            .saturating_sub(used_so_far)
+            .saturating_sub(inference_reserve)
+            .min(actual_free.saturating_sub(inference_reserve))
+    };
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink

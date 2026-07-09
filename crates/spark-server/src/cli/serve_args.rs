@@ -7,7 +7,7 @@ use clap::Parser;
 use std::path::PathBuf;
 
 /// Arguments for the `serve` subcommand.
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 pub struct ServeArgs {
     /// HuggingFace model ID (e.g. "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4")
     /// or a local directory path containing config.json.
@@ -270,6 +270,17 @@ pub struct ServeArgs {
     /// fast NVMe — the reload path reads it with io_uring + O_DIRECT.
     #[arg(long, default_value = "snapshots")]
     pub snapshot_dir: String,
+
+    /// io_uring queue depth for the snapshot reload payload read.
+    #[arg(long, default_value_t = 16)]
+    pub snapshot_read_qd: usize,
+
+    /// Pin the KV pool budget to this many GiB instead of deriving it from
+    /// the free-memory measurement. The measurement's baseline is captured
+    /// once at boot and goes stale across hot-swap reloads; set this for
+    /// deterministic KV sizing when using /admin/models/load.
+    #[arg(long)]
+    pub kv_pool_gb: Option<f64>,
 
     // ── Parallelism ──
     /// Global rank (0=head, 1=worker, …). Only used when --world-size > 1.

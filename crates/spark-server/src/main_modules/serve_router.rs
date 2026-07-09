@@ -107,6 +107,7 @@ pub(crate) async fn build_and_serve(
         .route("/admin/models", get(api::admin::admin_models_state))
         .route("/admin/models/snapshot", post(api::admin::admin_snapshot))
         .route("/admin/models/unload", post(api::admin::admin_unload))
+        .route("/admin/models/load", post(api::admin::admin_load))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
         .route("/health", get(api::health))
