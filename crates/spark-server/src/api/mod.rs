@@ -27,6 +27,7 @@
 //! - `strip`              — legacy `strip_thinking_tags` for completions
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
+pub mod admin;
 pub mod chat;
 pub mod chat_blocking;
 pub mod chat_phases;

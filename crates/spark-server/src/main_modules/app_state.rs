@@ -94,6 +94,9 @@ pub struct AppState {
     /// and the middleware enforces `Authorization: Bearer <token>` against
     /// the loaded set. `None` ⇒ auth is disabled (every request passes).
     pub auth: Option<Arc<auth::AuthConfig>>,
+    /// Hot-swap context (weights arena + snapshot/unload/load state).
+    /// `None` ⇒ `--weights-arena-gb 0`; /admin/models endpoints answer 503.
+    pub hotswap: Option<Arc<crate::main_modules::hotswap::HotswapCtx>>,
 }
 
 /// Re-export for convenience in api.rs / anthropic.rs.

@@ -462,6 +462,23 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     let model_name = serve_phases::resolve_model_name(&args, &config_json, &model_dir);
 
+    // Hot-swap context: arena + manifest recorded by the boot migration.
+    // The model revision is the HF snapshot hash (model_dir's last path
+    // component), so snapshots stop resolving after a checkpoint update.
+    let hotswap_ctx = _hotswap_arena.map(|arena_state| {
+        let revision = model_dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "local".to_string());
+        Arc::new(crate::main_modules::hotswap::HotswapCtx::new(
+            arena_state.arena,
+            arena_state.manifest,
+            model_name.clone(),
+            &revision,
+            std::path::PathBuf::from(&args.snapshot_dir),
+        ))
+    });
+
     let scheduler_model = model;
     let scheduler_eos = eos_tokens;
     // EP gate. v1 single-sequence worker protocol required max_batch_size=1
@@ -655,6 +672,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         conversation_store,
         dump_writer,
         auth,
+        hotswap: hotswap_ctx,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);

@@ -36,6 +36,8 @@ pub mod metal_backend;
 pub mod prefix_cache;
 pub mod radix_tree;
 pub mod sampler;
+#[cfg(unix)]
+pub mod snapshot;
 pub mod weights;
 #[cfg(unix)]
 pub mod weights_arena;

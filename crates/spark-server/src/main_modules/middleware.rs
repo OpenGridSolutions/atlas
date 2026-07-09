@@ -83,7 +83,12 @@ pub(crate) async fn require_auth_middleware(
         return next.run(req).await;
     };
     let path = req.uri().path();
-    let needs_auth = path.starts_with("/v1/") || path == "/tokenize" || path == "/detokenize";
+    // /admin (hot-swap) is deliberately in the auth set: snapshot/unload/load
+    // are management operations and must respect --require-auth (plan §2).
+    let needs_auth = path.starts_with("/v1/")
+        || path.starts_with("/admin")
+        || path == "/tokenize"
+        || path == "/detokenize";
     if !needs_auth {
         return next.run(req).await;
     }

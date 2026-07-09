@@ -100,6 +100,11 @@ pub(crate) async fn build_and_serve(
         .route("/v1/images/edits", post(api::images_stub))
         .route("/v1/images/variations", post(api::images_stub))
         .route("/v1/moderations", post(api::moderations_stub))
+        // Hot-swap admin surface (HOTSWAP_MVP_PLAN.md). Covered by the same
+        // auth middleware as /v1/* — see the needs_auth predicate in
+        // middleware.rs, which includes /admin explicitly.
+        .route("/admin/models", get(api::admin::admin_models_state))
+        .route("/admin/models/snapshot", post(api::admin::admin_snapshot))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
         .route("/health", get(api::health))

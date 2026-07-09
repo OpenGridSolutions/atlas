@@ -265,6 +265,12 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = false)]
     pub arena_host_register: bool,
 
+    /// Directory for ATLASRAW model snapshots (`POST /admin/models/snapshot`
+    /// writes here, `POST /admin/models/load` resolves here). Should sit on
+    /// fast NVMe — the reload path reads it with io_uring + O_DIRECT.
+    #[arg(long, default_value = "snapshots")]
+    pub snapshot_dir: String,
+
     // ── Parallelism ──
     /// Global rank (0=head, 1=worker, …). Only used when --world-size > 1.
     #[arg(long, default_value_t = 0)]

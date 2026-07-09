@@ -27,9 +27,9 @@ use crate::gpu::{DevicePtr, GpuBackend};
 use crate::weights::{WeightDtype, WeightStore};
 
 /// One tensor's placement inside the arena. Also the snapshot manifest
-/// entry (ATLASRAW): field meanings must stay stable within a
-/// `format_version`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// entry (ATLASRAW): field meanings, order, and types must stay stable
+/// within a `format_version` (postcard encodes fields positionally).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ArenaTensorEntry {
     pub name: String,
     /// Byte offset from `arena_base`.
