@@ -27,8 +27,12 @@ command -v sccache >/dev/null 2>&1 && sccache --show-stats || true
 echo "==> [3/3] serving ${MODEL} for testing ..."
 # GB10 unified memory: cudaMemGetInfo cannot see reclaimable UVM pages from a
 # previous run, so the loader's OOM pre-flight false-negatives after a restart.
-# The per-shard OOM guard and the UVM fallback are the real safety nets.
+# Safety nets that remain: the per-shard OOM guard (unconditional per shard
+# since the Task 0b fix) and the per-tensor UVM-fallback allocation.
 export ATLAS_SKIP_OOM_PREFLIGHT=1
+LOG="/workspace/logs/serve-$(date +%Y%m%d-%H%M%S).log"
+echo "==> logging to ${LOG}"
+
 exec "${BIN}" serve "${MODEL}" \
     --bind 0.0.0.0 \
     --port 11434 \
@@ -39,4 +43,5 @@ exec "${BIN}" serve "${MODEL}" \
     --kv-high-precision-layers 3 \
     --scheduling-policy slai \
     --mtp-quantization nvfp4 \
-    --enable-prefix-caching
+    --enable-prefix-caching \
+    2>&1 | tee "${LOG}"

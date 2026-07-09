@@ -168,13 +168,14 @@ pub(super) fn load_sharded(
             used as f64 / (1024.0 * 1024.0 * 1024.0),
             free_now as f64 / (1024.0 * 1024.0 * 1024.0),
         );
-        if !offload_logged {
-            check_oom_guard(
-                gpu,
-                oom_reserve_bytes,
-                &format!("weight loading (shard {}/{})", i + 1, total_shards),
-            )?;
-        }
+        // Runs even after the managed-memory fallback: UVM allocations
+        // still consume the same host pool, and breaching the reserve
+        // there risks the system OOM-killer, not just a CUDA error.
+        check_oom_guard(
+            gpu,
+            oom_reserve_bytes,
+            &format!("weight loading (shard {}/{})", i + 1, total_shards),
+        )?;
     }
 
     if skipped > 0 {

@@ -34,9 +34,11 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
 ///
 /// On GB10's unified memory, `cudaMemGetInfo` (and `/proc/meminfo MemAvailable`)
 /// cannot see reclaimable UVM pages left by a previous process, so `free_memory()`
-/// under-reports badly after a restart — a false OOM on a model that fits. The
-/// per-shard [`check_oom_guard`] and the UVM fallback stay active either way, so
-/// skipping the estimate trades a bad prediction for the real, measured guards.
+/// under-reports badly after a restart — a false OOM on a model that fits.
+/// Skipping the estimate trades a bad up-front prediction for the measured
+/// safety nets: [`check_oom_guard`] runs after every shard (unconditionally —
+/// including after the managed-memory fallback engages), and per-tensor
+/// allocation failures fall back to `cuMemAllocManaged`.
 pub(crate) fn skip_oom_preflight() -> bool {
     std::env::var("ATLAS_SKIP_OOM_PREFLIGHT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
