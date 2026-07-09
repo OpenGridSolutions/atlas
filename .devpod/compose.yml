@@ -1,0 +1,45 @@
+services:
+  atlas-dev:
+    build:
+      context: .                 # dir holding this Dockerfile
+      dockerfile: Containerfile
+      args:
+        CUDA_IMAGE: docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
+    image: atlas-gb10-dev:local
+    container_name: atlas-gb10-dev
+    restart: "no"
+    networks:
+      - proxy_net
+    expose:
+      - "11434"
+    ipc: host
+    stdin_open: true             # keep STDIN for interactive claude / shell
+    tty: true
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - ../:/workspace                       # live source (modifications branch)
+      - ~/.cache/huggingface:/root/.cache/huggingface
+      - ~/.claude:/root/.claude                    # persist Claude Code auth
+      # --- persistent Rust build caches ---
+      - atlas-cargo-registry:/root/.cargo/registry # downloaded crate sources
+      - atlas-cargo-git:/root/.cargo/git           # git dependencies
+      - atlas-target:/build/target                 # compiled artifacts
+      - atlas-sccache:/build/sccache               # sccache compiler cache
+    # Idle container -> build and serve manually via `podman exec` + ./serve.sh
+    command: ["sleep", "infinity"]
+
+networks:
+  proxy_net:
+    external: true
+
+volumes:
+  atlas-cargo-registry:
+  atlas-cargo-git:
+  atlas-target:
+  atlas-sccache:
