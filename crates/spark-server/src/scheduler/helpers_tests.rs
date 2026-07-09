@@ -434,3 +434,51 @@ fn forced_token_fastpath_enabled_by_falsy_or_junk() {
     assert!(parse_forced_token_fastpath(Some("")));
     assert!(parse_forced_token_fastpath(Some("yes")));
 }
+
+// ── Task 6 Phase 1.2: hot-swap re-install must take effect ──────────────
+
+#[test]
+fn second_mask_install_replaces_the_first() {
+    // Regression: these were OnceLock statics whose second `set()` was a
+    // silent no-op — loading model B kept model A's masks (silently wrong
+    // sampling). After the ArcSwap conversion a re-install MUST win.
+    let a: std::sync::Arc<[bool]> = std::sync::Arc::from(vec![true, false]);
+    let b: std::sync::Arc<[bool]> = std::sync::Arc::from(vec![false, true, true]);
+
+    set_numeric_token_mask(a.clone());
+    set_boundary_token_mask(a.clone());
+    set_mid_word_token_mask(a.clone());
+    assert_eq!(numeric_token_mask().unwrap().len(), 2);
+
+    set_numeric_token_mask(b.clone());
+    set_boundary_token_mask(b.clone());
+    set_mid_word_token_mask(b.clone());
+    assert_eq!(numeric_token_mask().unwrap().len(), 3);
+    assert_eq!(boundary_token_mask().unwrap().len(), 3);
+    assert_eq!(mid_word_token_mask().unwrap().len(), 3);
+}
+
+#[test]
+fn second_watchdog_params_install_replaces_the_first() {
+    let p = WatchdogParams {
+        max_inter_tool_prose: 111,
+        ..WatchdogParams::default()
+    };
+    set_watchdog_params(p);
+    assert_eq!(watchdog_params().max_inter_tool_prose, 111);
+
+    set_watchdog_params(WatchdogParams {
+        max_inter_tool_prose: 222,
+        ..p
+    });
+    assert_eq!(watchdog_params().max_inter_tool_prose, 222);
+
+    // Restore defaults — other tests may exercise code paths that read
+    // the process-global params.
+    set_watchdog_params(WatchdogParams::default());
+
+    set_enable_loop_watchdog(true);
+    assert!(enable_loop_watchdog());
+    set_enable_loop_watchdog(false);
+    assert!(!enable_loop_watchdog());
+}

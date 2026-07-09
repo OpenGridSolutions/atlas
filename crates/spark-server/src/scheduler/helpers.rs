@@ -201,19 +201,22 @@ pub fn disable_watchdogs() -> bool {
     })
 }
 
-static ENABLE_LOOP_WATCHDOG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+/// Per-model (`ModelBehavior.enable_loop_watchdog`) — an AtomicBool, NOT a
+/// OnceLock: a model hot-swap re-installs it and the new value must take
+/// effect (Task 6 Phase 1.2; OnceLock's second `set()` is a silent no-op).
+static ENABLE_LOOP_WATCHDOG: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
-/// Set once at startup from the resolved `ModelBehavior.enable_loop_watchdog`.
-/// Idempotent: subsequent calls within the same process are ignored.
+/// Install the per-model loop-watchdog flag (boot and every hot-swap).
 pub fn set_enable_loop_watchdog(enabled: bool) {
-    let _ = ENABLE_LOOP_WATCHDOG.set(enabled);
+    ENABLE_LOOP_WATCHDOG.store(enabled, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Read the per-model loop-watchdog flag set at boot. Defaults to
-/// `false` until `set_enable_loop_watchdog` runs (boot order: weights →
-/// behavior plumbing → scheduler start).
+/// Read the per-model loop-watchdog flag. Defaults to `false` until
+/// `set_enable_loop_watchdog` runs (boot order: weights → behavior
+/// plumbing → scheduler start).
 pub fn enable_loop_watchdog() -> bool {
-    *ENABLE_LOOP_WATCHDOG.get().unwrap_or(&false)
+    ENABLE_LOOP_WATCHDOG.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // ── Grammar forced-token fast-path (xgrammar Tier 3b) ───────────────────────
@@ -356,36 +359,58 @@ impl Default for WatchdogParams {
     }
 }
 
-static WATCHDOG_PARAMS: std::sync::OnceLock<WatchdogParams> = std::sync::OnceLock::new();
+/// Per-model — ArcSwap, NOT OnceLock: a hot-swap re-installs the params
+/// and the new values must take effect (Task 6 Phase 1.2).
+static WATCHDOG_PARAMS: arc_swap::ArcSwapOption<WatchdogParams> =
+    arc_swap::ArcSwapOption::const_empty();
 
-/// Set once at startup from the resolved `ModelBehavior`. Idempotent.
+/// Install the per-model watchdog tunables (boot and every hot-swap).
 pub fn set_watchdog_params(p: WatchdogParams) {
-    let _ = WATCHDOG_PARAMS.set(p);
+    WATCHDOG_PARAMS.store(Some(std::sync::Arc::new(p)));
 }
 
 /// Read the per-model watchdog tunables. Returns the historical-default
 /// `WatchdogParams` until `set_watchdog_params` runs — so unit tests and
 /// any pre-boot caller see exactly the old hardcoded constants.
 pub fn watchdog_params() -> WatchdogParams {
-    *WATCHDOG_PARAMS.get().unwrap_or(&DEFAULT_WATCHDOG_PARAMS)
+    WATCHDOG_PARAMS
+        .load()
+        .as_deref()
+        .copied()
+        .unwrap_or(DEFAULT_WATCHDOG_PARAMS)
 }
 
 /// `mask[id] == true` iff token `id` decodes to a pure ASCII-digit run
-/// (optionally one leading space). Built once at startup from the
-/// tokenizer; drives the digit-normalized content-loop path. Fail-open:
-/// never set (or build failed) → normalized path inert, the exact
-/// detector is unaffected.
-static NUMERIC_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> = std::sync::OnceLock::new();
+/// (optionally one leading space). Built from the ACTIVE tokenizer —
+/// per-model, so it is an ArcSwap, NOT a OnceLock: a model hot-swap
+/// re-installs it and the second install MUST take effect (Task 6 Phase
+/// 1.2; OnceLock silently kept model A's mask). Drives the
+/// digit-normalized content-loop path. Fail-open: never set (or build
+/// failed) → normalized path inert, the exact detector is unaffected.
+static NUMERIC_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> = arc_swap::ArcSwapOption::const_empty();
 
-/// Set once at startup from the resolved tokenizer. Idempotent.
+/// Sized wrapper: `Arc<[bool]>` is a fat pointer, which arc-swap cannot
+/// store directly (`RefCnt` needs `T: Sized`). The extra indirection is
+/// one pointer chase on a lock-free load — irrelevant off the hot loop.
+struct MaskCell(std::sync::Arc<[bool]>);
+
+fn store_mask(cell: &arc_swap::ArcSwapOption<MaskCell>, mask: std::sync::Arc<[bool]>) {
+    cell.store(Some(std::sync::Arc::new(MaskCell(mask))));
+}
+
+fn load_mask(cell: &arc_swap::ArcSwapOption<MaskCell>) -> Option<std::sync::Arc<[bool]>> {
+    cell.load().as_ref().map(|c| c.0.clone())
+}
+
+/// Install the numeric-token mask (boot and every hot-swap).
 pub fn set_numeric_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = NUMERIC_TOKEN_MASK.set(mask);
+    store_mask(&NUMERIC_TOKEN_MASK, mask);
 }
 
 /// Read the numeric-token mask. `None` until `set_numeric_token_mask`
 /// runs — callers must treat `None` as "normalized path disabled".
 pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    NUMERIC_TOKEN_MASK.get().cloned()
+    load_mask(&NUMERIC_TOKEN_MASK)
 }
 
 /// `mask[id] == true` iff token `id` decodes to text ending in a
@@ -394,19 +419,20 @@ pub fn numeric_token_mask() -> Option<std::sync::Arc<[bool]>> {
 /// or whitespace. Built once at startup from the tokenizer; drives
 /// [`super::rollback::rollback_to_boundary`]'s boundary search.
 /// Fail-open: never set → rollback finds no boundary and the watchdog
-/// falls back to its hard stop.
-static BOUNDARY_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
+/// falls back to its hard stop. Per-model (built from the active
+/// tokenizer) — ArcSwap so a hot-swap re-install takes effect.
+static BOUNDARY_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> =
+    arc_swap::ArcSwapOption::const_empty();
 
-/// Set once at startup from the resolved tokenizer. Idempotent.
+/// Install the boundary-token mask (boot and every hot-swap).
 pub fn set_boundary_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = BOUNDARY_TOKEN_MASK.set(mask);
+    store_mask(&BOUNDARY_TOKEN_MASK, mask);
 }
 
 /// Read the boundary-token mask. `None` until `set_boundary_token_mask`
 /// runs — callers must treat `None` as "no boundary info available".
 pub fn boundary_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    BOUNDARY_TOKEN_MASK.get().cloned()
+    load_mask(&BOUNDARY_TOKEN_MASK)
 }
 
 /// Per-token mid-word mask (2026-05-24): `mask[id]` is true iff the
@@ -423,20 +449,22 @@ pub fn boundary_token_mask() -> Option<std::sync::Arc<[bool]>> {
 /// rewrite of the model.
 ///
 /// Fail-open: never set → suppression is skipped and the model
-/// retains full freedom to terminate thinking at any token.
-static MID_WORD_TOKEN_MASK: std::sync::OnceLock<std::sync::Arc<[bool]>> =
-    std::sync::OnceLock::new();
+/// retains full freedom to terminate thinking at any token. Per-model
+/// (built from the active tokenizer) — ArcSwap so a hot-swap re-install
+/// takes effect.
+static MID_WORD_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> =
+    arc_swap::ArcSwapOption::const_empty();
 
-/// Set once at startup from the resolved tokenizer. Idempotent.
+/// Install the mid-word token mask (boot and every hot-swap).
 pub fn set_mid_word_token_mask(mask: std::sync::Arc<[bool]>) {
-    let _ = MID_WORD_TOKEN_MASK.set(mask);
+    store_mask(&MID_WORD_TOKEN_MASK, mask);
 }
 
 /// Read the mid-word token mask. `None` until `set_mid_word_token_mask`
 /// runs — callers must treat `None` as "no mid-word info available"
 /// and skip the suppression.
 pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
-    MID_WORD_TOKEN_MASK.get().cloned()
+    load_mask(&MID_WORD_TOKEN_MASK)
 }
 
 /// F2 (2026-04-26): cap on free-text tokens between successive
