@@ -80,11 +80,30 @@ impl GpuBackend for AtlasCudaBackend {
         if ptr.is_null() {
             return Ok(());
         }
+        // Interior arena pointers are not allocation bases — cuMemFree_v2
+        // would fail with INVALID_VALUE — and several model loaders free
+        // store-owned pointers (docs/hotswap/trace.md §4.1).
+        if self.is_protected(ptr.0) {
+            tracing::debug!("free({ptr}) suppressed: pointer is arena-owned");
+            return Ok(());
+        }
         let status = unsafe { cuMemFree_v2(ptr.0) };
         if status != 0 {
             bail!("cuMemFree_v2 failed: status {status}, ptr {ptr}");
         }
         Ok(())
+    }
+
+    fn device_synchronize(&self) -> Result<()> {
+        let status = unsafe { super::cuCtxSynchronize() };
+        if status != 0 {
+            bail!("cuCtxSynchronize failed: {}", cuda_error_text(status));
+        }
+        Ok(())
+    }
+
+    fn protect_range(&self, base: u64, len: usize) {
+        self.add_protected_range(base, len as u64);
     }
 
     fn copy_h2d(&self, src: &[u8], dst: DevicePtr) -> Result<()> {

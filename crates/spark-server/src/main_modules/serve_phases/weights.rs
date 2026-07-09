@@ -81,6 +81,73 @@ pub(crate) fn load_weight_store(
     Ok(store)
 }
 
+/// Arena + manifest produced by the post-load migration; consumed by the
+/// hot-swap admin endpoints (snapshot/unload/load).
+#[cfg(unix)]
+pub(crate) struct ArenaState {
+    pub arena: std::sync::Arc<spark_runtime::weights_arena::WeightsArena>,
+    pub manifest: Vec<spark_runtime::weights_arena::ArenaTensorEntry>,
+}
+
+/// Migrate the loaded weight store into a process-lifetime mmap arena
+/// (HOTSWAP_MVP_PLAN.md Task 2). Returns `None` when disabled
+/// (`--weights-arena-gb 0`), which also disables hot-swap.
+#[cfg(unix)]
+pub(crate) fn migrate_weights_to_arena(
+    args: &cli::ServeArgs,
+    gpu: &dyn spark_runtime::gpu::GpuBackend,
+    store: &mut spark_runtime::weights::WeightStore,
+) -> Result<Option<ArenaState>> {
+    use spark_runtime::weights_arena::{WeightsArena, migrate_weight_store};
+
+    if args.weights_arena_gb <= 0.0 {
+        tracing::info!("Weights arena disabled (--weights-arena-gb 0) — hot-swap unavailable");
+        return Ok(None);
+    }
+    let capacity = (args.weights_arena_gb * 1024.0 * 1024.0 * 1024.0) as usize;
+    let need = store.total_bytes();
+    // Bump padding is < 256 B per tensor; 1.01x covers it with margin.
+    if (need as f64 * 1.01) as usize > capacity {
+        anyhow::bail!(
+            "weights ({:.2} GiB) do not fit the {:.1} GiB arena — \
+             raise --weights-arena-gb",
+            need as f64 / (1024.0 * 1024.0 * 1024.0),
+            args.weights_arena_gb,
+        );
+    }
+
+    let arena = WeightsArena::new(capacity, args.arena_host_register)?;
+    // Free-guard first: from here on, gpu.free() of any arena interior
+    // pointer (e.g. the MoE-transpose paths, trace §4.1) is a no-op.
+    arena.protect_on(gpu);
+    // Functional GPU-touch assertion, NOT cuPointerGetAttribute (which
+    // reports status 1 on unregistered mmap even though access works).
+    arena.ats_self_test(gpu)?;
+    tracing::info!(
+        "Weights arena: base {}, {:.1} GiB, host_registered={} — ATS self-test OK",
+        arena.base(),
+        arena.capacity() as f64 / (1024.0 * 1024.0 * 1024.0),
+        arena.host_registered(),
+    );
+
+    let (manifest, stats) = migrate_weight_store(gpu, &arena, store)?;
+    tracing::info!(
+        "Arena migration: {} tensors, {:.2} GiB in {} ms ({:.2} GiB/s), \
+         arena used {:.2} GiB, freed {} loader allocations",
+        stats.tensors,
+        stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+        stats.duration_ms,
+        stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0) / (stats.duration_ms.max(1) as f64 / 1000.0),
+        stats.arena_used as f64 / (1024.0 * 1024.0 * 1024.0),
+        stats.freed_ptrs,
+    );
+
+    Ok(Some(ArenaState {
+        arena: std::sync::Arc::new(arena),
+        manifest,
+    }))
+}
+
 pub(crate) fn auto_detect_weight_prefix(
     store: &spark_runtime::weights::WeightStore,
     config: &mut ModelConfig,

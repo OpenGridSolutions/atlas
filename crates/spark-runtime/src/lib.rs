@@ -37,3 +37,5 @@ pub mod prefix_cache;
 pub mod radix_tree;
 pub mod sampler;
 pub mod weights;
+#[cfg(unix)]
+pub mod weights_arena;

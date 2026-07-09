@@ -57,7 +57,7 @@ pub(crate) fn enabled() -> bool {
 fn top_k(logits: &[f32], k: usize) -> Vec<(u32, f32)> {
     let mut idx: Vec<u32> = (0..logits.len() as u32).collect();
     let kk = k.min(idx.len());
-    idx.select_nth_unstable_by(kk.saturating_sub(1).max(0), |&a, &b| {
+    idx.select_nth_unstable_by(kk.saturating_sub(1), |&a, &b| {
         logits[b as usize]
             .partial_cmp(&logits[a as usize])
             .unwrap_or(std::cmp::Ordering::Equal)

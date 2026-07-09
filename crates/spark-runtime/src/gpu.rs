@@ -171,6 +171,25 @@ pub trait GpuBackend: Send + Sync {
     /// Synchronize a CUDA stream (blocks until all work completes).
     fn synchronize(&self, stream: u64) -> Result<()>;
 
+    /// Block until ALL outstanding device work completes, on every stream.
+    ///
+    /// Default approximates with a default-stream sync (sufficient for the
+    /// mock and Metal backends); the CUDA backend overrides this with
+    /// `cuCtxSynchronize`. Used at hot-swap barriers (post-migration,
+    /// unload) where per-stream sync is not enough.
+    fn device_synchronize(&self) -> Result<()> {
+        self.synchronize(self.default_stream())
+    }
+
+    /// Mark `[base, base+len)` as arena-owned: any later `free()` whose
+    /// pointer falls inside the range becomes a debug-logged no-op instead
+    /// of a `cuMemFree_v2` call. Interior arena pointers are not allocation
+    /// bases — freeing one returns `CUDA_ERROR_INVALID_VALUE` and several
+    /// model loaders free store-owned pointers they believe they own
+    /// (docs/hotswap/trace.md §4.1). Default: no-op for backends without
+    /// an arena.
+    fn protect_range(&self, _base: u64, _len: usize) {}
+
     /// Get the default stream handle.
     fn default_stream(&self) -> u64;
 

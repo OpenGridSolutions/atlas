@@ -34,3 +34,5 @@ pub(super) use runtime::{
 pub(super) use tokenizer_runtime::{TokenizerRuntime, resolve_tokenizer_runtime};
 pub(super) use topology::{Topology, init_nccl_comm, resolve_topology};
 pub(super) use weights::{auto_detect_weight_prefix, load_dflash_drafter, load_weight_store};
+#[cfg(unix)]
+pub(super) use weights::migrate_weights_to_arena;

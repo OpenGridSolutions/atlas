@@ -68,6 +68,32 @@ impl WeightDtype {
         }
     }
 
+    /// Stable numeric code for the snapshot manifest (ATLASRAW format).
+    /// Do not renumber — bump the snapshot `format_version` instead.
+    pub fn to_code(self) -> u8 {
+        match self {
+            Self::BF16 => 0,
+            Self::FP32 => 1,
+            Self::FP8E4M3 => 2,
+            Self::FP8E8M0 => 3,
+            Self::UInt8 => 4,
+            Self::Int64 => 5,
+        }
+    }
+
+    /// Inverse of [`Self::to_code`].
+    pub fn from_code(code: u8) -> Result<Self> {
+        Ok(match code {
+            0 => Self::BF16,
+            1 => Self::FP32,
+            2 => Self::FP8E4M3,
+            3 => Self::FP8E8M0,
+            4 => Self::UInt8,
+            5 => Self::Int64,
+            other => bail!("unknown WeightDtype code {other}"),
+        })
+    }
+
     fn from_safetensors(dtype: safetensors::Dtype) -> Result<Self> {
         match dtype {
             safetensors::Dtype::BF16 => Ok(Self::BF16),
@@ -157,6 +183,22 @@ impl WeightStore {
         self.weights
             .values()
             .any(|w| matches!(w.dtype, WeightDtype::FP8E4M3))
+    }
+
+    /// Tensor names in sorted order. The arena migration and the snapshot
+    /// manifest both need a deterministic layout; HashMap iteration order is
+    /// not reproducible across processes.
+    pub fn sorted_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.weights.keys().cloned().collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// Mutable tensor access for the arena migration (re-points `ptr` at an
+    /// arena view). Crate-internal: the pointer field must not be mutable
+    /// from outside loader/arena code.
+    pub(crate) fn get_mut(&mut self, name: &str) -> Option<&mut WeightTensor> {
+        self.weights.get_mut(name)
     }
 }
 

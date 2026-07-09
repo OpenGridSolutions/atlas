@@ -250,6 +250,21 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 4096)]
     pub oom_guard_mb: usize,
 
+    // ── Weights arena (hot-swap) ──
+    /// Size of the process-lifetime weights arena in GiB. After load, all
+    /// weight tensors are migrated into one anonymous mmap so model
+    /// unload/reload never returns weight memory to the kernel
+    /// (HOTSWAP_MVP_PLAN.md). Set to 0 to disable the arena (also disables
+    /// the /admin/models hot-swap endpoints).
+    #[arg(long, default_value_t = 50.0)]
+    pub weights_arena_gb: f64,
+
+    /// Page-lock + cudaHostRegister the weights arena. Optional hardening:
+    /// GB10 reads the anonymous mmap coherently via ATS without it
+    /// (measured ~2% read-bandwidth gain when registered).
+    #[arg(long, default_value_t = false)]
+    pub arena_host_register: bool,
+
     // ── Parallelism ──
     /// Global rank (0=head, 1=worker, …). Only used when --world-size > 1.
     #[arg(long, default_value_t = 0)]

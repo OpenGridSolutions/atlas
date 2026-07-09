@@ -207,7 +207,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // 3. Load model weights
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
     tracing::info!("OOM guard reserve: {} MB", args.oom_guard_mb);
-    let store = serve_phases::load_weight_store(
+    let mut store = serve_phases::load_weight_store(
         &args,
         &config,
         &model_dir,
@@ -216,6 +216,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ep_size,
         oom_reserve_bytes,
     )?;
+
+    // 3a. Migrate weights into the process-lifetime arena (hot-swap MVP).
+    // Must run strictly before build_model: the model captures DevicePtr
+    // values out of the store, so re-pointing afterwards changes nothing
+    // (docs/hotswap/trace.md §4). Same-model unload/reload rebuilds views
+    // as arena_base + offset from the manifest recorded here.
+    let _hotswap_arena = serve_phases::migrate_weights_to_arena(&args, gpu.as_ref(), &mut store)?;
 
     // 3b. Auto-detect weight key prefix for nested models.
     serve_phases::auto_detect_weight_prefix(&store, &mut config);

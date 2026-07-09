@@ -71,6 +71,8 @@ unsafe extern "C" {
     pub(super) fn cuMemHostRegister_v2(p: *mut c_void, bytesize: usize, flags: u32) -> i32;
     pub(super) fn cuMemHostUnregister(p: *mut c_void) -> i32;
     pub(super) fn cuPointerGetAttribute(data: *mut c_void, attribute: u32, ptr: u64) -> i32;
+    // Device-wide barrier for hot-swap (migration, unload).
+    pub(super) fn cuCtxSynchronize() -> i32;
 }
 
 // ── Host-memory registration + pointer introspection ──
@@ -156,6 +158,15 @@ pub struct AtlasCudaBackend {
     cuda_ctx: u64,
 }
 
+/// Arena-owned `[base, base+len)` ranges: `free()` on an interior pointer is
+/// a debug-logged no-op (see `GpuBackend::protect_range`).
+///
+/// Process-global rather than per-backend-instance: `AtlasCudaBackend` is a
+/// thin handle onto the singleton `AtlasRegistry`/CUDA context, and hot-swap
+/// legitimately creates more than one handle (the model owns one, the admin
+/// path another). All handles must agree on what is arena-owned.
+static PROTECTED_RANGES: std::sync::RwLock<Vec<(u64, u64)>> = std::sync::RwLock::new(Vec::new());
+
 impl AtlasCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///
@@ -184,6 +195,22 @@ impl AtlasCudaBackend {
             default_stream,
             cuda_ctx,
         })
+    }
+
+    /// True if `ptr` lies inside a protected (arena-owned) range.
+    pub(super) fn is_protected(&self, ptr: u64) -> bool {
+        PROTECTED_RANGES
+            .read()
+            .expect("PROTECTED_RANGES lock poisoned")
+            .iter()
+            .any(|&(base, len)| ptr >= base && ptr < base + len)
+    }
+
+    pub(super) fn add_protected_range(&self, base: u64, len: u64) {
+        PROTECTED_RANGES
+            .write()
+            .expect("PROTECTED_RANGES lock poisoned")
+            .push((base, len));
     }
 }
 
