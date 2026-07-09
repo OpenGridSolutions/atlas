@@ -1,5 +1,6 @@
 # Build artifacts
 target/
+snapshots/
 **/target/
 # Out-of-tree cargo target dirs used for parallel/experiment builds
 # (target-final, target-fu, target-i84, target-phc, target-rc, ...).

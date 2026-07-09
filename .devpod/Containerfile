@@ -18,11 +18,11 @@ ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
 
-RUN apt-get update \
-	apt-get install -y software-properties-common 2>/dev/null || true \
-	add-apt-repository universe 2>/dev/null || sed -i 's/^deb \(.*\) noble main.*/deb \1 noble main universe/' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null \
-	apt-get update \
-	apt-get install -y micro fish
+RUN apt-get update && \
+    (apt-get install -y software-properties-common 2>/dev/null || true) && \
+    (add-apt-repository universe 2>/dev/null || sed -i 's/^deb \(.*\) noble main.*/deb \1 noble main universe/' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null) && \
+    apt-get update && \
+    apt-get install -y micro fish
 
 # Build deps (match prod builder) + RDMA/netlink runtime libs.
 # NOTE: NCCL already ships in the CUDA *devel* base, so we do NOT install/upgrade
