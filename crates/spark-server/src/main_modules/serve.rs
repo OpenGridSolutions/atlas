@@ -26,6 +26,20 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
+    // Preseed list (Task 6 Phase 2.1) — parsed FIRST so a malformed
+    // ATLAS_PRESEED_MODELS fails the boot before any GPU work starts.
+    let preseed_models = cli::resolve_preseed_models(
+        &args.preseed_model,
+        std::env::var("ATLAS_PRESEED_MODELS").ok().as_deref(),
+    )?;
+    if !preseed_models.is_empty() {
+        tracing::info!(
+            "Preseed configured: {} model(s) — {:?} (lazy multi-model mode)",
+            preseed_models.len(),
+            preseed_models,
+        );
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 

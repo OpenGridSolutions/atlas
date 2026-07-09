@@ -5,7 +5,7 @@
 use clap::Parser;
 
 mod serve_args;
-pub use serve_args::ServeArgs;
+pub use serve_args::{ServeArgs, resolve_preseed_models};
 
 #[derive(Parser, Debug)]
 #[command(name = "spark", about = "Atlas Spark — pure Rust LLM inference server")]
