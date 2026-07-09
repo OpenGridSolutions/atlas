@@ -49,7 +49,7 @@ pub struct MigrationStats {
     pub arena_used: usize,
     pub duration_ms: u128,
     pub freed_ptrs: usize,
-    /// memcpys actually issued (after coalescing adjacent ranges).
+    /// memcpys issued (one per tensor — see the no-merge note in pass 2).
     pub copies: usize,
     /// Copy+free batches the migration streamed through.
     pub shards: usize,
@@ -367,9 +367,16 @@ fn migrate_bounded(
         }
     }
 
-    // Pass 2: stream shard by shard — coalesce ranges that are adjacent in
-    // BOTH source and arena into single memcpys, enqueue them round-robin
-    // across the streams, sync, then immediately free this shard's sources.
+    // Pass 2: stream shard by shard — enqueue this shard's copies
+    // round-robin across the streams, sync, then immediately free the
+    // shard's sources.
+    //
+    // One memcpy per tensor, NEVER merged: every source is its own
+    // `cuMemAlloc`/`cuMemAllocManaged` allocation (fast_weights allocates
+    // per tensor), and `cuMemcpyDtoDAsync` rejects a range that spans an
+    // allocation boundary with CUDA_ERROR_INVALID_VALUE even when the two
+    // allocations are VA-adjacent — confirmed on-box (GB10, status 1 on a
+    // coalesced 4160 B copy).
     let mut copies = 0usize;
     let mut shards = 0usize;
     let mut freed = 0usize;
@@ -382,20 +389,13 @@ fn migrate_bounded(
             end += 1;
         }
 
-        let (mut src, mut dst, mut len) = (ops[start].src, ops[start].dst, ops[start].len);
-        for op in &ops[start + 1..end] {
-            if src.0 + len as u64 == op.src.0 && dst.0 + len as u64 == op.dst.0 {
-                len += op.len;
-            } else {
-                gpu.copy_d2d_async(src, dst, len, streams[copies % streams.len()])
-                    .with_context(|| format!("copying {len} B into the arena at {dst}"))?;
-                copies += 1;
-                (src, dst, len) = (op.src, op.dst, op.len);
-            }
+        for op in &ops[start..end] {
+            gpu.copy_d2d_async(op.src, op.dst, op.len, streams[copies % streams.len()])
+                .with_context(|| {
+                    format!("copying {} B into the arena at {}", op.len, op.dst)
+                })?;
+            copies += 1;
         }
-        gpu.copy_d2d_async(src, dst, len, streams[copies % streams.len()])
-            .with_context(|| format!("copying {len} B into the arena at {dst}"))?;
-        copies += 1;
 
         // This shard's copies must land before its sources go away.
         for s in &streams {
@@ -546,21 +546,18 @@ mod tests {
     }
 
     #[test]
-    fn migration_coalesces_contiguous_ranges() {
+    fn migration_never_merges_across_source_allocations() {
+        // Regression for the on-box boot crash (cuMemcpyDtoDAsync status 1):
+        // 256-multiple sizes make the mock's bump allocator return three
+        // VA-adjacent allocations AND leave no padding gap in the arena —
+        // exactly the situation where range coalescing looks safe but is
+        // rejected by the driver. There must be one memcpy per tensor.
         let gpu = MockGpuBackend::new();
-        // Alloc in name order with 256-multiple sizes: the mock's bump
-        // allocator yields contiguous sources, and the name-sorted arena
-        // layout has no padding gaps — all three must merge into ONE memcpy.
         let mut map = std::collections::HashMap::new();
-        let mut first_src = 0u64;
-        for (i, (name, len)) in [("a.w", 256usize), ("b.w", 512), ("c.w", 256)]
-            .into_iter()
-            .enumerate()
-        {
+        let mut srcs = Vec::new();
+        for (name, len) in [("a.w", 256usize), ("b.w", 512), ("c.w", 256)] {
             let ptr = gpu.alloc(len).unwrap();
-            if i == 0 {
-                first_src = ptr.0;
-            }
+            srcs.push(ptr.0);
             map.insert(
                 name.to_string(),
                 WeightTensor {
@@ -570,16 +567,24 @@ mod tests {
                 },
             );
         }
+        assert_eq!(srcs[1], srcs[0] + 256, "mock sources must be VA-adjacent");
         let mut store = WeightStore::from_map(map);
         let arena = small_arena();
         let (entries, stats) = migrate_weight_store(&gpu, &arena, &mut store).unwrap();
 
-        assert_eq!(stats.copies, 1);
+        assert_eq!(stats.copies, 3);
         assert_eq!(stats.shards, 1);
         assert_eq!(stats.freed_ptrs, 3);
         assert_eq!(entries.len(), 3);
-        let log = gpu.d2d_copy_log();
-        assert_eq!(log, vec![(first_src, arena.base().0, 1024, 3)]);
+        let base = arena.base().0;
+        assert_eq!(
+            gpu.d2d_copy_log(),
+            vec![
+                (srcs[0], base, 256, 3),
+                (srcs[1], base + 256, 512, 3),
+                (srcs[2], base + 768, 256, 3),
+            ]
+        );
         assert_eq!(gpu.alloc_count(), 0);
     }
 
@@ -587,8 +592,6 @@ mod tests {
     fn migration_streams_shards_and_frees_between_them() {
         let gpu = MockGpuBackend::new();
         let mut map = std::collections::HashMap::new();
-        // Non-256-multiple sizes: alignment gaps on BOTH ends kill
-        // coalescing, so each tensor is its own memcpy.
         for (name, len) in [("a.w", 100usize), ("b.w", 200), ("c.w", 300)] {
             let ptr = gpu.alloc(len).unwrap();
             map.insert(
