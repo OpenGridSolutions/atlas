@@ -38,6 +38,7 @@ pub mod completions;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod responses;
 pub mod responses_stream;

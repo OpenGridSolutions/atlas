@@ -112,6 +112,14 @@ pub async fn completions(
             );
         }
     };
+    // Lazy multi-model swap (Task 6 Phase 3): must run BEFORE the
+    // per-model snapshot below — the requested model's tokenizer has to
+    // be the one that encodes this prompt.
+    let swap_ms = match super::lazy_swap::ensure_model_active(&state, &req.model).await {
+        Ok(ms) => ms,
+        Err(resp) => return resp,
+    };
+
     // One consistent per-model snapshot for this request (hot-swap safety).
     let rt = state.runtime();
     let prompt_tokens = match resolve_prompt_tokens(&rt, &req.prompt) {
@@ -149,7 +157,7 @@ pub async fn completions(
     let stop_tokens = tokenize_stop_sequences(&rt.tokenizer, &req.stop);
 
     if req.stream {
-        return match completions_stream(
+        let resp = match completions_stream(
             state,
             rt,
             prompt_tokens,
@@ -172,6 +180,7 @@ pub async fn completions(
             Ok(r) => r,
             Err((status, msg)) => openai_error_response(status, msg),
         };
+        return super::lazy_swap::attach_swap_header(resp, swap_ms);
     }
 
     // ── Blocking path ──
@@ -281,13 +290,16 @@ pub async fn completions(
         response_tokens_per_second: tokens_per_second,
     };
 
-    Json(CompletionResponse::new(
-        &rt.model_name,
-        output_text,
-        usage,
-        &response.finish_reason,
-    ))
-    .into_response()
+    super::lazy_swap::attach_swap_header(
+        Json(CompletionResponse::new(
+            &rt.model_name,
+            output_text,
+            usage,
+            &response.finish_reason,
+        ))
+        .into_response(),
+        swap_ms,
+    )
 }
 
 /// SSE streaming path for legacy completions.

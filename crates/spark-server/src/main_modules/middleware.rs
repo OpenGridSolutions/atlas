@@ -93,7 +93,13 @@ pub(crate) async fn model_state_middleware(
                 "/v1/messages",
                 "/v1/embeddings",
             ];
-            if GATED.contains(&req.uri().path()) {
+            // Lazy multi-model mode (Task 6 Phase 3): the two lazy-load
+            // endpoints handle a non-Running state themselves — the
+            // handler-side interceptor synchronously loads the requested
+            // registered model instead of bouncing with 503.
+            const LAZY_HANDLED: [&str; 2] = ["/v1/chat/completions", "/v1/completions"];
+            let lazy_pass = ctx.lazy_enabled && LAZY_HANDLED.contains(&req.uri().path());
+            if !lazy_pass && GATED.contains(&req.uri().path()) {
                 let body = serde_json::json!({
                     "error": {
                         "message": format!(

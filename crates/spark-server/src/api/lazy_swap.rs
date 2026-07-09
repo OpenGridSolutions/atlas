@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+
+//! Request-time lazy model swap (Task 6 Phase 3).
+//!
+//! Called by the `/v1/chat/completions` and `/v1/completions` handlers
+//! BEFORE the per-request [`ModelRuntime`] snapshot is taken and before
+//! anything is enqueued to the scheduler:
+//!
+//! - requested model == active and Running → pass through (no cost);
+//! - requested model registered but not active (or nothing loaded, e.g.
+//!   right after a preseed boot) → synchronously unload the current model
+//!   (existing 2 s drain) and load the requested one from its snapshot,
+//!   then proceed — the triggering request pays the ~6 s swap and gets an
+//!   `X-Atlas-Model-Swap: <ms>` response header;
+//! - requested model not registered → 404 with a JSON body listing the
+//!   available models. Never an implicit safetensors init.
+//!
+//! Only active in lazy multi-model mode (`HotswapCtx.lazy_enabled`, i.e. a
+//! preseed list was configured). Without it this is a pass-through and
+//! single-model behaviour is unchanged.
+
+use std::sync::Arc;
+
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
+
+use super::compact::openai_error_response;
+use crate::main_modules::AppState;
+use crate::main_modules::hotswap::{HotswapCtx, SwapState};
+
+/// Response-header name carrying the swap latency a request paid.
+pub const SWAP_HEADER: &str = "x-atlas-model-swap";
+
+/// Ensure `requested` is the active model, swapping to it if needed.
+/// Returns `Ok(None)` (pass-through), `Ok(Some(ms))` (this request
+/// triggered a swap that took `ms`), or `Err(response)` to short-circuit.
+pub async fn ensure_model_active(
+    state: &Arc<AppState>,
+    requested: &str,
+) -> Result<Option<u64>, Response> {
+    let Some(ctx) = state.hotswap.as_ref() else {
+        return Ok(None);
+    };
+    if !ctx.lazy_enabled || requested.is_empty() {
+        return Ok(None);
+    }
+    // Fast path: right model, ready to serve.
+    if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
+        return Ok(None);
+    }
+    if ctx.registered(requested).is_none() {
+        let available: Vec<&str> = ctx.registry.iter().map(|m| m.model_id.as_str()).collect();
+        let body = serde_json::json!({
+            "error": {
+                "message": format!(
+                    "model '{requested}' is not registered on this server; available: {}",
+                    available.join(", ")
+                ),
+                "type": "invalid_request_error",
+                "param": "model",
+                "code": "model_not_found",
+            },
+            "available_models": available,
+        });
+        return Err((StatusCode::NOT_FOUND, axum::Json(body)).into_response());
+    }
+
+    let t0 = std::time::Instant::now();
+    let from = ctx.active_model().model_id;
+    swap_to(ctx, requested).await?;
+    let ms = t0.elapsed().as_millis() as u64;
+    tracing::info!(
+        "Lazy swap: request for '{requested}' triggered a model swap (from '{from}') — \
+         {ms} ms paid by this request"
+    );
+    Ok(Some(ms))
+}
+
+/// Perform (or piggyback on) the unload→load sequence. Serialized against
+/// admin snapshot/unload/load operations by the same `admin_lock`.
+async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
+    let _admin = ctx.admin_lock.lock().await;
+    // Re-check under the lock: a concurrent request may have completed
+    // this exact swap while we waited.
+    if ctx.state() == SwapState::Running && ctx.active_model().model_id == target {
+        return Ok(());
+    }
+
+    // Unload whatever is running (empty/short drain; in-flight decode gets
+    // the existing 2 s grace, then finish_reason "model_swap").
+    if ctx.state() == SwapState::Running {
+        ctx.set_state(SwapState::Draining);
+        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+        ctx.scheduler
+            .push_control(crate::scheduler::ControlMsg::Unload { reply: reply_tx });
+        match tokio::time::timeout(std::time::Duration::from_secs(60), reply_rx).await {
+            Ok(Ok(Ok(_))) => {}
+            Ok(Ok(Err(e))) => return Err(swap_error(format!("unload failed: {e:#}"))),
+            Ok(Err(_)) => {
+                return Err(swap_error("unload reply channel dropped (scheduler died?)"));
+            }
+            Err(_) => return Err(swap_error("unload timed out after 60 s")),
+        }
+        // The scheduler flips to NoModel just after replying.
+        for _ in 0..100 {
+            if ctx.state() == SwapState::NoModel {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    }
+    if ctx.state() != SwapState::NoModel {
+        return Err(swap_error(format!(
+            "cannot load '{target}': state is '{}' (want 'unloaded')",
+            ctx.state().as_str()
+        )));
+    }
+
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    ctx.scheduler.push_control(crate::scheduler::ControlMsg::Load {
+        model: Some(target.to_string()),
+        reply: reply_tx,
+    });
+    match tokio::time::timeout(std::time::Duration::from_secs(900), reply_rx).await {
+        Ok(Ok(Ok(_stats))) => Ok(()),
+        Ok(Ok(Err(e))) => Err(swap_error(format!("load '{target}' failed: {e:#}"))),
+        Ok(Err(_)) => Err(swap_error("load reply channel dropped (scheduler died?)")),
+        Err(_) => Err(swap_error(format!("load '{target}' timed out after 900 s"))),
+    }
+}
+
+fn swap_error(msg: impl std::fmt::Display) -> Response {
+    openai_error_response(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        format!("lazy model swap failed: {msg}"),
+    )
+}
+
+/// Attach the swap-latency header to a response (no-op when `ms` is None).
+pub fn attach_swap_header(mut resp: Response, ms: Option<u64>) -> Response {
+    if let Some(ms) = ms
+        && let Ok(v) = axum::http::HeaderValue::from_str(&ms.to_string())
+    {
+        resp.headers_mut()
+            .insert(axum::http::HeaderName::from_static(SWAP_HEADER), v);
+    }
+    resp
+}

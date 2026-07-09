@@ -70,7 +70,17 @@ pub async fn chat_completions(
         }
     });
 
-    chat_completions_inner(state, req_ctx, req, dump_seq).await
+    // Lazy multi-model swap (Task 6 Phase 3): make the requested model the
+    // active one BEFORE the per-request ModelRuntime snapshot inside
+    // `chat_completions_inner` — otherwise this request would render with
+    // the previous model's tokenizer.
+    let swap_ms = match super::lazy_swap::ensure_model_active(&state, &req.model).await {
+        Ok(ms) => ms,
+        Err(resp) => return resp,
+    };
+
+    let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+    super::lazy_swap::attach_swap_header(resp, swap_ms)
 }
 
 /// Internal entry for the parsed-request path. Called by
