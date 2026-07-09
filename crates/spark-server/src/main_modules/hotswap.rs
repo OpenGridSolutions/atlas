@@ -104,6 +104,10 @@ pub struct HotswapCtx {
     pub lazy_enabled: bool,
     /// Lazy-swap state machine (`Idle` | `Swapping{to}`) — see [`LazyPhase`].
     pub lazy_phase: parking_lot::Mutex<LazyPhase>,
+    /// When the current active model became resident. Read at unload to
+    /// attribute residency seconds to the outgoing model
+    /// (`atlas_model_residency_seconds_total`), reset on load.
+    pub active_since: parking_lot::Mutex<std::time::Instant>,
     pub snapshot_dir: PathBuf,
     state: AtomicU8,
     /// Serializes admin operations (snapshot/unload/load) against each other.
@@ -138,6 +142,7 @@ impl HotswapCtx {
             registry,
             lazy_enabled,
             lazy_phase: parking_lot::Mutex::new(LazyPhase::Idle),
+            active_since: parking_lot::Mutex::new(std::time::Instant::now()),
             snapshot_dir,
             state: AtomicU8::new(SwapState::Running as u8),
             admin_lock: tokio::sync::Mutex::new(()),

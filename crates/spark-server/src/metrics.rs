@@ -79,4 +79,36 @@ lazy_static! {
             "atlas_tool_calls_total",
             "Total successful tool calls emitted by the server"
         ).unwrap();
+
+    // ── Model hot-swap telemetry (Task 6 §5) ──
+    //
+    // A swap costs ~6+ s and the triggering request pays it; these make
+    // that observable in dashboards, not just in per-request headers.
+    // `model` label cardinality is bounded by the boot-time registry
+    // (a handful of preseeded models), so labeled counters are safe.
+    pub static ref MODEL_SWAPS_TOTAL: IntCounterVec =
+        register_int_counter_vec!(
+            "atlas_model_swaps_total",
+            "Completed model hot-swap loads, by target model",
+            &["model"]
+        ).unwrap();
+    pub static ref MODEL_SWAP_SECONDS: Histogram = register_histogram!(
+        "atlas_model_swap_seconds",
+        "Wall time of a model hot-swap load (snapshot read + rebuild)",
+        vec![1.0, 2.5, 5.0, 7.5, 10.0, 15.0, 30.0, 60.0, 120.0, 300.0]
+    )
+    .unwrap();
+    pub static ref MODEL_SWAP_READ_BYTES_TOTAL: IntCounter =
+        register_int_counter!(
+            "atlas_model_swap_read_bytes_total",
+            "Snapshot payload bytes read across all hot-swap loads"
+        ).unwrap();
+    /// Seconds each model spent as the ACTIVE (resident) model. Attributed
+    /// to the outgoing model when a swap/unload replaces it.
+    pub static ref MODEL_RESIDENCY_SECONDS_TOTAL: IntCounterVec =
+        register_int_counter_vec!(
+            "atlas_model_residency_seconds_total",
+            "Cumulative seconds each model was the resident (active) model",
+            &["model"]
+        ).unwrap();
 }

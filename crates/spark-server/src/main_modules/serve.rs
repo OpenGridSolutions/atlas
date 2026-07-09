@@ -688,8 +688,14 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 model_id: prep.model_id.clone(),
                 model_hash: prep.model_hash,
             };
+            *ctx.active_since.lock() = std::time::Instant::now();
 
             let duration_ms = t0.elapsed().as_millis() as u64;
+            crate::metrics::MODEL_SWAPS_TOTAL
+                .with_label_values(&[prep.model_id.as_str()])
+                .inc();
+            crate::metrics::MODEL_SWAP_SECONDS.observe(duration_ms as f64 / 1000.0);
+            crate::metrics::MODEL_SWAP_READ_BYTES_TOTAL.inc_by(read_stats.bytes_read);
             let stats = serde_json::json!({
                 "model": prep.model_id,
                 "kernel_target": prep.target_key,

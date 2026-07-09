@@ -153,6 +153,14 @@ impl SwapCtl {
 /// Consumes the model; runs on the scheduler thread.
 fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_json::Value> {
     let t0 = Instant::now();
+    // Attribute the outgoing model's residency time (Task 6 §5 metrics).
+    {
+        let active = hotswap.active_model();
+        let since = *hotswap.active_since.lock();
+        crate::metrics::MODEL_RESIDENCY_SECONDS_TOTAL
+            .with_label_values(&[active.model_id.as_str()])
+            .inc_by(since.elapsed().as_secs());
+    }
     let (freed, free_failed) = {
         let gpu = model
             .gpu_backend()
