@@ -1,0 +1,50 @@
+[2m2026-07-09T17:15:39.558694Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Atlas Spark starting...
+[2m2026-07-09T17:15:39.558770Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Licensed under AGPL-3.0-only — see /LICENSE in this container
+[2m2026-07-09T17:15:39.560652Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4 (resolved to /root/.cache/huggingface/hub/models--nvidia--Qwen3-Next-80B-A3B-Thinking-NVFP4/snapshots/2adcdd3e2482cd6fa1676b4f8e6f459a28796f08)
+[2m2026-07-09T17:15:39.560656Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Port: 11434
+[2m2026-07-09T17:15:39.560657Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m SSM decode dtype: f32 (full precision)
+[2m2026-07-09T17:15:39.561145Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Quantization config: method="modelopt", algo="NVFP4", format="", 242 module(s) in ignore list
+[2m2026-07-09T17:15:39.561148Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Model config: 48 layers, 12 attention, 36 SSM, 512 experts, rope_theta=10000000, head_dim=256, rotary_dim=64
+[2m2026-07-09T17:15:39.561428Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Selected kernel target: (sm_121, qwen3-next-80b-a3b, nvfp4) (146 modules) — quant compat: kernel=nvfp4 model=nvfp4 OK
+[2m2026-07-09T17:15:40.248693Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 146 PTX modules
+[2m2026-07-09T17:15:40.248873Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m GPU 0: 119.7 GB total, 115.7 GB free
+[2m2026-07-09T17:15:40.248953Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::preflight[0m[2m:[0m Preflight reserve: inference=2682 MB, buffer_arena=2079 MB (pre-load free: 115.7 GB)
+[2m2026-07-09T17:15:40.249048Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM watchdog started (threshold: 2 GB, interval: 2s)
+[2m2026-07-09T17:15:40.249130Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m OOM guard reserve: 4096 MB
+[2m2026-07-09T17:15:40.249133Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Using fast weight loader (O_DIRECT + pipelined read/copy)
+[2m2026-07-09T17:15:41.027051Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-load pre-flight: 47.24 GB on-disk, 1.3x overhead = 61.41 GB peak, 115.57 GB free, 4.0 GB reserve (FP8: false)
+[2m2026-07-09T17:15:41.033242Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 1/11: model-00001-of-00011.safetensors (27893 tensors)
+[2m2026-07-09T17:15:41.063741Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 27893 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:15:45.140405Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 1/11 done — GPU memory: 5.01 GB used, 110.57 GB free
+[2m2026-07-09T17:15:45.147138Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 2/11: model-00002-of-00011.safetensors (32115 tensors)
+[2m2026-07-09T17:15:45.177660Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32115 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:15:49.249009Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 2/11 done — GPU memory: 9.98 GB used, 105.59 GB free
+[2m2026-07-09T17:15:49.255817Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 3/11: model-00003-of-00011.safetensors (32115 tensors)
+[2m2026-07-09T17:15:49.286650Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32115 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:15:51.790513Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 3/11 done — GPU memory: 14.92 GB used, 100.65 GB free
+[2m2026-07-09T17:15:51.797352Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 4/11: model-00004-of-00011.safetensors (31827 tensors)
+[2m2026-07-09T17:15:51.828343Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 31827 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:15:55.713594Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 4/11 done — GPU memory: 19.97 GB used, 95.60 GB free
+[2m2026-07-09T17:15:55.726402Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 5/11: model-00005-of-00011.safetensors (32118 tensors)
+[2m2026-07-09T17:15:55.762818Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32118 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:15:58.302288Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 5/11 done — GPU memory: 24.94 GB used, 90.64 GB free
+[2m2026-07-09T17:15:58.309438Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 6/11: model-00006-of-00011.safetensors (32115 tensors)
+[2m2026-07-09T17:15:58.341645Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32115 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:16:01.647161Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 6/11 done — GPU memory: 29.98 GB used, 85.60 GB free
+[2m2026-07-09T17:16:01.654377Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 7/11: model-00007-of-00011.safetensors (32204 tensors)
+[2m2026-07-09T17:16:01.685781Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32204 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:16:06.007788Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 7/11 done — GPU memory: 34.89 GB used, 80.69 GB free
+[2m2026-07-09T17:16:06.014885Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 8/11: model-00008-of-00011.safetensors (32115 tensors)
+[2m2026-07-09T17:16:06.048239Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 32115 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:16:08.616584Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 8/11 done — GPU memory: 39.94 GB used, 75.64 GB free
+[2m2026-07-09T17:16:08.623712Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 9/11: model-00009-of-00011.safetensors (31741 tensors)
+[2m2026-07-09T17:16:08.657629Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 31741 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:16:11.082047Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 9/11 done — GPU memory: 44.93 GB used, 70.65 GB free
+[2m2026-07-09T17:16:11.088370Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 10/11: model-00010-of-00011.safetensors (13154 tensors)
+[2m2026-07-09T17:16:11.101645Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard has 13154 tensors (> 5000 cap) — using buffered+pipelined path
+[2m2026-07-09T17:16:12.532928Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 10/11 done — GPU memory: 49.59 GB used, 65.98 GB free
+[2m2026-07-09T17:16:12.538075Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loading shard 11/11: model-00011-of-00011.safetensors (331 tensors)
+[2m2026-07-09T17:16:12.792430Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m   Shard 11/11 done — GPU memory: 50.32 GB used, 65.26 GB free
+[2m2026-07-09T17:16:12.792489Z[0m [32m INFO[0m [2mspark_runtime::fast_weights[0m[2m:[0m Fast-loaded 297728 weight tensors
+[2m2026-07-09T17:16:12.816330Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Loaded 297728 weight tensors
+[2m2026-07-09T17:16:12.860930Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::weights[0m[2m:[0m Weights arena: base DevicePtr(0xf71c20000000), 50.0 GiB, host_registered=false — ATS self-test OK
