@@ -633,3 +633,25 @@ fn stuck_tail_after_long_counting_still_fires() {
     }
     assert!(!digit_tail_is_monotonic(&tokens, &vals));
 }
+
+#[test]
+fn half_generated_trailing_number_does_not_break_the_exemption() {
+    // Third repro (2026-07-10): the stride check runs mid-decode, so
+    // the window often ends INSIDE a multi-digit number — counting
+    // 1..22 with a trailing lone "2" (first digit of the upcoming 23)
+    // produced suffix [12,…,22, 2] and broke monotonicity. The
+    // unterminated trailing run must be dropped.
+    let vals = digit_values();
+    let mut tokens: Vec<u32> = Vec::new();
+    for n in 1..=22u32 {
+        for c in n.to_string().bytes() {
+            tokens.push(u32::from(c - b'0'));
+        }
+        tokens.push(10); // "\n"
+    }
+    tokens.push(2); // first digit of "23", not yet complete
+    assert!(digit_tail_is_monotonic(&tokens, &vals));
+    // …and the reconstructed groups must end at 22, not 2.
+    let nums = digit_tail_numbers(&tokens, &vals);
+    assert_eq!(nums.last(), Some(&22u128));
+}

@@ -531,8 +531,15 @@ pub const COUNTING_SUFFIX_GROUPS: usize = 12;
 /// scan-window tail. Consecutive digit tokens concatenate into one
 /// number (Qwen splits `45` into `4`,`5`); a leading-space digit token
 /// or any non-digit token ends the current number. A number longer
-/// than 30 digits aborts (not counting). The first group is dropped
-/// when the window truncated history (it may be a cut-off number).
+/// than 30 digits aborts (not counting). Two boundary groups are
+/// unreliable and dropped:
+/// - the FIRST group when the window truncated history (may be a
+///   cut-off number);
+/// - the LAST group when the stream ends ON a digit token — the check
+///   runs mid-decode every 16 tokens, so the trailing run is often a
+///   half-generated number ("2" of an upcoming "23"), which read as 2
+///   after 22 and broke monotonicity (2026-07-10 third repro:
+///   `suffix=[12,…,22, 2] exempt=false`).
 pub fn digit_tail_numbers(tokens: &[u32], vals: &[Option<DigitTok>]) -> Vec<u128> {
     let tail_start = tokens.len().saturating_sub(CONTENT_LOOP_SCAN_WINDOW);
     let mut nums: Vec<u128> = Vec::new();
@@ -558,9 +565,8 @@ pub fn digit_tail_numbers(tokens: &[u32], vals: &[Option<DigitTok>]) -> Vec<u128
             }
         }
     }
-    if let Some((v, _)) = cur {
-        nums.push(v);
-    }
+    // `cur` still Some here ⇒ the window ends inside a digit run: the
+    // trailing number may be half-generated — deliberately NOT pushed.
     // The window may start mid-number ("127" truncated to "27" breaks
     // an otherwise monotonic run) — the first group is unreliable
     // whenever history was cut off.
