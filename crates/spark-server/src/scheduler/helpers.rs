@@ -521,20 +521,19 @@ pub fn numeric_token_values() -> Option<std::sync::Arc<[Option<DigitTok>]>> {
     NUMERIC_TOKEN_VALUES.load().as_ref().map(|c| c.0.clone())
 }
 
-/// True iff the numbers formed by the digit-run tokens in the scan-
-/// window tail are strictly monotonic (all increasing or all
-/// decreasing) with at least 3 numbers. Consecutive digit tokens are
-/// concatenated into one number (Qwen splits `45` into `4`,`5`); a
-/// leading-space digit token starts a new number.
-///
-/// This is the discriminator the digit-normalized loop detector lacks:
-/// "count from 1 to 500" produces the exact same normalized period-2
-/// structure (digit, newline) as a stuck number loop — but counting
-/// has strictly changing VALUES, while a degenerate loop repeats or
-/// oscillates them. Observed live 2026-07-10: the normalized path
-/// killed a legitimate counting request at 49 tokens
-/// (`matched_period=0`, `finish_reason=length`).
-pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> bool {
+/// The counting exemption judges only the LAST this-many number
+/// groups: the loop signature lives in the tail, and earlier digits in
+/// the window (a preamble echoing "count from 1 to 500") must not
+/// break an otherwise clean monotonic run.
+pub const COUNTING_SUFFIX_GROUPS: usize = 12;
+
+/// Reconstruct the numbers formed by the digit-run tokens in the
+/// scan-window tail. Consecutive digit tokens concatenate into one
+/// number (Qwen splits `45` into `4`,`5`); a leading-space digit token
+/// or any non-digit token ends the current number. A number longer
+/// than 30 digits aborts (not counting). The first group is dropped
+/// when the window truncated history (it may be a cut-off number).
+pub fn digit_tail_numbers(tokens: &[u32], vals: &[Option<DigitTok>]) -> Vec<u128> {
     let tail_start = tokens.len().saturating_sub(CONTENT_LOOP_SCAN_WINDOW);
     let mut nums: Vec<u128> = Vec::new();
     let mut cur: Option<(u128, u32)> = None; // (value so far, digit count)
@@ -548,7 +547,7 @@ pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> boo
                 let (v, dc) = cur.take().unwrap_or((0, 0));
                 let ndc = dc + u32::from(d.digits);
                 if ndc > 30 {
-                    return false; // absurdly long digit run — not counting
+                    return Vec::new(); // absurdly long digit run — not counting
                 }
                 cur = Some((v * 10u128.pow(u32::from(d.digits)) + u128::from(d.value), ndc));
             }
@@ -568,10 +567,29 @@ pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> boo
     if tail_start > 0 && !nums.is_empty() {
         nums.remove(0);
     }
-    if nums.len() < 3 {
+    nums
+}
+
+/// True iff the LAST [`COUNTING_SUFFIX_GROUPS`] numbers in the tail
+/// are strictly monotonic (all increasing or all decreasing), with at
+/// least 3 of them.
+///
+/// This is the discriminator the digit-normalized loop detector lacks:
+/// "count from 1 to 500" produces the exact same normalized period-2
+/// structure (digit, newline) as a stuck number loop — but counting
+/// has strictly changing VALUES, while a degenerate loop repeats or
+/// oscillates them. Suffix-only on purpose: a preamble that echoes the
+/// request ("from 1 to 500") plants an out-of-order 500 before the
+/// counting starts. Observed live 2026-07-10: the normalized path
+/// killed a legitimate counting request at 49 tokens
+/// (`matched_period=0`, `finish_reason=length`).
+pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> bool {
+    let nums = digit_tail_numbers(tokens, vals);
+    let suffix = &nums[nums.len().saturating_sub(COUNTING_SUFFIX_GROUPS)..];
+    if suffix.len() < 3 {
         return false;
     }
-    nums.windows(2).all(|w| w[1] > w[0]) || nums.windows(2).all(|w| w[1] < w[0])
+    suffix.windows(2).all(|w| w[1] > w[0]) || suffix.windows(2).all(|w| w[1] < w[0])
 }
 
 /// Counting exemption for the digit-normalized content-loop path: the
@@ -580,6 +598,35 @@ pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> boo
 /// no value table is installed (fail-open to the old behaviour).
 pub fn counting_exemption(tokens: &[u32]) -> bool {
     numeric_token_values().is_some_and(|v| digit_tail_is_monotonic(tokens, &v))
+}
+
+/// [`counting_exemption`] with a diagnostic log line — called from the
+/// content-loop fire path so every normalized-detector match records
+/// WHAT the reconstructed numbers were and WHY the exemption did or
+/// did not veto the fire. One line per near-fire event, INFO level:
+/// this is the observability that turned the 2026-07-10 "cut at 49
+/// tokens, same result after the fix" report from guesswork into a
+/// falsifiable hypothesis.
+pub fn counting_exemption_traced(tokens: &[u32]) -> bool {
+    let Some(vals) = numeric_token_values() else {
+        tracing::info!(
+            "normalized content-loop match: no numeric value table installed — \
+             counting exemption unavailable"
+        );
+        return false;
+    };
+    let nums = digit_tail_numbers(tokens, &vals);
+    let suffix_start = nums.len().saturating_sub(COUNTING_SUFFIX_GROUPS);
+    let suffix = &nums[suffix_start..];
+    let exempt = suffix.len() >= 3
+        && (suffix.windows(2).all(|w| w[1] > w[0]) || suffix.windows(2).all(|w| w[1] < w[0]));
+    tracing::info!(
+        exempt,
+        total_groups = nums.len(),
+        suffix = ?suffix,
+        "normalized content-loop match — counting-exemption check"
+    );
+    exempt
 }
 
 /// F2 (2026-04-26): cap on free-text tokens between successive

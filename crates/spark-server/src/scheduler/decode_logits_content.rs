@@ -141,13 +141,15 @@ pub fn handle_content_token(a: &mut ActiveSeq, tok: u32, model: &dyn Model) {
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
             || numeric_token_mask().as_deref().is_some_and(|m| {
                 // Counting exemption: a normalized-only match whose
-                // digit values are strictly monotonic is enumeration
-                // ("count from 1 to 500"), not a stuck number loop.
+                // digit values are strictly monotonic (suffix) is
+                // enumeration ("count from 1 to 500"), not a stuck
+                // number loop. The traced variant logs the
+                // reconstructed numbers + verdict on every match.
                 detect_content_token_loop_normalized_with(
                     &a.output_tokens,
                     m,
                     a.repetition_detection,
-                ) && !crate::scheduler::helpers::counting_exemption(&a.output_tokens)
+                ) && !crate::scheduler::helpers::counting_exemption_traced(&a.output_tokens)
             }))
     {
         // 2026-05-23 sweep: re-scan to report the matched

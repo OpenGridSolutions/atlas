@@ -289,7 +289,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
                         &a.output_tokens,
                         m,
                         a.repetition_detection,
-                    ) && !crate::scheduler::helpers::counting_exemption(&a.output_tokens)
+                    ) && !crate::scheduler::helpers::counting_exemption_traced(&a.output_tokens)
                 }))
         {
             tracing::warn!(

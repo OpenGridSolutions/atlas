@@ -599,3 +599,37 @@ fn normalized_loop_fire_is_suppressed_for_counting() {
         "…and the exemption vetoes it"
     );
 }
+
+#[test]
+fn preamble_echoing_the_request_does_not_break_the_exemption() {
+    // H1 (2026-07-10 second repro): the answer starts with a preamble
+    // echoing "from 1 to 500", planting groups [1, 500] BEFORE the
+    // counting starts — whole-window monotonicity would fail, the
+    // suffix check must not.
+    let vals = digit_values();
+    let mut tokens: Vec<u32> = vec![1, 10, 5, 0, 0, 10]; // "1 … 500 …"
+    for n in 1..=15u32 {
+        for c in n.to_string().bytes() {
+            tokens.push(u32::from(c - b'0'));
+        }
+        tokens.push(10);
+    }
+    assert!(digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn stuck_tail_after_long_counting_still_fires() {
+    // Counting that degenerates into a stuck value at the end must NOT
+    // be exempt: the suffix contains the repeats.
+    let vals = digit_values();
+    let mut tokens: Vec<u32> = Vec::new();
+    for n in 1..=9u32 {
+        tokens.push(n);
+        tokens.push(10);
+    }
+    for _ in 0..12 {
+        tokens.push(9);
+        tokens.push(10);
+    }
+    assert!(!digit_tail_is_monotonic(&tokens, &vals));
+}
