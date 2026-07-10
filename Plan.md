@@ -46,6 +46,25 @@ chats. Those are Phases 3–4 below.
 | `a74ac0b` | 1.3 | fuzzy detector respects `ATLAS_DISABLE_WATCHDOGS=1` (kill-switch asymmetry closed); new `atlas_watchdog_stops_total{detector}` counter (fuzzy \| content_loop \| simhash \| line_loop) |
 | `fccee05` | 2.1 | `max_tokens` clamped to `max_seq_len - prompt_len` at admission in /v1/chat/completions + /v1/completions (logged when it bites) |
 
+**Second test round (2026-07-10 evening, curl):** run 1 of the CRUD prompt completed
+(`stop`, 3968 tokens — first time ever), confirming the fence fix works when the fence
+is recognized. Two residual cuts were root-caused from `serve-20260710-205302.log` and
+fixed in `ff7bbfd` (step 1.4):
+
+- **"count from 1 to 500" cut at 49 tokens** — the digit-normalized content-loop
+  detector (`matched_period=0`, first check after the 48-token warmup) cannot tell
+  counting from a stuck number loop: after digit normalization both are period-2
+  (digit, newline). Fix: numeric-token VALUES table + counting exemption — a strictly
+  monotonic number sequence in the scan window vetoes the normalized-path fire; stuck
+  (`7,7,7`) or oscillating (`46,7,47,9`) values still fire.
+- **CRUD run 3 cut at 1596 tokens** (fuzzy, `rollback=1,2`, then `CapReached`) — the
+  fence toggle listened only for the atomic ``` token (73594), but the vocab has two
+  merged variants (`54275 " ```"`, `41233 " ```\n"`). When sampling emitted one of
+  those, `in_code_fence` went stale and the fuzzy detector ran inside the code block —
+  hence the intermittency (same prompt, temp 0.6). Fix: per-model fence-token MASK
+  (every id whose text carries an odd number of ``` markers) drives the toggle on all
+  scheduler paths; boot log now prints `Fence-token mask: N/vocab ids`.
+
 Deviations from the original plan text (deliberate, small scope for a first test round):
 - 1.2: per-model MODEL.toml `[behavior]` switches for the API-side guards NOT added yet
   (fence gating + the env kill switch cover the observed failure; add the toml keys if a
