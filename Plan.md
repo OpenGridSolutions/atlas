@@ -1,359 +1,394 @@
-# Plan — Mid-chat output truncation after model switching (Task 6 follow-up)
+# Plan — Multi-class model integration (embeddings, reranking, VL, audio)
 
-Status: analysis complete; **Phase 1 (1.1–1.3) and 2.1 IMPLEMENTED** on branch
-`modifications` — see §0.1. Phases 2.2, 3, 4 remain open.
-Evidence base: `logs/serve-20260710-184943.log` (the failing AnythingLLM session, 2026-07-10
-18:49–19:04 local) + full code audit of the KV sizing, scheduler, request-limit, and
-watchdog paths.
+Status: read-only architecture analysis complete (2026-07-10); implementation not started.
+Scope: integrate the five cached models into Atlas alongside the running
+Qwen3-Next-80B-Thinking / Qwen3-Coder-Next (both `qwen3_next`, NVFP4, hot-swap +
+arena + snapshot infrastructure from Task 6):
 
----
-
-## 0. What actually happened (root-cause correction)
-
-The suspected cause was inconsistent KV-cache memory management across model swaps.
-**The log disproves that for the observed cuts.** All five lazy swaps in the session were
-clean (~7 s each, arena base constant, 0 sequences force-finished). Every truncated
-response maps 1:1 to a **content-loop watchdog hard stop**, reported to the client as
-`finish_reason: "length"`:
-
-| Chat response (UI) | Log event | Tokens |
-|---|---|---|
-| 19:01, Coder, 28.0 s @ 55.0 tok/s (~1540) | `17:01:57 Fuzzy repetition: 36-tok pattern x3 … stopping at 1542 tokens (rollback declined: StreamUnsafe)` → `Done: 1542 tokens (length)` | 1542 |
-| 19:02, Coder, 14.8 s @ 39.8 tok/s (~588) | `17:02:46 … stopping at 590 tokens (rollback declined: StreamUnsafe)` | 590 |
-| 19:03, Coder, 11.0 s @ 50.9 tok/s (~560) | `17:03:29 … stopping at 560 tokens (rollback declined: StreamUnsafe)` | 560 |
-| 19:04, Thinking (after swap), 27.9 s @ 44.7 tok/s (~1245) | `17:04:37 … stopping at 1245 tokens (rollback declined: StreamUnsafe)` | 1245 |
-
-The generated content was a Vue/Tailwind CRUD answer containing ~20 near-identical
-`<th scope="col" class="px-6 py-3 text-left …">` lines inside a markdown code fence — a
-legitimate 36-token repeating pattern. The fuzzy-repetition detector treats 3 fuzzy
-repeats as a generation loop and, because rollback is **always declined on streaming
-requests** (`StreamUnsafe`), hard-stops the sequence. It fired for **both** models,
-before and after swaps — it is model- and swap-independent.
-
-However, the audit **did** find real memory-management inconsistencies on the swap path
-(the thing the user suspected). They did not cause these cuts, but they make KV capacity
-nondeterministic across swaps and can cause genuine mid-decode KV exhaustion in longer
-chats. Those are Phases 3–4 below.
-
----
-
-## 0.1 Implemented (2026-07-10, branch `modifications`)
-
-| Commit | Step | Change |
-|---|---|---|
-| `6d1d283` | 1.1 | ``` fence parity tracked in the CONTENT phase on both decode paths (`handle_content_token` + `emit_token`; `ActiveSeq`/`SwappedSeq` gained `code_fence_token`); fuzzy-repetition + content-loop detectors skip inside fences |
-| `4fcc579` | 1.2 | API-side SimHash + line-loop guards fence-gated via `StreamState.in_code_fence` (`stream_guards::update_fence_state`, split-delta safe); both now honor `ATLAS_DISABLE_WATCHDOGS=1`; fence content kept out of guard scan buffers |
-| `a74ac0b` | 1.3 | fuzzy detector respects `ATLAS_DISABLE_WATCHDOGS=1` (kill-switch asymmetry closed); new `atlas_watchdog_stops_total{detector}` counter (fuzzy \| content_loop \| simhash \| line_loop) |
-| `fccee05` | 2.1 | `max_tokens` clamped to `max_seq_len - prompt_len` at admission in /v1/chat/completions + /v1/completions (logged when it bites) |
-
-**Second test round (2026-07-10 evening, curl):** run 1 of the CRUD prompt completed
-(`stop`, 3968 tokens — first time ever), confirming the fence fix works when the fence
-is recognized. Two residual cuts were root-caused from `serve-20260710-205302.log` and
-fixed in `ff7bbfd` (step 1.4):
-
-- **"count from 1 to 500" cut at 49 tokens** — the digit-normalized content-loop
-  detector (`matched_period=0`, first check after the 48-token warmup) cannot tell
-  counting from a stuck number loop: after digit normalization both are period-2
-  (digit, newline). Fix: numeric-token VALUES table + counting exemption — a strictly
-  monotonic number sequence in the scan window vetoes the normalized-path fire; stuck
-  (`7,7,7`) or oscillating (`46,7,47,9`) values still fire.
-- **CRUD run 3 cut at 1596 tokens** (fuzzy, `rollback=1,2`, then `CapReached`) — the
-  fence toggle listened only for the atomic ``` token (73594), but the vocab has two
-  merged variants (`54275 " ```"`, `41233 " ```\n"`). When sampling emitted one of
-  those, `in_code_fence` went stale and the fuzzy detector ran inside the code block —
-  hence the intermittency (same prompt, temp 0.6). Fix: per-model fence-token MASK
-  (every id whose text carries an odd number of ``` markers) drives the toggle on all
-  scheduler paths; boot log now prints `Fence-token mask: N/vocab ids`.
-
-Deviations from the original plan text (deliberate, small scope for a first test round):
-- 1.2: per-model MODEL.toml `[behavior]` switches for the API-side guards NOT added yet
-  (fence gating + the env kill switch cover the observed failure; add the toml keys if a
-  model needs the guards fully off).
-- 1.3: the `"atlas": {"stop": …}` extension field on the final SSE chunk NOT added yet —
-  watchdog stops are still reported as plain `finish_reason: "length"`; use the WARN log
-  line + the new counter to tell them apart. 1.4 (fuzzy re-tune) not needed so far.
-
-**How to verify on the box:** rebuild + restart serve.sh, replay the failing chat
-(Laravel/Inertia/Vue CRUD prompt, then "please finish the rest") against both models.
-Expect: the `<th …>` table renders to the end, no `Fuzzy repetition`/`SimHash` WARN in
-the log, `finish_reason: "stop"`, and `curl -s localhost:11434/metrics | grep
-atlas_watchdog_stops_total` stays flat. `X-Atlas-Model-Swap` still appears on
-swap-triggering requests.
-
----
-
-## 0.2 Other hypotheses for "cut with finish_reason: length" (if it still reproduces)
-
-The four cuts in the analyzed session were all watchdog kills. If a truncation still
-shows up (curl or UI) after the fixes above, check these — in order of likelihood:
-
-1. **Default `max_tokens` = 4096.** If the request omits `max_tokens` (typical for bare
-   curl), the server defaults to a hard-coded 4096 (`openai/chat_request.rs:441`);
-   AnythingLLM sends its own value (16384 in the analyzed session). A long answer
-   legitimately ends at 4096 with `finish_reason: "length"`. Diagnose: `Done: N tokens
-   (length)` with N ≈ 4096 in the log, `atlas_watchdog_stops_total` flat. Fix: send
-   `max_tokens` explicitly (or implement a context-derived default, Phase 4.1).
-2. **Thinking tokens do NOT consume the budget, but a forced think-end can still eat the
-   turn.** For the Thinking model, `<think>` tokens are "free" (`remaining` untouched),
-   so this is usually NOT the cause — but check `thinking_tokens=` in the
-   `process_decode_logits: remaining=0` log line to see how the budget was spent.
-3. **Request timeout.** `--request-timeout` / `req.timeout` ends the stream mid-output
-   and reports `"length"` (`decode_logits_step.rs` timeout check; log: `Request timeout
-   after …`). More likely as chats grow (slower decode at depth).
-4. **Tool-path caps** (only when the client sends tools — AnythingLLM agents do):
-   `tool_max_tokens` boot cap, `max_post_think_content_tokens` (MODEL.toml), inter-tool
-   prose budget, tool-loop cap — all end the stream as `"length"`. Log lines name them.
-5. **KV exhaustion** (now less likely with the 2.1 clamp, until Phase 2.2/3 land):
-   signature is `decode_batch error: … KV cache exhausted` in the log and an SSE
-   `{"error": …}` frame instead of a `finish_reason` chunk — and it kills ALL concurrent
-   generations at once.
-6. **Client-side rendering** (AnythingLLM only): a `data:` frame carrying an error object
-   is silently dropped by some UIs; always cross-check with curl (`-N` streaming) and the
-   server log's `Done: … (reason)` line, which is authoritative.
-
----
-
-## 1. Findings inventory
-
-### F1 — Fuzzy-repetition detector misfires on legitimate repetitive code (ROOT CAUSE)
-- Detector: `crates/spark-server/src/scheduler/repetition.rs:17` — pattern lengths 15–40,
-  3 consecutive near-copies, per-pair mismatch tolerance `pattern_len / fuzzy_repeat_tolerance_div`
-  (default div 12 ≈ 8%). Repetitive HTML/SQL/enum code trivially satisfies this.
-- Call site `crates/spark-server/src/scheduler/decode_logits_step.rs:652`: gated only on
-  the per-model `enable_loop_watchdog` flag; exempts thinking and tool-call XML but has
-  **no code-fence awareness**.
-- On fire it tries `rollback_to_boundary` (`scheduler/rollback.rs:203`), but every
-  streaming request has `cancel_flag = Some(..)` → `RollbackFallback::StreamUnsafe`
-  (`rollback.rs:213-216`) → **hard stop, always, for streaming chat**. "Rollback+re-steer
-  ENABLED" in the boot log is dead code for streams.
-- `ActiveSeq.in_code_fence` exists (`scheduler/types.rs:203`) and `code_fence_token` is
-  threaded through `SchedulerModelParams`, but `toggle_code_fence` is only called inside
-  the `<think>` branch (`decode_logits_step.rs:258`). In the content phase the flag is
-  never maintained and no detector consults it.
-
-### F2 — Two more always-on API-side guards with the same misfire class
-- SimHash semantic-loop guard (`crates/spark-server/src/loop_simhash.rs`, driver
-  `api/chat_stream/handle_token.rs:530-571`): Jaccard ≥55% over word bigrams vs the last
-  16 sentences → sets `cancel_flag`, truncates. **Unconditionally on** for every streaming
-  chat; no MODEL.toml flag, no env var, no request param. Identical `<th …>` rows are
-  >55% Jaccard duplicates. It fired twice in the failing session (warn-only there because
-  the fuzzy stop won the race).
-- Line-level guard (`api/stream_guards.rs:44`): same non-blank line ≥4× → cancel. Skips
-  lines *starting with* ``` but has no interior-fence awareness.
-
-### F3 — Watchdog stops are invisible/mislabeled (observability)
-- Every watchdog kill finishes with the last token = ordinary content, so
-  `lifecycle.rs:23-29` reports `finish_reason: "length"` — indistinguishable from a real
-  `max_tokens` truncation for the client and for anyone reading `/metrics`.
-- `ATLAS_DISABLE_WATCHDOGS=1` does **not** cover the fuzzy detector (gate at
-  `decode_logits_step.rs:652` omits the `disable_watchdogs()` check) nor the two API-side
-  guards. The per-request `repetition_detection` override only tunes the token-level
-  content-loop detector, not fuzzy/SimHash/line guards.
-
-### F4 — KV pool sizing on the swap path uses boot-model inputs (the real memory inconsistency)
-- `inference_reserve` is computed once at boot from the **boot model's** SSM/GDN geometry
-  (`serve_phases/preflight.rs:116`) and reused verbatim by the reload closure
-  (`serve.rs:672`). Model B's KV budget is therefore reduced (or under-reserved) by model
-  A's reserve. `max_batch_tokens` likewise boot-fixed (`kv_cache.rs:114` → `serve.rs:670`).
-- `baseline_free_bytes` is a process-global captured once at boot
-  (`preflight.rs:220`, `spark-runtime/src/gpu.rs:19-33`), never refreshed on swap. On the
-  GB10 UMA box the auto-measure is already implausible at boot (`baseline 23.1 GB` vs
-  `free-now 32.8 GB`) so `factory/build.rs:307-335` falls back to raw `used_so_far` on
-  **every** build. Observed effect: KV pool drifted 52062 → 50569 → 54016 → 59370 →
-  59323 → 59312 blocks across six builds of the *same two models* in one session —
-  nondeterministic capacity depending on ambient free memory at build time.
-- Neither `preflight_reserve` (pre-load bail) nor `post_load_memory_audit` runs on the
-  swap path (`preflight.rs:119,271` are boot-only); a mis-sized swap fails at raw
-  allocation time with no guard.
-- Perf side effect on this box: `Skipping MoE weight transposition (40.5 GB needed,
-  ~33 GB available)` on every build → fallback grouped-GEMM prefill, always.
-
-### F5 — KV exhaustion mid-decode kills the whole batch with an untyped SSE error
-- Decode-time block alloc failure (`spark-model/src/model/block_mgmt.rs:270-289`, after a
-  single prefix-cache evict retry) propagates out of `decode_batch`, and
-  `scheduler/decode_step.rs:57-66` then drains **every** active sequence with
-  `send_error` — one starved sequence cuts all concurrent chats.
-- The client gets a bare `{"error": …, "code": 500}` SSE data frame with **no
-  `finish_reason` chunk and no `[DONE]`** (`api/chat_stream/handle_error.rs:11-24`).
-  AnythingLLM-class UIs render nothing → silent truncation.
-- No preemption/spill is attempted for a *running* decode; spill only runs proactively
-  for incoming prompts and only with `--swap-space-gb > 0` (`scheduler/mod.rs:376-407`).
-
-### F6 — No per-model context budget anywhere in the request path
-- `max_tokens` defaults to hard-coded 4096 (`openai/chat_request.rs:441`), never derived
-  from context; nothing clamps `prompt_len + max_tokens` (admission checks prompt alone
-  vs boot `max_seq_len`, `api/chat/mod.rs:226`, `api/completions.rs:131`).
-- `ModelRuntime.effective_context` is **dead**: written `0` at boot (`serve.rs:497`) and
-  at swap (`swap_target.rs:171`), read nowhere.
-- Auto-compact (when enabled) triggers at a hard-coded `0.70 × boot max_seq_len`
-  (`api/chat/template.rs:110`) — the configured `--auto-compact` fraction is only used as
-  an on/off flag, and the boundary never adapts to the swapped-in model.
-
-### F7 — Smaller swap-staleness items
-- `use_mtp`/`num_drafts`/`mtp_gate` computed once from the **boot** model
-  (`scheduler/mod.rs:212-256`), never recomputed on swap — wrong speculative dispatch if
-  proposer capability differs between models.
-- `block_size` in the scheduler's spill heuristic is the boot value (`mod.rs:379`), not
-  `model.block_size()` of the current model.
-- KV spill files carry no model identity; cross-model restore is prevented only by the
-  drain invariant (fragile — no defense in depth in `restore_sequence_state`).
-- Cosmetic: first lazy load logs `swap … (from 'X')` where X == target (post-preseed
-  state is `unloaded` but `active` still names the boot model).
-
-Verified NOT broken (for the record): the prefix/radix cache, paged KV pool, and SSM
-session snapshots are all model-owned or explicitly cleared on swap — **no stale KV bytes
-cross the swap boundary**; the scheduler reads block counts live from the current model.
-
----
-
-## 2. Fix plan
-
-One commit per numbered step, `hotswap:` prefix (watchdog steps may use `watchdog:`),
-branch `modifications`. No GPU workloads run by Claude; GPU validation scripts are
-delivered for the user to run. Ordered by user impact.
-
-### Phase 1 — Stop cutting legitimate code output (fixes the reported bug)
-
-**1.1 Maintain `in_code_fence` in the content phase and gate the scheduler detectors on it.**
-- Call `toggle_code_fence(a.in_code_fence, tok, code_fence_token)` in
-  `handle_content_token` (`decode_logits_content.rs:66`), mirroring
-  `decode_logits_step.rs:258`; keep the reset at `</think>`.
-- Gate the fuzzy-repetition check (`decode_logits_step.rs:652`) and the content-loop
-  check (`decode_logits_content.rs:123`) on `!a.in_code_fence`.
-- Fallback when the tokenizer has no atomic ``` token (`code_fence_token == None`):
-  detectors stay active (current behavior), documented.
-- Tests: unit test that a sequence of repeated `<th …>`-like token patterns inside a
-  fence is not stopped, and the same pattern outside a fence still is; fence state
-  correctly closes on the second ``` .
-
-**1.2 Track code fences in the streaming layer and suppress the API-side guards inside fences.**
-- Add fence tracking to `StreamState` (count ``` occurrences in sanitized content);
-  skip `SimHashLoopGuard::check` and `stream_guards::check_loop_watchdog` while inside a
-  fence.
-- Make both API-side guards configurable: honor `ATLAS_DISABLE_WATCHDOGS` and add
-  MODEL.toml `[behavior]` keys (`enable_simhash_guard`, `enable_line_loop_guard`,
-  defaults = current behavior) plumbed through `ModelBehavior` →
-  `log_behavior_audit` — same ArcSwap pattern as `WatchdogParams` so they swap per model.
-
-**1.3 Make watchdog stops honest and controllable.**
-- Fix the `ATLAS_DISABLE_WATCHDOGS` asymmetry: the fuzzy detector must respect
-  `disable_watchdogs()` like the content-loop detector does.
-- Distinguishable finish: when any watchdog ends a sequence, record it on the sequence
-  and (a) log at WARN with request id (exists), (b) emit `finish_reason: "length"` but
-  add a `"atlas": {"stop": "loop_watchdog", "detector": "fuzzy|simhash|line|content"}`
-  extension field on the final chunk, and (c) add a Prometheus counter
-  `atlas_watchdog_stops_total{detector, model}`. (Keeping `"length"` preserves OpenAI
-  client compatibility; the extension + metric make it diagnosable.)
-- Extend the per-request `repetition_detection` override so clients can relax/disable
-  the fuzzy detector too (e.g. `fuzzy: false` or a tolerance field).
-
-**1.4 Re-tune the fuzzy detector for code-shaped output (after 1.1 lands, may become optional).**
-- Raise the repeat requirement from 3 to a `[behavior]`-configurable
-  `fuzzy_repeat_min_repeats` (default 3 outside fences); consider requiring ≥4 repeats
-  when mismatches > 0 in both pairs. Only if false positives persist outside fences
-  (e.g. markdown tables outside ``` blocks).
-
-Acceptance gate Phase 1: replay the failing prompt ("Laravel + Inertia + Vue CRUD, finish
-the table") against both preseeded models on the GB10 box — full table renders, no
-`Fuzzy repetition` / SimHash stop, response ends with a real EOS `finish_reason: "stop"`.
-Deliver `scripts/watchdog_codefence_test.sh` (boots serve.sh, sends the repro prompt,
-fails if the answer stops mid-`<th` or the new watchdog metric increments).
-
-### Phase 2 — Honest failure when KV genuinely runs out
-
-**2.1 Clamp the generation budget at admission.**
-- In the chat/completions handlers: `max_tokens = min(req.max_tokens, max_seq_len -
-  prompt_len)` (reject with 400 only when the prompt alone doesn't fit, as today). This
-  turns the "runs until the pool dies" case into a clean `finish_reason: "length"`.
-
-**2.2 Isolate per-sequence KV exhaustion instead of killing the batch.**
-- In `ensure_blocks_through_decode`, surface a typed `KvExhausted { seq }` error.
-- In `decode_step.rs` (and the MTP/verify twins): on `KvExhausted`, finish **only** the
-  offending sequence with `finish_reason: "length"` (plus the `atlas.stop =
-  "kv_exhausted"` extension + a metric), keep the rest of the batch running. Retry the
-  step without the finished sequence.
-- On the streaming error path that remains (real device errors), emit a terminal chunk +
-  `[DONE]` after the error frame so clients always see a closed stream.
-
-Acceptance gate Phase 2: `scripts/kv_exhaustion_test.sh` — boot with a tiny
-`--kv-pool-gb`, run two concurrent long generations; exactly one may finish with
-`length`, the other must complete, and both streams must terminate with `[DONE]`.
-
-### Phase 3 — Deterministic, per-model KV sizing across swaps
-
-**3.1 Recompute `inference_reserve` and `max_batch_tokens` per swap target.**
-- Extract the model-dependent parts of `preflight_reserve` and `resolve_prefill_budget`
-  into functions of `(args, config)`; call them in `prepare_swap_target` and carry the
-  values in `PreparedSwap`; reload closure passes the per-model values to `build_model`
-  instead of the boot bindings. (Scheduler consumes `max_batch_tokens` via
-  `SchedulerModelParams` — add the field and rebind on swap, fixing the F7 `block_size`
-  staleness in the same step by using `model.block_size()` in the spill heuristic.)
-
-**3.2 Make the KV budget deterministic instead of ambient-free-memory-derived.**
-- The "auto-measure implausible" fallback fires on every UMA build; capacity drift of
-  ~15% between swaps of the same model is unacceptable for reproducibility. Compute the
-  pre-KV footprint deterministically: `weights_arena_capacity + buffer_arena_bytes +
-  reserve(config)` (all known exactly at build time) and derive
-  `kv_budget = total × util − footprint`; keep the free-memory probe only as a safety
-  clamp (`min(kv_budget, actual_free − reserve)`). Same-model reload must yield an
-  identical block count every time; assert that in the snapshot-reload test.
-
-**3.3 Run a memory audit on the swap path.**
-- Port `post_load_memory_audit` into the reload closure (after `build_model`), bailing
-  the swap (state returns to `NoModel`, load error to the caller) instead of letting the
-  next request hit a raw CUDA OOM.
-
-**3.4 Defense in depth for spill + speculative state.**
-- Stamp `model_version_hash` into KV spill file headers; verify in
-  `restore_sequence_state`.
-- Recompute `use_mtp`/`num_drafts` from the swapped-in model (add
-  `has_proposer`-derived fields to `SwapOutcome`), reset `mtp_gate` measurements on swap.
-
-Acceptance gate Phase 3: extend `scripts/lazy_swap_concurrency_test.sh` (or new
-`scripts/kv_consistency_test.sh`) — swap A→B→A→B, scrape the logged block counts (or a
-new `atlas_kv_blocks{model}` gauge): same model ⇒ identical block count on every load;
-`KV budget auto-measure implausible` no longer appears.
-
-### Phase 4 — Per-model context plumbing (removes the last boot-static limits)
-
-**4.1 Wire `effective_context` for real.**
-- Populate it in both `ModelRuntime` constructions from
-  `min(config.max_position_embeddings, args.max_seq_len)` (boot flag becomes an upper
-  clamp, not the truth); use it in the prompt-too-long checks, the 2.1 clamp, and
-  `/v1/models` metadata.
-
-**4.2 Fix auto-compact.**
-- Use the configured `--auto-compact` fraction as the actual trigger ratio (today the
-  0.70 is hard-coded and the flag value is only an on/off switch) and compact against
-  the per-model `effective_context` from 4.1.
-
-Acceptance gate Phase 4: unit tests for the clamp formulas; on-box check that a prompt
-sized between the two models' contexts is accepted by the larger and 400'd by the
-smaller after a swap.
-
-### Out of scope (unchanged from Task 6)
-Dual-residency, EP/world_size > 1, `--dflash`, on-demand init of unregistered models.
-MoE-transposition-at-preseed (fixes the permanent grouped-GEMM fallback, F4 last bullet)
-is a worthwhile separate task: transpose once during preseed and persist into the `.raw`
-snapshot — noted here, not scheduled.
-
----
-
-## 3. Suggested order & effort
-
-| Step | Fixes | Size | Risk |
+| Model (cached) | config `model_type` | Geometry | Class |
 |---|---|---|---|
-| 1.1 | the reported truncations (scheduler side) | S | low |
-| 1.2 | same misfire class in the API layer | M | low |
-| 1.3 | observability + kill-switch asymmetry | S | low |
-| 2.1 | context-blind budget | S | low |
-| 2.2 | whole-batch kill on KV exhaustion | M | medium (touches decode step twins) |
-| 3.1 | per-model reserve/budgets on swap | M | medium |
-| 3.2 | nondeterministic KV capacity | M | medium (UMA measurement semantics) |
-| 3.3 | unguarded swap OOM | S | low |
-| 3.4 | latent spill/MTP staleness | S | low |
-| 4.1–4.2 | per-model context limits | M | low |
-| 1.4 | only if needed after 1.1 | S | low |
+| Qwen/Qwen3-Embedding-8B | `qwen3` (dense) | hidden 4096, 36 L, GQA 32/8, head_dim 128, BF16 | text embedding |
+| Qwen/Qwen3-Reranker-8B | `qwen3` (dense) | **identical** to Embedding-8B | text reranking |
+| Qwen/Qwen3-VL-Embedding-8B | `qwen3_vl` | same 8B text tower + ViT (27 blocks, hidden 1152, deepstack [8,16,24]) | VL embedding |
+| Qwen/Qwen3-VL-Reranker-8B | `qwen3_vl` | same as VL-Embedding | VL reranking |
+| openai/whisper-large-v3 | `whisper` | encoder-decoder, 32 L, vocab 51866, head_dim 64 | audio transcription |
 
-Phase 1 alone should make the AnythingLLM session complete its answers; Phases 2–3 fix
-the genuine (latent) KV memory inconsistencies that the switching test surfaced.
+---
+
+## 1. Current state (traced, with citations)
+
+### 1.1 Input path — text is tokens, images are REAL and wired
+
+`/v1/chat/completions` flow: route (`main_modules/serve_router.rs:44`) →
+`api/chat/mod.rs` → `msg_entry::build_msg_entries` (`api/chat/msg_entry.rs:55`)
+→ Jinja render → `prompt_tokens: Vec<u32>` → `InferenceRequest::{Blocking,Streaming}`
+(`api/inference_types.rs:54`) → scheduler mpsc → prefill
+(`scheduler/prefill_a_step.rs:76`) → `model.prefill_chunk(...)`.
+
+**Vision is NOT dead code.** Verdict: real, end-to-end wired, exercised by tests —
+but live only when three gates pass:
+1. Client sends `image_url` content parts (base64 data URIs; parsed at
+   `openai/chat_message.rs:197,235`).
+2. Server-side decode: `spark-model/src/vision_preprocess.rs:22-130` — base64 →
+   `image` crate PNG/JPEG decode → bicubic resize snapped to patch grid → SigLIP
+   normalize → packed `[patches, 1536]` f32. This runs inside `build_msg_entries`
+   (`msg_entry.rs:239-265`), gated on `rt.vision_config.is_some()`.
+3. `<|image_pad|>` tokens are replicated per patch (`template.rs:135`,
+   `tokenizer/chat_impl.rs:292`); after token-embedding lookup the ViT output rows
+   are `copy_d2d_async`'d over the pad positions
+   (`model/trait_impl/prefill_c.rs:130-153`).
+
+The GPU ViT (`layers/vision_encoder/enc_impl/*`) is a real 27-block Qwen3-VL
+tower with DeepStack mergers — **exactly the geometry of the cached
+Qwen3-VL-Embedding/Reranker-8B ViT** (depth 27, hidden 1152, deepstack [8,16,24]).
+It is loaded only by the Qwen3-VL-family loaders (`weight_loader/qwen3_vl.rs:193`,
+`qwen35.rs:139`, `qwen35_dense.rs:774`); all other archs return `None`. Critical
+gate: if the selected **kernel target ships no vision module**, `serve.rs:143-155`
+forces `config.vision = None` and serves text-only.
+
+**Audio: nothing.** `/v1/audio/*` are 501 stubs (`serve_router.rs:97-99`,
+`api/stubs.rs:64`); no mel/wav/mp3/whisper code anywhere; no `input_audio`
+content-part parsing.
+
+**The missing primitive for embeddings** is small and precisely located: every
+forward entry returns **logits** (`traits/model.rs:44,50,64`), and the only host
+readout is `copy_logits_to_host` (`model.rs:232`). But:
+- `buffers.hidden_states()` holds **all-position** post-last-layer hidden states
+  (`spark-runtime/src/buffers.rs:220`);
+- `hidden_after_norm()` (`model.rs:255`, impl `trait_impl/meta.rs:287`) exposes the
+  post-final-norm **last-token** hidden state on device — with no D2H copy today.
+- Final-norm + lm_head are applied to the last token only, as a separate finalize
+  step (`prefill_b/finalize_last.rs`) — prefill itself is sampling-free.
+
+### 1.2 Kernel target system
+
+A target = `(hw, model, quant)` resolved from the `kernels/` tree
+(`atlas-kernels/build.rs:652-811`): `kernels/gb10/common/` holds the ~146-kernel
+base set; `kernels/gb10/<model>/MODEL.toml` declares `[[model_types]]` (runtime
+selection key), `[sampling.*]`, `[behavior]`; `kernels/gb10/<model>/<quant>/`
+holds override `.cu` files that **shadow common kernels by file stem**
+(`build.rs:840-864`) — that is the "model-specific overrides" count in build logs.
+
+20 gb10 targets exist today, all `nvfp4` (deepseek-v4-flash, gemma-4-26b/31b,
+holo-3.1-0.8b/4b/35b, minimax-m2, mistral-small-4, nemotron-3-nano/super,
+ornith-1.0-9b, qwen3-vl-30b-a3b, **qwen3-next-80b-a3b** (default), qwen3.5-27b/
+35b/122b/397b, qwen3.6-27b/35b, step3p7-flash).
+
+**Shape specialization — the decisive fact:** kernel dims (hidden, heads, vocab,
+experts) are **runtime launch parameters** (`rms_norm.cu:49`, `rope.cu:36-48`);
+the only compile-time bake is `head_dim` via `-DHDIM` (`paged_decode_attn.cu:22`,
+default 256; six targets already build the `-DHDIM=128` variant, and the build
+dedups identical `.cu`+flags across targets — `build.rs:201-225,362-417`).
+Therefore: **a new model is a new target** (it needs its own `[[model_types]]`
+entry for `ptx_for_config(model_type, hidden_size)` selection,
+`atlas-kernels/src/lib.rs:378`), **but a target can be nearly free** — an empty
+quant dir inherits the full common set, and a `-DHDIM=128` build is already
+cached. Runtime selection failure is a clean boot/swap error listing available
+targets (`serve.rs:87-98`, `swap_target.rs:71-79`); hot-swap loads extra targets
+append-only via `AtlasRegistry::ensure_target` (`atlas-core/src/registry.rs:256`).
+
+No `qwen3` (dense attention-only) model_type exists in any MODEL.toml, and **no
+bf16 quant target has ever been built** (the machinery supports `quant=bf16`;
+base kernels include bf16 GEMM/GEMV/attention paths).
+
+### 1.3 Model layer
+
+- Arch dispatch is a single match on `model_type` (`spark-model/src/factory.rs:45-94`);
+  everything downstream is model-agnostic (`factory/build.rs` calls loader
+  methods; `WeightStore`/`WeightsArena` are name-keyed and arch-agnostic —
+  `spark-runtime/src/weights.rs:131`, `weights_arena.rs:33` — so **arena,
+  snapshots, and hot-swap work unchanged for any new arch**).
+- A **pure dense attention-only transformer already exists and serves today:
+  Gemma-4-31B** (`weight_loader/gemma4/loader_a.rs:363-504`,
+  `Qwen3AttentionLayer::new_ungated` + `FfnComponent::Dense`). This is the
+  template for dense Qwen3. (`qwen35_dense` is NOT pure — it keeps GDN layers.)
+- **Non-autoregressive serving already exists**: `max_tokens <= 1` triggers
+  immediate-finish after prefill — sequence never enters decode, KV freed at once
+  (`prefill_b_step.rs:192,267`, `phase_promote_prefills.rs:56-75`,
+  `lifecycle.rs:84`).
+- **Batched single-forwards already exist**: `prefill_batch_chunk`
+  (`traits/model.rs:121`, real batched dispatch `prefill_b/batch.rs:74`, driver
+  `run_batched_prefill.rs:20`) — N prompts, one forward, N last-position outputs.
+- Reranker scoring: blocking requests already read full-vocab logits D2H
+  (`sample_step.rs:238-273` via `copy_logits_to_host`); indexing 2 entries
+  (yes/no token ids) is free.
+- Encoder-decoder: **nothing** (zero cross-attention/encoder hits). One nuance:
+  the flashinfer ragged prefill kernel takes a **runtime `causal: bool`**
+  (`flashinfer.rs:182`), currently hardcoded `true` at the call site
+  (`qwen3_attention/prefill/paged.rs:561`) — non-causal attention is a call-site
+  flag, not a kernel change.
+- `crates/atlas-embed/` exists as an explicit scaffolding crate (`lib.rs:5`,
+  `token.rs:19 todo!`) — the intended home for pooling was already reserved.
+
+### 1.4 API surface
+
+Present: chat/completions, completions, responses, conversations, messages
+(Anthropic), models, admin/models(+snapshot/unload/load), tokenize/detokenize,
+health, metrics. Missing for this plan:
+- `POST /v1/embeddings` — exists as **501 stub** (`serve_router.rs:78`) — replace.
+- `POST /v1/rerank` — **does not exist** — add (Jina/Cohere-compatible shape:
+  `{model, query, documents[], top_n?}` → `results[{index, relevance_score}]`).
+- `POST /v1/audio/transcriptions` — **501 stub** (`serve_router.rs:97`) — replace
+  (multipart file upload + `model`, `language?`, `response_format?`).
+All routes register in the `Router::new()` chain at `serve_router.rs:44-107`.
+
+---
+
+## 2. THE architectural call — kernel-sharing strategy
+
+Grounded in §1.2 (dims are runtime; HDIM=128 variant already cached; a target
+with an empty quant dir inherits the common set; selection requires a
+`[[model_types]]` entry):
+
+**D1 — Embedding-8B and Reranker-8B share ONE new target, with each other, and
+it contains zero new kernels.**
+New target `kernels/gb10/qwen3-dense-8b/` with `[[model_types]] model_type =
+"qwen3", hidden_size = 4096`, `KERNEL.toml extra_nvcc_flags = ["-DHDIM=128"]`,
+and an **empty kernel dir** — 100% common-set reuse (attention prefill/decode,
+GEMM/GEMV, rms_norm, rope are all runtime-dimensioned; no SSM/MoE kernels are
+even loaded for a dense model). The two models are byte-identical in geometry
+(§0 table), differ only in head usage — and the "head kernel" is **not a kernel**:
+reranking reads 2 logit entries through the existing `copy_logits_to_host`, and
+embedding pooling is a D2H copy of `hidden_after_norm()` (last-token pooling, which
+is what Qwen3-Embedding uses) — host-side normalize. They can NOT reuse an
+*existing* target because no target declares model_type `qwen3` — but the new
+target costs one MODEL.toml and ~0 nvcc invocations (all cache hits).
+
+**D2 — Quant: bf16, not NVFP4.** The checkpoints are stock BF16; embedding/rerank
+quality is cosine-similarity-sensitive and there is no pre-quantized NVFP4
+checkpoint to reuse. The base kernel set already contains the full bf16 path
+(`dense_gemm_bf16`, `dense_gemv_bf16`, bf16 paged attention, bf16 norms), and
+`KernelTarget.quant = "bf16"` is supported by the runtime gates — it has simply
+never been built. This makes `qwen3-dense-8b/bf16` the first bf16 target; the
+serve/swap quant-compat gate (`serve.rs:113`, `swap_target.rs:82`) must accept it
+(one condition, not new machinery). 8B bf16 ≈ 15.2 GiB weights — fits the arena
+and the 128 GB UMA comfortably.
+
+**D3 — VL-Embedding/Reranker share the SAME text-tower kernels; the ViT comes as
+override modules, not a new family.** The implemented `VisionEncoder` is exactly
+this ViT (27 blocks, hidden 1152, deepstack [8,16,24] — §1.1). Vision kernels are
+not in `common/`; they ship as model-dir overrides (as in `qwen3-vl-30b-a3b`).
+Decision: one additional target `kernels/gb10/qwen3-vl-dense-8b/`
+(`model_type = "qwen3_vl"`, hidden 4096) whose bf16 dir carries **only the vision
+kernel overrides copied from qwen3-vl-30b-a3b** — text kernels stay 100% common.
+(Two targets rather than one multi-`model_types` target so the VL target can ship
+vision modules and per-class `[behavior]` without burdening the text-only one.)
+Both VL models share this one target with each other — same justification as D1.
+
+**D4 — Whisper is a genuinely new target AND a new architecture family — do not
+attempt to share.** Encoder-decoder with cross-attention has no counterpart in
+the codebase (§1.3). What CAN be reused: the encoder's bidirectional self-attention
+is the existing ragged prefill kernel with `causal=false` (runtime flag,
+`flashinfer.rs:182`); decoder self-attention is the normal paged path;
+**cross-attention is decoder attention over a static 1500-position KV** written
+once by the encoder — structurally `paged_decode_attn` over a pre-filled,
+never-growing KV cache, which the kernels support. The real risks: head_dim 64
+(HDIM supports 128/256/320 today — a `-DHDIM=64` build variant must be validated,
+else pad heads to 128), the mel front-end, and a new loader/layer composition.
+New target `kernels/gb10/whisper-large-v3/bf16` (1.5B → ~3 GiB, quantization
+pointless).
+
+Summary: **2 new thin targets (text-dense, VL-dense) sharing everything, + 1 real
+new target (whisper). Zero new kernels for phases 1–2 except copied vision
+overrides; whisper validates one new HDIM flag variant.**
+
+---
+
+## 3. Multimodal preprocessing plug points
+
+- **Images**: already solved — `vision_preprocess.rs` (base64 → decode → patchify)
+  is called from the message-assembly seam before templating. The new
+  `/v1/embeddings` (VL) and `/v1/rerank` (VL) handlers call the same helper and
+  produce the same `image_pixels` + pad-expanded `prompt_tokens`; the ViT splice
+  is downstream and unchanged.
+- **Audio**: new `spark-model/src/audio_preprocess.rs` mirroring the vision one:
+  multipart bytes → `symphonia` decode (mp3/wav/flac/m4a) → resample to 16 kHz
+  mono → 128-bin log-mel spectrogram (rustfft; whisper-large-v3 uses 128 mels) →
+  `[n_frames, 128]` f32, chunked to 30 s windows. This runs in the endpoint
+  handler (CPU, before enqueue) exactly where vision decode runs today; the model
+  receives a pixel-buffer-analogous `audio_features` field on the request.
+
+---
+
+## 4. What does NOT fit the single-active-model swap — flagged explicitly
+
+The Task 6 model is **one resident model, swap on demand**. That is fine for
+"switch chat model", and it technically *works* for embeddings (preseed
+Embedding-8B, lazy-swap to it on an /v1/embeddings call, swap back). But **RAG
+traffic interleaves embeddings and generation per user request** — with ~7 s
+swaps each way this is unusable beyond a demo. Whisper+chat voice flows have the
+same shape.
+
+Decision: plan an **auxiliary resident model slot** (Phase 3) rather than bending
+the swap machinery:
+- A second, small `WeightsArena` (own capacity flag, e.g. `--aux-arena-gb 20`)
+  holding one auxiliary model (embedding/reranker/whisper class) **concurrently**
+  with the primary chat model. UMA budget: 47 GiB chat + 15–18 GiB aux + KV
+  still fits 128 GB (KV budget must subtract the aux arena — feeds the existing
+  Phase-3 KV-sizing work from the truncation plan).
+- Aux models are non-autoregressive (single forward, KV freed immediately —
+  §1.3), so they need no persistent KV pool, no decode loop, no drain machinery:
+  a lightweight request loop on its own thread + CUDA stream, using
+  `prefill_batch_chunk` for batching. The primary scheduler is untouched.
+- Registry/kernels: aux target loads via the existing `ensure_target` (append-only,
+  already hot-swap-proof). Snapshots/preseed reuse the same `.raw` format —
+  arch-agnostic (§1.3).
+- Whisper is aux-slot-shaped too (encoder forward + short decode loop), but its
+  decode loop makes it the one aux class that may justify staying swap-based
+  initially.
+
+Until Phase 3 lands, Phases 1–2 ship on the existing swap model (correct, slow
+for interleaved traffic — documented limitation).
+
+---
+
+## 5. Dependency-ordered implementation plan
+
+One commit per numbered step, `hotswap:`/`multiclass:` prefix, branch
+`modifications`. GPU validation is run by the user; each phase ships a script.
+
+### Phase 1 — Text reranker + embeddings (cheapest win; no new kernels)
+
+**1.0 bf16 target smoke test — GATE for everything below.**
+`quant=bf16` is supported by the runtime per D2 but has **never been built or
+executed** — "supported but never exercised" is exactly the latent-bug category
+that bit us with the watchdog stack. Before any dense-loader work: create the
+bf16 target skeleton `kernels/gb10/qwen3-dense-8b/bf16` (empty kernel dir +
+`KERNEL.toml -DHDIM=128`), extend the two quant-compat gates (`serve.rs:113`,
+`swap_target.rs:82`) to accept bf16, and run the smallest feasible bf16 smoke on
+the box — route an already-runnable model through the bf16 kernel path (bf16
+GEMM/GEMV, bf16 paged attention, norms from the common set) or, if no bf16
+checkpoint boots yet, a minimal harness that drives those kernels with real
+weights and compares against a reference.
+*Acceptance (hard):* a bf16 forward produces correct, non-NaN, non-degenerate
+outputs against a reference (greedy tokens or logits within tolerance of a known
+CPU/BF16 reference for a fixed prompt); build logs show the bf16 target compiling
+with ~0 new nvcc invocations. **If bf16 surprises, we learn it here — at step
+1.0, not after half of Phase 1 is built.** No 1.1+ work starts before this
+passes.
+
+**1.1 Dense-Qwen3 model support.**
+`Qwen3DenseWeightLoader` modeled on `gemma4/loader_a.rs`
+(`Qwen3AttentionLayer::new_ungated` + `FfnComponent::Dense`, standard qwen3
+weight names); match arm `"qwen3"` in `factory.rs::loader_for_config`;
+`load_lm_head` must tolerate the Embedding checkpoint having **no lm_head**
+(Reranker has one; Embedding pools hidden states). ModelConfig parse for plain
+`qwen3` (trivial — subset of qwen3_next).
+*Acceptance:* `cargo test` green; boot Reranker-8B on the box, prompt-too-long
+and basic chat-completion smoke works (it is a causal LM — it can literally chat).
+
+**1.2 Finalize target `gb10/qwen3-dense-8b/bf16`** (per D1/D2; skeleton and
+quant gates already landed + smoke-verified in 1.0): complete the MODEL.toml
+(`[[model_types]] qwen3/4096`, minimal `[behavior]` — watchdogs off, no
+thinking, sampling presets).
+*Acceptance:* boot of a `qwen3`/4096 checkpoint selects the target via
+`ptx_for_config`; behavior audit logs show watchdogs off.
+
+**1.3 Non-generative request path.**
+New `InferenceRequest::Pooled { prompt_tokens, pooling: LastToken|MeanNorm|
+LogitPair(u32,u32), reply: oneshot }` (or a flag on Blocking); scheduler branch in
+the two immediate-finish sites returns after prefill; new Model methods
+`copy_hidden_to_host` (over `hidden_after_norm()` — last-token pooled) and the
+LogitPair read via existing `copy_logits_to_host`. Batching: route through
+`run_batched_prefill_step` untouched (outputs per-stream). Home for pooling/
+normalize helpers: the reserved `atlas-embed` crate.
+*Acceptance:* unit tests with mock GPU; embedding vector for a fixed prompt is
+identical across two runs and across batch-of-1 vs batch-of-8 (bitwise, temp-0
+path has no sampling).
+
+**1.4 Endpoints.**
+Replace the `/v1/embeddings` stub (OpenAI shape: `input: str|[str]`, returns
+float arrays, L2-normalized; instruction-prefix support per Qwen3-Embedding
+usage); add `/v1/rerank` (renders the Qwen3-Reranker chat template per
+(query, document) pair, scores = softmax over yes/no token logits). Both go
+through the lazy-swap interceptor (`ensure_model_active`) so preseeded
+embedding/reranker models swap in on demand — registry/preseed/snapshot reuse
+is automatic (name-keyed arena).
+*Acceptance:* `scripts/embed_rerank_test.sh` — preseed chat+embedding+reranker;
+/v1/embeddings returns 4096-dim normalized vectors, self-similarity ≈ 1.0,
+related > unrelated similarity; /v1/rerank orders an obvious (query, docs) set
+correctly; swap back to chat still bit-identical (existing A/B methodology).
+
+### Phase 2 — VL embedding + reranker (reuses the wired vision path)
+
+**2.1 Target `gb10/qwen3-vl-dense-8b/bf16`** (per D3): vision override kernels
+copied from `qwen3-vl-30b-a3b`, text from common.
+**2.2 Loader wiring**: `qwen3_vl` (non-MoE, dense FFN) arm — reuse
+`Qwen3VLWeightLoader::load_vision_encoder` for the tower + the Phase-1 dense text
+loader; verify `config.vision` parses from these checkpoints (deepstack indexes
+match the implemented encoder).
+**2.3 Endpoint input**: accept `image_url` content parts in /v1/embeddings and
+/v1/rerank documents; call the existing `vision_preprocess` + pad-expansion seam;
+`Pooled` requests carry `image_pixels` (field already exists on requests).
+*Acceptance:* `scripts/vl_embed_test.sh` — image and its caption embed closer
+than image vs unrelated text; text-only inputs on the VL model match Phase-1
+behavior; serve.rs must NOT log "serving TEXT-ONLY" (vision module present).
+
+### Phase 3 — Auxiliary resident model slot (the RAG enabler; see §4)
+
+**3.0 BLOCKING PRECONDITION (hard gate, not a parallel wish):** the
+deterministic per-model KV-pool sizing from the truncation plan (its Phase 3:
+per-model `inference_reserve`/budgets on the swap path + deterministic KV budget
+instead of the ambient-free-memory fallback) **MUST be completed and verified on
+the box BEFORE 3.1 starts.** Rationale: the aux slot only works correctly if the
+primary KV budget provably subtracts the aux arena — with today's
+"auto-measure implausible → raw used_so_far" fallback, adding a 15–18 GiB aux
+arena would silently shrink (or OOM) the primary model's KV in a
+non-deterministic way. Verification = the truncation-plan Phase-3 acceptance
+(same model ⇒ identical block count on every load; no "auto-measure implausible"
+in logs).
+
+**3.1** Second arena + aux model lifecycle (load/unload admin API,
+`--aux-model`/`ATLAS_AUX_MODEL`, preseed integration).
+**3.2** Aux request loop (own thread + stream, `prefill_batch_chunk`, no decode);
+route /v1/embeddings and /v1/rerank to the aux slot when the requested model is
+aux-resident, else fall back to lazy-swap.
+**3.3** KV budget integration: primary KV sizing subtracts the aux arena
+(builds directly on the 3.0-gated deterministic-KV work).
+*Acceptance:* `scripts/rag_concurrency_test.sh` — interleaved chat + embedding
+requests with ZERO model swaps (swap counter flat), chat latency unaffected
+within noise, aux embeddings identical to Phase-1 values; **plus:** the primary
+KV budget demonstrably subtracts the aux arena (logged block count with aux
+loaded = block count without aux minus exactly the aux-arena share), and a boot
+with chat + aux shows neither OOM nor silent KV shrinkage (block count matches
+the deterministic prediction).
+
+### Phase 4 — Whisper (most new work; greenfield arch)
+
+**4.1** Audio front-end: `audio_preprocess.rs` (symphonia + 128-mel, 30 s
+windows) + golden-vector test against reference mels.
+**4.2** Whisper model: encoder (conv frontend + bidirectional self-attn via
+`causal=false` at the existing flag site), decoder (causal self-attn + cross-attn
+as paged decode over the static encoder KV), loader + config parse; **validate
+`-DHDIM=64`** early (fallback: head-padding to 128 or a small attention variant —
+this is the phase's main kernel risk, front-load it).
+**4.3** Target `gb10/whisper-large-v3/bf16` + generation loop (special-token
+protocol: language/task/timestamp tokens), `/v1/audio/transcriptions`
+(multipart), long-audio chunking with overlap.
+*Acceptance:* `scripts/whisper_test.sh` — known WAV transcribes to reference
+text (WER < 5% on a small fixture set); 3-minute file chunks correctly;
+runs in the aux slot or via swap.
+
+### Explicit infra reuse (all phases)
+Arena/snapshot/preseed/lazy-swap apply unchanged to every model here: weights are
+name-keyed (`WeightStore`/`WeightsArena`/`.raw` snapshots are arch-agnostic), the
+registry accepts any (id, hash), and `ensure_target` loads new kernel targets on
+first swap. The only touched invariants: quant gate learns bf16 (1.2), KV budget
+learns the aux arena (3.3).
+
+### Deliberately out of scope
+`/v1/audio/speech` (TTS), image generation, EP/world_size>1 for aux models,
+quantizing the embedding models to NVFP4 (revisit only if bf16 latency
+disappoints), streaming transcription.
+
+---
+
+## 6. Risk register
+
+| Risk | Phase | Mitigation |
+|---|---|---|
+| First-ever bf16 target exposes untested kernel paths | **1.0 (gate)** | front-loaded as step 1.0: bf16 skeleton + quant gates + on-box smoke with hard non-NaN/reference acceptance BEFORE any loader work |
+| Embedding checkpoint lacks lm_head → loader assumptions | 1.1 | make `load_lm_head` optional; Pooled path never calls lm_head |
+| `-DHDIM=64` unsupported by paged decode | 4.2 | validate first thing in Phase 4; fallback head-padding |
+| Aux slot memory pressure silently shrinks / OOMs primary KV | **3.0 (blocking gate)** | deterministic KV sizing (truncation-plan Phase 3) MUST be completed and verified before 3.1 starts; 3.3 acceptance proves the aux-arena subtraction explicitly |
+| Qwen3-VL config variance (deepstack/dtype differs between the two VL checkpoints: bf16 vs f32 vision dtype) | 2.2 | config-parse test against both cached config.json before loader work |
