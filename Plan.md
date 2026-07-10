@@ -250,6 +250,9 @@ One commit per numbered step, `hotswap:`/`multiclass:` prefix, branch
 ### Phase 1 — Text reranker + embeddings (cheapest win; no new kernels)
 
 **1.0 bf16 target smoke test — GATE for everything below.**
+*Status: implemented (`2648317`) — target compiles as `(gb10, qwen3-dense-8b,
+bf16)` with 0 overrides; quant gates needed no change (bf16 already accepted);
+awaiting on-box `scripts/bf16_smoke_test.sh` PASS before 1.1 starts.*
 `quant=bf16` is supported by the runtime per D2 but has **never been built or
 executed** — "supported but never exercised" is exactly the latent-bug category
 that bit us with the watchdog stack. Before any dense-loader work: create the
