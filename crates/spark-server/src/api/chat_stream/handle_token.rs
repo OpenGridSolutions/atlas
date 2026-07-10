@@ -580,6 +580,9 @@ fn process_detector_content(
                 "SimHash semantic-loop watchdog fired (paraphrased sentence repeat)"
             );
         }
+        crate::metrics::WATCHDOG_STOPS_TOTAL
+            .with_label_values(&[if semantic_trip { "simhash" } else { "line_loop" }])
+            .inc();
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;
         state

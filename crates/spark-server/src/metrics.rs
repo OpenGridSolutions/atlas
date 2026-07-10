@@ -111,4 +111,18 @@ lazy_static! {
             "Cumulative seconds each model was the resident (active) model",
             &["model"]
         ).unwrap();
+
+    // ── Loop-watchdog stop counter (Plan.md 1.3) ──
+    //
+    // Every loop-watchdog kill surfaces to the client as
+    // `finish_reason: "length"` — indistinguishable from a genuine
+    // max_tokens truncation. This counter makes watchdog-caused
+    // truncations diagnosable from /metrics without grepping logs.
+    // detector ∈ {fuzzy, content_loop, simhash, line_loop}.
+    pub static ref WATCHDOG_STOPS_TOTAL: IntCounterVec =
+        register_int_counter_vec!(
+            "atlas_watchdog_stops_total",
+            "Generations hard-stopped by a loop watchdog, by detector",
+            &["detector"]
+        ).unwrap();
 }

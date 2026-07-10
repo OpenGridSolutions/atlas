@@ -179,6 +179,9 @@ pub fn handle_content_token(a: &mut ActiveSeq, tok: u32, model: &dyn Model) {
                     CONTENT_LOOP_PERIOD_MIN,
                     CONTENT_LOOP_PERIOD_MAX,
                 );
+                crate::metrics::WATCHDOG_STOPS_TOTAL
+                    .with_label_values(&["content_loop"])
+                    .inc();
                 a.finished = true;
             }
         }

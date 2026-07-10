@@ -657,7 +657,11 @@ pub fn process_decode_logits(
             // stopped a correct answer — 2026-07-10 multi-model session).
             // Worst case of an unclosed fence: the watchdog stays off for
             // the rest of the response, bounded by max_tokens.
-            if enable_loop_watchdog()
+            // `!disable_watchdogs()` closes the ATLAS_DISABLE_WATCHDOGS
+            // asymmetry: this was the only scheduler detector that
+            // ignored the kill switch.
+            if !crate::scheduler::helpers::disable_watchdogs()
+                && enable_loop_watchdog()
                 && !a.finished
                 && !a.inside_thinking
                 && !inside_tool_call
@@ -686,6 +690,9 @@ pub fn process_decode_logits(
                              mismatches), stopping at {} tokens (rollback declined: {reason:?})",
                             a.output_tokens.len()
                         );
+                        crate::metrics::WATCHDOG_STOPS_TOTAL
+                            .with_label_values(&["fuzzy"])
+                            .inc();
                         a.finished = true;
                     }
                 }
