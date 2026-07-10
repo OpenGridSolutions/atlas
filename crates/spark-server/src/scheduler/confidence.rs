@@ -23,6 +23,32 @@ pub fn toggle_code_fence(in_fence: bool, tok: u32, fence_tok: Option<u32>) -> bo
     }
 }
 
+/// Mask-aware fence toggle: when the per-model fence-token MASK is
+/// installed (`helpers::fence_token_mask`), flip parity on ANY token
+/// whose text contains an odd number of ``` markers — the vocab has
+/// merged variants (`" ```"`, `" ```\n"`) beyond the atomic ``` id,
+/// and missing them leaves `in_code_fence` stale (the watchdogs then
+/// fire inside code blocks). Falls back to the single-id
+/// [`toggle_code_fence`] when no mask is installed (tests / exotic
+/// tokenizers) — fail-open, same as before.
+pub fn toggle_code_fence_masked(
+    in_fence: bool,
+    tok: u32,
+    fence_tok: Option<u32>,
+    mask: Option<&[bool]>,
+) -> bool {
+    match mask {
+        Some(m) => {
+            if (tok as usize) < m.len() && m[tok as usize] {
+                !in_fence
+            } else {
+                in_fence
+            }
+        }
+        None => toggle_code_fence(in_fence, tok, fence_tok),
+    }
+}
+
 /// `CONFIDENCE_RUN_LIMIT` is the default streak length before F2's
 /// confidence-early-stop arms `</think>`. The live limit is
 /// `watchdog_params().confidence_run_length` (MODEL.toml-tunable).

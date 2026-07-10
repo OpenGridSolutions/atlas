@@ -215,10 +215,11 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         // scheduler-local params, so the fence token id lives on the
         // seq). The content-loop watchdog below is suppressed inside
         // fences: repetitive code is usually legitimate.
-        a.in_code_fence = crate::scheduler::confidence::toggle_code_fence(
+        a.in_code_fence = crate::scheduler::confidence::toggle_code_fence_masked(
             a.in_code_fence,
             tok,
             a.code_fence_token,
+            crate::scheduler::helpers::fence_token_mask().as_deref(),
         );
         // Content-phase loop watchdog. Mirrored from
         // `handle_content_token` (decode_logits_content.rs) because
@@ -283,11 +284,12 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
                 || numeric_token_mask().as_deref().is_some_and(|m| {
+                    // Counting exemption — see decode_logits_content.rs.
                     detect_content_token_loop_normalized_with(
                         &a.output_tokens,
                         m,
                         a.repetition_detection,
-                    )
+                    ) && !crate::scheduler::helpers::counting_exemption(&a.output_tokens)
                 }))
         {
             tracing::warn!(

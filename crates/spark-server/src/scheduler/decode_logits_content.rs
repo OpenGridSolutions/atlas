@@ -73,7 +73,12 @@ pub fn handle_content_token(a: &mut ActiveSeq, tok: u32, model: &dyn Model) {
     // below and the fuzzy-repetition detector (decode_logits_step.rs)
     // are suppressed while inside a fence — repetitive code is usually
     // legitimate, and a hard stop there truncates a correct answer.
-    a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, a.code_fence_token);
+    a.in_code_fence = toggle_code_fence_masked(
+        a.in_code_fence,
+        tok,
+        a.code_fence_token,
+        crate::scheduler::helpers::fence_token_mask().as_deref(),
+    );
     // F1 (2026-06-02): unconditional per-generation post-think content
     // cap — the non-MTP twin of the guard in `emit_step::emit_token`.
     // Fires regardless of `inside_tool_body` so it bounds the runaway no
@@ -135,11 +140,14 @@ pub fn handle_content_token(a: &mut ActiveSeq, tok: u32, model: &dyn Model) {
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)
             || numeric_token_mask().as_deref().is_some_and(|m| {
+                // Counting exemption: a normalized-only match whose
+                // digit values are strictly monotonic is enumeration
+                // ("count from 1 to 500"), not a stuck number loop.
                 detect_content_token_loop_normalized_with(
                     &a.output_tokens,
                     m,
                     a.repetition_detection,
-                )
+                ) && !crate::scheduler::helpers::counting_exemption(&a.output_tokens)
             }))
     {
         // 2026-05-23 sweep: re-scan to report the matched

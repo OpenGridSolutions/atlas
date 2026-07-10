@@ -180,3 +180,29 @@ fn boundary_at_least_one_path_eventually_fires() {
     assert!(should_inject_think_end(true, true, false, true)); // fence + override
     assert!(should_inject_think_end(true, true, true, true)); // all true → fire
 }
+
+#[test]
+fn masked_toggle_fires_on_any_masked_id() {
+    // ids 3 ("```"), 5 (" ```"), 7 (" ```\n") all carry a fence marker.
+    let mut mask = vec![false; 8];
+    mask[3] = true;
+    mask[5] = true;
+    mask[7] = true;
+    assert!(toggle_code_fence_masked(false, 5, Some(3), Some(&mask)));
+    assert!(!toggle_code_fence_masked(true, 7, Some(3), Some(&mask)));
+    // Non-masked id leaves state unchanged even if it equals fence_tok
+    // fallback semantics don't apply while a mask is installed.
+    assert!(toggle_code_fence_masked(true, 4, Some(3), Some(&mask)));
+}
+
+#[test]
+fn masked_toggle_falls_back_to_atomic_id_without_mask() {
+    assert!(toggle_code_fence_masked(false, 3, Some(3), None));
+    assert!(!toggle_code_fence_masked(false, 4, Some(3), None));
+}
+
+#[test]
+fn masked_toggle_out_of_range_id_is_inert() {
+    let mask = vec![true; 2];
+    assert!(!toggle_code_fence_masked(false, 99, Some(3), Some(&mask)));
+}

@@ -467,6 +467,121 @@ pub fn mid_word_token_mask() -> Option<std::sync::Arc<[bool]>> {
     load_mask(&MID_WORD_TOKEN_MASK)
 }
 
+/// `mask[id] == true` iff token `id`'s decoded text contains an ODD
+/// number of ``` markers — i.e. sampling it flips the code-fence
+/// parity. The fence toggle must fire on ANY fence-carrying token,
+/// not only the single atomic ``` id: the Qwen3 vocab also has
+/// `" ```"` and `" ```\n"` as merged tokens, and a fence emitted via
+/// one of those left `in_code_fence` stale — the fuzzy-repetition
+/// watchdog then ran inside the code block and hard-stopped legit
+/// repetitive code (2026-07-10, cut at 1596 tokens, intermittent
+/// because tokenization varies with sampling). Per-model — ArcSwap so
+/// a hot-swap re-install takes effect. Fail-open: never set → the
+/// toggle falls back to the atomic `code_fence_token` id.
+static FENCE_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> = arc_swap::ArcSwapOption::const_empty();
+
+/// Install the fence-token mask (boot and every hot-swap).
+pub fn set_fence_token_mask(mask: std::sync::Arc<[bool]>) {
+    store_mask(&FENCE_TOKEN_MASK, mask);
+}
+
+/// Read the fence-token mask. `None` until `set_fence_token_mask` runs.
+pub fn fence_token_mask() -> Option<std::sync::Arc<[bool]>> {
+    load_mask(&FENCE_TOKEN_MASK)
+}
+
+/// Per-id digit payload for tokens classified numeric by the
+/// numeric-token mask: the parsed value of the digit run, its digit
+/// count, and whether the token carries a leading space (which starts
+/// a NEW number when reconstructing multi-token numerals).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DigitTok {
+    pub value: u32,
+    pub digits: u8,
+    pub leading_space: bool,
+}
+
+/// Sized wrapper for the same arc-swap reason as [`MaskCell`].
+struct DigitCell(std::sync::Arc<[Option<DigitTok>]>);
+
+/// Per-id digit values (parallel to the numeric-token mask). Drives the
+/// counting exemption of the digit-normalized content-loop path.
+/// Per-model — ArcSwap. Fail-open: never set → no exemption, the
+/// normalized detector behaves exactly as before.
+static NUMERIC_TOKEN_VALUES: arc_swap::ArcSwapOption<DigitCell> =
+    arc_swap::ArcSwapOption::const_empty();
+
+/// Install the numeric-token values (boot and every hot-swap).
+pub fn set_numeric_token_values(vals: std::sync::Arc<[Option<DigitTok>]>) {
+    NUMERIC_TOKEN_VALUES.store(Some(std::sync::Arc::new(DigitCell(vals))));
+}
+
+/// Read the numeric-token values. `None` until installed.
+pub fn numeric_token_values() -> Option<std::sync::Arc<[Option<DigitTok>]>> {
+    NUMERIC_TOKEN_VALUES.load().as_ref().map(|c| c.0.clone())
+}
+
+/// True iff the numbers formed by the digit-run tokens in the scan-
+/// window tail are strictly monotonic (all increasing or all
+/// decreasing) with at least 3 numbers. Consecutive digit tokens are
+/// concatenated into one number (Qwen splits `45` into `4`,`5`); a
+/// leading-space digit token starts a new number.
+///
+/// This is the discriminator the digit-normalized loop detector lacks:
+/// "count from 1 to 500" produces the exact same normalized period-2
+/// structure (digit, newline) as a stuck number loop — but counting
+/// has strictly changing VALUES, while a degenerate loop repeats or
+/// oscillates them. Observed live 2026-07-10: the normalized path
+/// killed a legitimate counting request at 49 tokens
+/// (`matched_period=0`, `finish_reason=length`).
+pub fn digit_tail_is_monotonic(tokens: &[u32], vals: &[Option<DigitTok>]) -> bool {
+    let tail_start = tokens.len().saturating_sub(CONTENT_LOOP_SCAN_WINDOW);
+    let mut nums: Vec<u128> = Vec::new();
+    let mut cur: Option<(u128, u32)> = None; // (value so far, digit count)
+    for &t in &tokens[tail_start..] {
+        let d = vals.get(t as usize).copied().flatten();
+        match d {
+            Some(d) => {
+                if d.leading_space && let Some((v, _)) = cur.take() {
+                    nums.push(v);
+                }
+                let (v, dc) = cur.take().unwrap_or((0, 0));
+                let ndc = dc + u32::from(d.digits);
+                if ndc > 30 {
+                    return false; // absurdly long digit run — not counting
+                }
+                cur = Some((v * 10u128.pow(u32::from(d.digits)) + u128::from(d.value), ndc));
+            }
+            None => {
+                if let Some((v, _)) = cur.take() {
+                    nums.push(v);
+                }
+            }
+        }
+    }
+    if let Some((v, _)) = cur {
+        nums.push(v);
+    }
+    // The window may start mid-number ("127" truncated to "27" breaks
+    // an otherwise monotonic run) — the first group is unreliable
+    // whenever history was cut off.
+    if tail_start > 0 && !nums.is_empty() {
+        nums.remove(0);
+    }
+    if nums.len() < 3 {
+        return false;
+    }
+    nums.windows(2).all(|w| w[1] > w[0]) || nums.windows(2).all(|w| w[1] < w[0])
+}
+
+/// Counting exemption for the digit-normalized content-loop path: the
+/// tail reads as a strictly monotonic number sequence ⇒ the model is
+/// enumerating (counting, numbered output), not looping. `false` when
+/// no value table is installed (fail-open to the old behaviour).
+pub fn counting_exemption(tokens: &[u32]) -> bool {
+    numeric_token_values().is_some_and(|v| digit_tail_is_monotonic(tokens, &v))
+}
+
 /// F2 (2026-04-26): cap on free-text tokens between successive
 /// `<tool_call>` opens when `tool_choice="auto"`. The grammar FSM
 /// in `auto` mode (grammar.rs:461-462) sets `at_least_one=false`

@@ -482,3 +482,120 @@ fn second_watchdog_params_install_replaces_the_first() {
     set_enable_loop_watchdog(false);
     assert!(!enable_loop_watchdog());
 }
+
+// ── Counting exemption (digit_tail_is_monotonic) ──
+//
+// Token convention for these tests: ids 0-9 are the single digits
+// 0-9 (value = id), id 10 is "\n" (non-numeric), id 11 is a
+// leading-space digit " 4".
+
+fn digit_values() -> Vec<Option<DigitTok>> {
+    let mut v: Vec<Option<DigitTok>> = vec![None; 12];
+    for (d, slot) in v.iter_mut().take(10).enumerate() {
+        *slot = Some(DigitTok {
+            value: d as u32,
+            digits: 1,
+            leading_space: false,
+        });
+    }
+    v[11] = Some(DigitTok {
+        value: 4,
+        digits: 1,
+        leading_space: true,
+    });
+    v
+}
+
+#[test]
+fn counting_up_is_monotonic() {
+    // "1\n2\n3\n…\n12\n" — multi-digit numbers built from single-digit
+    // tokens ("12" = tokens 1,2 with no separator).
+    let vals = digit_values();
+    let mut tokens: Vec<u32> = Vec::new();
+    for n in 1..=12u32 {
+        for c in n.to_string().bytes() {
+            tokens.push(u32::from(c - b'0'));
+        }
+        tokens.push(10); // "\n"
+    }
+    assert!(digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn counting_down_is_monotonic() {
+    let vals = digit_values();
+    let mut tokens: Vec<u32> = Vec::new();
+    for n in (3..=9u32).rev() {
+        tokens.push(n);
+        tokens.push(10);
+    }
+    assert!(digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn repeated_number_is_not_monotonic() {
+    // "7\n7\n7\n7\n" — a genuinely stuck number loop must NOT be exempt.
+    let vals = digit_values();
+    let tokens: Vec<u32> = vec![7, 10, 7, 10, 7, 10, 7, 10];
+    assert!(!digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn oscillating_template_loop_is_not_monotonic() {
+    // "- B(46) = 7\n- B(47) = 9\n…": values 46,7,47,9,48,2 oscillate.
+    let vals = digit_values();
+    let tokens: Vec<u32> = vec![
+        4, 6, 10, 7, 10, // 46, 7
+        4, 7, 10, 9, 10, // 47, 9
+        4, 8, 10, 2, 10, // 48, 2
+    ];
+    assert!(!digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn leading_space_digit_starts_a_new_number() {
+    // "1 4" → numbers [1, 4], plus "5\n6\n": monotonic 1,4,5,6.
+    let vals = digit_values();
+    let tokens: Vec<u32> = vec![1, 11, 10, 5, 10, 6, 10];
+    assert!(digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn fewer_than_three_numbers_is_not_exempt() {
+    let vals = digit_values();
+    let tokens: Vec<u32> = vec![1, 10, 2, 10];
+    assert!(!digit_tail_is_monotonic(&tokens, &vals));
+}
+
+#[test]
+fn no_value_table_disables_exemption() {
+    assert!(!counting_exemption(&[1, 10, 2, 10, 3, 10]));
+}
+
+#[test]
+fn normalized_loop_fire_is_suppressed_for_counting() {
+    // End-to-end at the detector level: the digit-normalized loop
+    // detector MATCHES a counting tail (that is by design), and the
+    // counting exemption is what must veto the fire.
+    let vals = digit_values();
+    let mut mask = vec![false; 12];
+    for slot in mask.iter_mut().take(10) {
+        *slot = true;
+    }
+    mask[11] = true;
+    let mut tokens: Vec<u32> = Vec::new();
+    for n in 1..=40u32 {
+        for c in n.to_string().bytes() {
+            tokens.push(u32::from(c - b'0'));
+        }
+        tokens.push(10);
+    }
+    assert!(
+        detect_content_token_loop_normalized(&tokens, &mask),
+        "normalized detector is expected to match counting output"
+    );
+    assert!(
+        digit_tail_is_monotonic(&tokens, &vals),
+        "…and the exemption vetoes it"
+    );
+}

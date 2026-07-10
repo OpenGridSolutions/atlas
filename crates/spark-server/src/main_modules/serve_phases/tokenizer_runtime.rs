@@ -99,23 +99,58 @@ pub(crate) fn resolve_tokenizer_runtime(
     // (cheap, model-agnostic, one-time); only *consumed* under the
     // per-model `enable_loop_watchdog()` gate. Fail-open: any decode
     // error leaves that id `false`.
+    // Same decode pass also builds:
+    // - the numeric-token VALUES table (parsed digit value + count +
+    //   leading-space flag per numeric id) — drives the counting
+    //   exemption of the normalized content-loop path: "count from 1
+    //   to 500" is structurally identical to a stuck number loop, but
+    //   its values are strictly monotonic (helpers.rs);
+    // - the fence-token MASK (ids whose text contains an odd number of
+    //   ``` markers) — the fence-parity toggle must fire on merged
+    //   variants like " ```" / " ```\n", not only the atomic ``` id,
+    //   or `in_code_fence` goes stale and the loop watchdogs fire
+    //   inside code blocks (2026-07-10 intermittent 1596-token cut).
     {
         let vocab_size = tokenizer.inner().get_vocab_size(true);
         let mut mask: Vec<bool> = vec![false; vocab_size];
+        let mut values: Vec<Option<crate::scheduler::DigitTok>> = vec![None; vocab_size];
+        let mut fence_mask: Vec<bool> = vec![false; vocab_size];
         let mut numeric_count = 0usize;
-        for (id, slot) in mask.iter_mut().enumerate() {
+        let mut fence_count = 0usize;
+        for id in 0..vocab_size {
             if let Ok(s) = tokenizer.decode_with_special(&[id as u32]) {
+                let leading_space = s.starts_with(' ');
                 let body = s.strip_prefix(' ').unwrap_or(&s);
                 if !body.is_empty() && body.bytes().all(|b| b.is_ascii_digit()) {
-                    *slot = true;
+                    mask[id] = true;
                     numeric_count += 1;
+                    // ≤9 digits always fits u32; longer single tokens
+                    // (none in Qwen's digit-split vocab) stay None and
+                    // simply disable the exemption for that id.
+                    if body.len() <= 9 {
+                        values[id] = Some(crate::scheduler::DigitTok {
+                            value: body.parse().unwrap_or(0),
+                            digits: body.len() as u8,
+                            leading_space,
+                        });
+                    }
+                }
+                if s.matches("```").count() % 2 == 1 {
+                    fence_mask[id] = true;
+                    fence_count += 1;
                 }
             }
         }
         crate::scheduler::set_numeric_token_mask(std::sync::Arc::from(mask));
+        crate::scheduler::set_numeric_token_values(std::sync::Arc::from(values));
+        crate::scheduler::set_fence_token_mask(std::sync::Arc::from(fence_mask));
         tracing::info!(
             "Numeric-token mask: {numeric_count}/{vocab_size} ids classified \
              as digit-runs (digit-normalized content-loop path active)"
+        );
+        tracing::info!(
+            "Fence-token mask: {fence_count}/{vocab_size} ids carry a ``` marker \
+             (code-fence watchdog exemption tracks all of them)"
         );
     }
 

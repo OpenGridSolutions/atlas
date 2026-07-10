@@ -255,7 +255,12 @@ pub fn process_decode_logits(
                 // model mid-statement. THINK_LOOP (below) deliberately
                 // stays active even inside fences: it catches
                 // *repeating* fence-narration, not one coherent block.
-                a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, code_fence_token);
+                a.in_code_fence = toggle_code_fence_masked(
+                    a.in_code_fence,
+                    tok,
+                    code_fence_token,
+                    crate::scheduler::helpers::fence_token_mask().as_deref(),
+                );
                 // Set force_end_thinking when budget exhausted (picked up next iteration)
                 if let Some(budget) = a.thinking_budget
                     && a.thinking_tokens >= budget
