@@ -1,0 +1,50 @@
+# Qwen3 dense 8B — shared kernel target for Qwen3-Embedding-8B and
+# Qwen3-Reranker-8B (multiclass Plan.md D1/D2, step 1.0/1.2).
+#
+# Both checkpoints are byte-identical in geometry (standard dense
+# attention-only Qwen3: no SSM, no MoE) and differ only in head usage —
+# reranking reads 2 logit entries, embedding pools hidden states. Neither
+# needs kernels beyond the common set: all dims are runtime launch
+# parameters; the only compile-time bake is -DHDIM=128 (bf16/KERNEL.toml),
+# identical to the six existing head_dim=128 targets, so the build is all
+# nvcc cache hits.
+#
+# quant dir: bf16/ — the FIRST bf16-labeled target in the tree (Plan.md
+# step 1.0 smoke gate). Checkpoints are stock BF16; embedding/rerank
+# quality is cosine-similarity-sensitive, so weights stay unquantized.
+
+[model]
+name = "qwen3-dense-8b"
+hf_id = "Qwen/Qwen3-Embedding-8B"  # also Qwen/Qwen3-Reranker-8B (same geometry)
+model_type = "qwen3"
+architecture = "dense_attention"
+parameters = "8B"
+active_parameters = "8B"
+
+layers_total = 36
+hidden_dim = 4096
+head_dim = 128
+q_heads = 32
+kv_heads = 8
+
+intermediate_size = 12288
+vocab_size = 151669
+max_position_embeddings = 40960
+
+rms_norm_eps = 1e-6
+tie_word_embeddings = false
+
+# Dense model — no MoE, no MTP, no vision.
+moe_experts = 0
+mtp_layers = 0
+
+[behavior]
+# Embedding/reranker class: single-forward use, no thinking, no tool
+# calls, no generation-quality watchdogs. enable_loop_watchdog defaults
+# to false; stated here for the audit log. Finalized in Plan.md step 1.2.
+enable_loop_watchdog = false
+thinking_default = false
+
+[[model_types]]
+model_type = "qwen3"
+hidden_size = 4096

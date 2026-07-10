@@ -1,0 +1,12 @@
+# Qwen3 dense 8B — bf16 quant variant (first bf16-labeled target,
+# Plan.md multiclass step 1.0).
+#
+# No override .cu files: the model reuses the common base kernel set
+# in full (dense bf16 GEMM/GEMV, bf16 paged attention, norms, rope).
+# The flag set matches the six existing head_dim=128 targets
+# (minimax-m2, mistral-small-4, nemotron-3-nano/super, step3p7,
+# qwen3-vl-30b-a3b) exactly, so every kernel compile is a build-cache
+# hit. [modules] renames are inherited from common/KERNEL.toml.
+
+[build]
+extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]
