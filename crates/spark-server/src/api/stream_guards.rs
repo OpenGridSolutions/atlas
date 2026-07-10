@@ -35,6 +35,43 @@ pub fn bump_f12_tool_call_count(count: &mut usize, max: usize, stop: &mut bool) 
     }
 }
 
+/// Track markdown ``` code-fence parity across streamed content
+/// deltas. Line-based (fences are line-initial per the markdown
+/// spec): a completed line whose trimmed start is ``` toggles
+/// `in_fence`. The tail of the last incomplete line is kept in
+/// `line_buf` so a marker split across deltas is still recognised;
+/// the buffer is capped — an over-long unterminated line cannot be a
+/// fence marker anyway.
+///
+/// Consumers ([`check_loop_watchdog`] and the SimHash guard in
+/// `handle_token.rs`) are suppressed while inside a fence:
+/// repetitive code (identical table rows, enum arms, SQL columns) is
+/// usually legitimate, and tripping there truncates a correct answer
+/// (observed 2026-07-10: scheduler fuzzy watchdog killed a Vue
+/// `<th class="px-6 …">` table 4× — the API guards share the same
+/// blind spot).
+pub fn update_fence_state(text: &str, line_buf: &mut String, in_fence: &mut bool) {
+    for ch in text.chars() {
+        if ch == '\n' {
+            if line_buf.trim_start().starts_with("```") {
+                *in_fence = !*in_fence;
+            }
+            line_buf.clear();
+        } else if line_buf.len() < 256 {
+            line_buf.push(ch);
+        }
+    }
+    // A partial line that already reads ``` toggles immediately: the
+    // fence content that follows in the SAME delta (before any newline
+    // arrives) must already be exempt from the guards.
+    if line_buf.trim_start().starts_with("```") {
+        *in_fence = !*in_fence;
+        // Consume the marker so the newline flush above doesn't
+        // double-toggle; keep accumulating the rest of the line.
+        line_buf.clear();
+    }
+}
+
 /// Detect a repeating line or long phrase in the post-detector
 /// content buffer. Returns true when the last non-trivial line
 /// occurs (fuzzy-matched on collapsed whitespace) at least 4 times
@@ -185,6 +222,57 @@ mod tests {
         bump_f12_tool_call_count(&mut count, 12, &mut stop);
         assert_eq!(count, 13);
         assert!(stop);
+    }
+
+    #[test]
+    fn fence_state_toggles_on_line_initial_marker() {
+        let (mut buf, mut fence) = (String::new(), false);
+        update_fence_state("Here is the table:\n```html\n", &mut buf, &mut fence);
+        assert!(fence, "opening ``` must enter fence state");
+        update_fence_state("<th>a</th>\n<th>a</th>\n", &mut buf, &mut fence);
+        assert!(fence, "fence body must not toggle");
+        update_fence_state("```\n", &mut buf, &mut fence);
+        assert!(!fence, "closing ``` must leave fence state");
+    }
+
+    #[test]
+    fn fence_marker_split_across_deltas_is_recognised() {
+        let (mut buf, mut fence) = (String::new(), false);
+        update_fence_state("``", &mut buf, &mut fence);
+        assert!(!fence);
+        update_fence_state("`vue\n", &mut buf, &mut fence);
+        assert!(fence, "``+`vue across deltas is one opening marker");
+    }
+
+    #[test]
+    fn fence_opener_without_newline_toggles_immediately() {
+        let (mut buf, mut fence) = (String::new(), false);
+        update_fence_state("```", &mut buf, &mut fence);
+        assert!(fence, "code following in the same delta must be exempt");
+        // The info string + newline later must NOT double-toggle.
+        update_fence_state("rust\nfn main() {}\n", &mut buf, &mut fence);
+        assert!(fence);
+    }
+
+    #[test]
+    fn inline_backticks_mid_line_do_not_toggle() {
+        let (mut buf, mut fence) = (String::new(), false);
+        update_fence_state("use ``` for fences\n", &mut buf, &mut fence);
+        assert!(!fence);
+    }
+
+    #[test]
+    fn repeated_lines_inside_fence_do_not_trip_watchdog_when_gated() {
+        // The handle_token integration gates check_loop_watchdog on the
+        // fence state; this pins the intended composition: identical
+        // <th …> rows only trip the guard when NOT fence-gated.
+        let line = "<th scope=\"col\" class=\"px-6 py-3 text-left\">Title</th>\n";
+        let mut buf = String::new();
+        let mut fired = false;
+        for _ in 0..6 {
+            fired |= check_loop_watchdog(line, &mut buf, false);
+        }
+        assert!(fired, "ungated, repeated rows trip the line guard");
     }
 
     #[test]

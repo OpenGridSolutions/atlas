@@ -526,8 +526,26 @@ fn process_detector_content(
     // post-sanitizer text in both call sites.
     let sanitized = sanitized_or_raw;
 
+    // Markdown ``` fence parity: both loop guards below are suppressed
+    // while the content is inside a code fence — repetitive code
+    // (identical table rows / enum arms) is usually legitimate, and
+    // tripping there truncates a correct answer (the scheduler-side
+    // watchdogs got the same exemption, Plan.md 1.1/1.2). A delta that
+    // touches a fence in either direction is exempt in full; fence
+    // content is also kept OUT of both guards' scan buffers so it
+    // cannot trip them after the fence closes.
+    // `ATLAS_DISABLE_WATCHDOGS=1` now covers these guards too.
+    let was_in_fence = state.in_code_fence;
+    crate::api::stream_guards::update_fence_state(
+        sanitized,
+        &mut state.fence_line_buf,
+        &mut state.in_code_fence,
+    );
+    let guards_active =
+        !crate::scheduler::disable_watchdogs() && !was_in_fence && !state.in_code_fence;
+
     // F4 SimHash guard.
-    let semantic_trip = if !state.loop_watchdog_triggered {
+    let semantic_trip = if guards_active && !state.loop_watchdog_triggered {
         state.simhash_pending.push_str(sanitized);
         let mut dup = false;
         if crate::loop_simhash::ends_at_sentence_boundary(&state.simhash_pending).is_some()
@@ -545,11 +563,15 @@ fn process_detector_content(
         false
     };
 
-    let token_trip = check_loop_watchdog(
-        sanitized,
-        &mut state.loop_scan_buf,
-        state.loop_watchdog_triggered,
-    );
+    let token_trip = if guards_active {
+        check_loop_watchdog(
+            sanitized,
+            &mut state.loop_scan_buf,
+            state.loop_watchdog_triggered,
+        )
+    } else {
+        false
+    };
 
     if semantic_trip || token_trip {
         if semantic_trip {

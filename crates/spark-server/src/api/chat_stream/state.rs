@@ -77,6 +77,16 @@ pub(super) struct StreamState {
     /// F4: pending bytes accumulated until a sentence-boundary or
     /// 1KB force-flush triggers a `simhash_guard.check()`.
     pub(super) simhash_pending: String,
+    /// True while the streamed content is inside an unclosed markdown
+    /// ``` code fence (line-based parity, see
+    /// `stream_guards::update_fence_state`). The SimHash and line-level
+    /// loop guards are suppressed while set: repetitive code inside a
+    /// fence is usually legitimate (identical table rows, enum arms, …)
+    /// and killing the stream there truncates a correct answer.
+    pub(super) in_code_fence: bool,
+    /// Tail of the last incomplete line, kept so a fence marker split
+    /// across content deltas is still recognised.
+    pub(super) fence_line_buf: String,
     /// F5: cross-flush tool-arg dedup (default thresholds).
     pub(super) tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup,
     /// F11: tighter within-response tool-arg dedup for the
@@ -186,6 +196,8 @@ impl StreamState {
             salvaged_tool_call: false,
             simhash_guard: crate::loop_simhash::SimHashLoopGuard::new(),
             simhash_pending: String::new(),
+            in_code_fence: false,
+            fence_line_buf: String::new(),
             tool_arg_dedup: crate::tool_arg_dedup::ToolArgDedup::new(),
             tool_arg_dedup_within: crate::tool_arg_dedup::ToolArgDedup::with_params(4, 2, 3),
             streaming_tool_args: HashMap::new(),
