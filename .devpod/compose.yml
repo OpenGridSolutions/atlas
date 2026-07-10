@@ -6,7 +6,7 @@ services:
       args:
         CUDA_IMAGE: docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
     image: atlas-gb10-dev:local
-    container_name: atlas-gb10-dev
+    container_name: atlas-gb10
     restart: "no"
     networks:
       - proxy_net
@@ -33,7 +33,8 @@ services:
       - atlas-sccache:/build/sccache               # sccache compiler cache
     # Idle container -> build and serve manually via `podman exec` + ./serve.sh
     environment:
-      - ATLAS_PRESEED_MODELS=|
+      - IS_SANDBOX=1
+      - ATLAS_PRESEED_MODELS=
           [
             "nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4",
             "vincentzed-hf/Qwen3-Coder-Next-NVFP4"
