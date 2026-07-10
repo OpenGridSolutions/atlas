@@ -296,7 +296,9 @@ pub fn process_decode_logits(
             // `decode_logits_content.rs` to keep this file ≤500 LoC.
             // `model` is threaded through so a watchdog rollback can
             // restore SSM recurrent state on hybrid models (Phase-C).
-            handle_content_token(a, model);
+            // `tok` drives the ``` fence-parity toggle: the loop
+            // watchdogs are suppressed inside content code fences.
+            handle_content_token(a, tok, model);
         }
 
         // Track <tool_call> token: once seen, legacy tool call requirement is satisfied.
@@ -649,10 +651,17 @@ pub fn process_decode_logits(
                 (Some(_), None) => true,
                 _ => false,
             };
+            // Skip inside content ``` fences: repetitive code is usually
+            // legitimate (e.g. 20 identical `<th class="px-6 …">` table
+            // header lines matched as a fuzzy 36-token loop and hard-
+            // stopped a correct answer — 2026-07-10 multi-model session).
+            // Worst case of an unclosed fence: the watchdog stays off for
+            // the rest of the response, bounded by max_tokens.
             if enable_loop_watchdog()
                 && !a.finished
                 && !a.inside_thinking
                 && !inside_tool_call
+                && !a.in_code_fence
                 && let Some((pattern_len, mis_a, mis_b)) = detect_fuzzy_repetition(&a.output_tokens)
             {
                 // Phase-C: roll back past the repeated window and

@@ -17,6 +17,7 @@ pub(super) fn promote_completed_prefills(
     active: &mut Vec<ActiveSeq>,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
 ) {
@@ -65,6 +66,7 @@ pub(super) fn promote_completed_prefills(
             now,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
             model.decode_rollback_ring_slots(),
@@ -92,6 +94,7 @@ fn build_active_seq_from_prefill(
     now: Instant,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     // Phase-C decode-rollback ring capacity (`model.decode_rollback_ring_slots()`).
@@ -157,6 +160,7 @@ fn build_active_seq_from_prefill(
         in_code_fence: false,
         think_end_token,
         think_start_token,
+        code_fence_token,
         // When thinking is disabled but model supports thinking, the template
         // pre-closes with `<think>\n\n</think>\n\n`. Set think_ended=true so
         // the </think> logit suppression is active from the start.

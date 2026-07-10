@@ -25,6 +25,7 @@ pub(super) fn start_new_requests(
     spontaneous_think_budget: u32,
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     active: &mut Vec<ActiveSeq>,
@@ -166,6 +167,7 @@ pub(super) fn start_new_requests(
             match start_chunked_prefill(
                 think_end_token,
                 think_start_token,
+                code_fence_token,
                 tool_call_start_token,
                 tool_call_end_token,
                 model,
@@ -206,6 +208,7 @@ pub(super) fn start_new_requests(
             match prefill_request(
                 think_end_token,
                 think_start_token,
+                code_fence_token,
                 tool_call_start_token,
                 tool_call_end_token,
                 model,

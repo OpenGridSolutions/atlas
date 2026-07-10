@@ -193,18 +193,25 @@ pub(super) struct ActiveSeq {
     pub sentence_defer_count: u32,
     /// Consecutive tokens where top-1 softmax prob >= 0.95 (for confidence early stop).
     pub consecutive_confident: u32,
-    /// True while the model is inside an unclosed ``` code fence within
-    /// the current thinking block. Toggled on each sampled code-fence
-    /// token. The F2 confidence early-stop is suppressed while this is
-    /// set: code is near-deterministic (high top-1 prob) but that is
-    /// NOT a "done reasoning" signal — braking here truncates the model
-    /// mid-statement. Per-seq state, persisted across decode steps and
-    /// snapshots.
+    /// True while the model is inside an unclosed ``` code fence —
+    /// tracked in the thinking block AND in the content phase. Toggled
+    /// on each sampled code-fence token; reset at `</think>`. Two
+    /// consumers suppress themselves while this is set: the F2
+    /// confidence early-stop (code is near-deterministic, not a "done
+    /// reasoning" signal) and the content-phase loop watchdogs
+    /// (fuzzy-repetition + content-loop): repetitive code is often
+    /// legitimate — e.g. 20 identical `<th class="px-6 …">` table
+    /// header lines — and hard-stopping there truncates a correct
+    /// answer mid-block. Per-seq state, persisted across decode steps
+    /// and snapshots.
     pub in_code_fence: bool,
     /// Token ID for `</think>` (needed for budget enforcement in emit_token).
     pub think_end_token: Option<u32>,
     /// Token ID for `<think>` (needed for spontaneous thinking detection in emit_token).
     pub think_start_token: Option<u32>,
+    /// Token ID of the atomic ``` code-fence token (needed to maintain
+    /// `in_code_fence` in emit_token, which has no scheduler-local params).
+    pub code_fence_token: Option<u32>,
     /// True after the first `</think>` token is generated.
     pub think_ended: bool,
     /// One-shot signal: set when `</think>` was the most recently emitted token.
@@ -415,6 +422,7 @@ pub(super) struct SwappedSeq {
     pub in_code_fence: bool,
     pub think_end_token: Option<u32>,
     pub think_start_token: Option<u32>,
+    pub code_fence_token: Option<u32>,
     pub think_ended: bool,
     pub think_just_ended: bool,
     pub think_skip_count: u32,

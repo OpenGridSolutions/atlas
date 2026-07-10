@@ -421,6 +421,7 @@ pub fn run(
             spontaneous_think_budget,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
             &mut active,

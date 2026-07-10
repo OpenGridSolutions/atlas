@@ -214,6 +214,7 @@ pub(super) fn continue_in_progress_prefills(
             active,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
         );
@@ -246,6 +247,7 @@ pub(super) fn continue_in_progress_prefills(
             active,
             think_end_token,
             think_start_token,
+            code_fence_token,
             tool_call_start_token,
             tool_call_end_token,
         );
@@ -353,6 +355,7 @@ pub(super) fn continue_in_progress_prefills(
         active,
         think_end_token,
         think_start_token,
+        code_fence_token,
         tool_call_start_token,
         tool_call_end_token,
     );

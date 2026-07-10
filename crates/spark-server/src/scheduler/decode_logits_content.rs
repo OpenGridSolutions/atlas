@@ -57,16 +57,23 @@ fn describe_content_token_loop(tokens: &[u32]) -> Option<(usize, usize)> {
 
 /// Handle one sampled token that lands in the content phase (model is
 /// not inside `<think>`). Mutates `a` in place: decrements the
-/// generation budget, advances content counters, and runs the
-/// content-loop + inter-tool-prose watchdogs.
+/// generation budget, advances content counters, maintains the ```
+/// code-fence parity, and runs the content-loop + inter-tool-prose
+/// watchdogs.
 ///
 /// `model` is needed by the Phase-C boundary rollback so it can restore
 /// SSM recurrent state on hybrid models (see
 /// [`super::rollback::rollback_to_boundary`]).
-pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
+pub fn handle_content_token(a: &mut ActiveSeq, tok: u32, model: &dyn Model) {
     a.consume_generation_budget();
     a.content_started = true;
     a.content_tokens = a.content_tokens.saturating_add(1);
+    // Track ``` fence parity in the CONTENT phase (the thinking-phase
+    // twin lives in decode_logits_step.rs). The content-loop watchdog
+    // below and the fuzzy-repetition detector (decode_logits_step.rs)
+    // are suppressed while inside a fence — repetitive code is usually
+    // legitimate, and a hard stop there truncates a correct answer.
+    a.in_code_fence = toggle_code_fence(a.in_code_fence, tok, a.code_fence_token);
     // F1 (2026-06-02): unconditional per-generation post-think content
     // cap — the non-MTP twin of the guard in `emit_step::emit_token`.
     // Fires regardless of `inside_tool_body` so it bounds the runaway no
@@ -123,6 +130,7 @@ pub fn handle_content_token(a: &mut ActiveSeq, model: &dyn Model) {
     if !crate::scheduler::helpers::disable_watchdogs()
         && enable_loop_watchdog()
         && !a.inside_tool_body
+        && !a.in_code_fence
         && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
         && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
         && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)

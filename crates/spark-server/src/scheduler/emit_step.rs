@@ -210,6 +210,16 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         // Clear think_just_ended one-shot now that we've consumed the
         // token after </think>.
         a.think_just_ended = false;
+        // Track ``` fence parity in the content phase (mirrors
+        // handle_content_token on the non-MTP path — emit_token has no
+        // scheduler-local params, so the fence token id lives on the
+        // seq). The content-loop watchdog below is suppressed inside
+        // fences: repetitive code is usually legitimate.
+        a.in_code_fence = crate::scheduler::confidence::toggle_code_fence(
+            a.in_code_fence,
+            tok,
+            a.code_fence_token,
+        );
         // Content-phase loop watchdog. Mirrored from
         // `handle_content_token` (decode_logits_content.rs) because
         // that handler is only invoked on the non-MTP decode path
@@ -268,6 +278,7 @@ pub fn emit_token(a: &mut ActiveSeq, tok: u32, logprobs: Option<crate::api::Toke
         if !disable_watchdogs()
             && enable_loop_watchdog()
             && !a.inside_tool_body
+            && !a.in_code_fence
             && a.content_tokens >= CONTENT_LOOP_MIN_TOKENS
             && a.content_tokens.is_multiple_of(CONTENT_LOOP_CHECK_STRIDE)
             && (detect_content_token_loop_with(&a.output_tokens, a.repetition_detection)

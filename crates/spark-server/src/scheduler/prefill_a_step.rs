@@ -8,6 +8,7 @@ use super::*;
 pub fn start_chunked_prefill(
     think_end_token: Option<u32>,
     think_start_token: Option<u32>,
+    code_fence_token: Option<u32>,
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     model: &dyn Model,
@@ -385,6 +386,7 @@ pub fn start_chunked_prefill(
                 in_code_fence: false,
                 think_end_token,
                 think_start_token,
+                code_fence_token,
                 think_ended: !req_enable_thinking && think_end_token.is_some(),
                 think_just_ended: false,
                 think_skip_count: 0,
@@ -470,6 +472,7 @@ pub fn start_chunked_prefill(
                 in_code_fence: false,
                 think_end_token,
                 think_start_token,
+                code_fence_token,
                 think_ended: if spontaneous_think {
                     false
                 } else {
