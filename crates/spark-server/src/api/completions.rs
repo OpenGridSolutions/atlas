@@ -137,6 +137,21 @@ pub async fn completions(
             ),
         );
     }
+    // Clamp the generation budget to the context that is actually left
+    // (Plan.md 2.1). Nothing downstream bounds prompt + max_tokens: an
+    // unclamped budget runs the sequence past the context window until
+    // the KV pool starves — which kills the whole decode batch with an
+    // untyped stream error instead of a clean `finish_reason: "length"`.
+    let max_tokens = req.max_tokens.min(state.max_seq_len - prompt_len);
+    if max_tokens < req.max_tokens {
+        tracing::info!(
+            requested = req.max_tokens,
+            clamped = max_tokens,
+            prompt_len,
+            "max_tokens clamped to remaining context (max_seq_len {})",
+            state.max_seq_len
+        );
+    }
 
     let temperature = req.temperature.unwrap_or(rt.default_temperature);
     let top_k = req.top_k.unwrap_or(rt.default_top_k);
@@ -161,7 +176,7 @@ pub async fn completions(
             state,
             rt,
             prompt_tokens,
-            req.max_tokens,
+            max_tokens,
             temperature,
             top_k,
             top_p,
@@ -190,7 +205,7 @@ pub async fn completions(
         prompt_tokens: std::sync::Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),
-        max_tokens: req.max_tokens,
+        max_tokens,
         min_tokens: 0,
         temperature,
         top_k,

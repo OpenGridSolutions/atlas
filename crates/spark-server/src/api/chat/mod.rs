@@ -267,6 +267,24 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
+    // Clamp the generation budget to the context that is actually left
+    // (Plan.md 2.1). Nothing downstream bounds prompt + max_tokens: an
+    // unclamped budget runs the sequence past the context window until
+    // the KV pool starves — which kills the whole decode batch with an
+    // untyped stream error instead of a clean `finish_reason: "length"`.
+    // `prompt_len < max_seq_len` is guaranteed by the 400 above.
+    let requested_max_tokens = max_tokens;
+    let max_tokens = max_tokens.min(state.max_seq_len - prompt_len);
+    if max_tokens < requested_max_tokens {
+        tracing::info!(
+            requested = requested_max_tokens,
+            clamped = max_tokens,
+            prompt_len,
+            "max_tokens clamped to remaining context (max_seq_len {})",
+            state.max_seq_len
+        );
+    }
+
     // ── Phase 7: dispatch streaming or blocking ─────────────────
     if req.stream {
         return super::chat_stream_dispatch::dispatch_streaming(
