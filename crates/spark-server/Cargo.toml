@@ -48,7 +48,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 clap = { version = "4", features = ["derive"] }
-axum = { version = "0.8", features = ["json"] }
+axum = { version = "0.8", features = ["json", "multipart"] }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 tokio-stream = "0.1"
 futures = "0.3"

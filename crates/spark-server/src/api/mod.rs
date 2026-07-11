@@ -28,6 +28,7 @@
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
 pub mod admin;
+pub mod audio;
 pub mod chat;
 pub mod chat_blocking;
 pub mod chat_phases;

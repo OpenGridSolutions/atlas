@@ -100,7 +100,9 @@ pub(crate) async fn build_and_serve(
             get(api::files_stub).delete(api::files_stub),
         )
         .route("/v1/files/{id}/content", get(api::files_stub))
-        .route("/v1/audio/transcriptions", post(api::audio_stub))
+        // Whisper speech-to-text (multiclass Plan.md W.3) — resident
+        // sidecar, independent of the hot-swap state (not GATED).
+        .route("/v1/audio/transcriptions", post(api::audio::transcriptions))
         .route("/v1/audio/translations", post(api::audio_stub))
         .route("/v1/audio/speech", post(api::audio_stub))
         .route("/v1/images/generations", post(api::images_stub))
