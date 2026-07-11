@@ -1,0 +1,12 @@
+# whisper-large-v3 — bf16 quant variant (multiclass Plan.md W.2).
+#
+# whisper.cu is the only net-new kernel file (module "whisper"):
+# layernorm-with-bias, broadcast bias-add, fused bias+GELU, and the
+# dense attention kernel with a runtime causal flag (encoder self-attn
+# non-causal, decoder self-attn causal, cross-attn non-causal over the
+# static 1500-frame encoder output). All projections run on common
+# dense_gemm_bf16 / dense_gemv_bf16. No -DHDIM flag: whisper never
+# touches the paged attention path.
+
+[build]
+extra_nvcc_flags = ["--fmad=false"]

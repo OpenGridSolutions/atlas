@@ -1,0 +1,43 @@
+# openai/whisper-large-v3 — speech-to-text (multiclass Plan.md Phase W).
+#
+# Encoder-decoder (audio encoder + text decoder with cross-attention);
+# served as a RESIDENT SIDECAR MODULE outside the scheduler/Model-trait
+# stack (Plan W.0 gate finding) — this target exists so the sidecar can
+# load its kernels through the standard registry path. BF16 compute
+# (FP32 checkpoint -> BF16 at load; NO NVFP4 quantization anywhere).
+#
+# bf16/ ships whisper.cu (layernorm-with-bias, bias-add, bias-gelu,
+# dense attention with runtime causal flag) on top of the common set
+# (dense_gemm_bf16 / dense_gemv_bf16 do all projections).
+
+[model]
+name = "whisper-large-v3"
+hf_id = "openai/whisper-large-v3"
+model_type = "whisper"
+architecture = "encoder_decoder"
+parameters = "1.5B"
+active_parameters = "1.5B"
+
+layers_total = 64            # 32 encoder + 32 decoder
+hidden_dim = 1280
+head_dim = 64
+q_heads = 20
+kv_heads = 20
+
+intermediate_size = 5120
+vocab_size = 51866
+max_position_embeddings = 448  # decoder; encoder fixed at 1500 frames
+
+rms_norm_eps = 1e-5
+tie_word_embeddings = true
+
+moe_experts = 0
+mtp_layers = 0
+
+[behavior]
+enable_loop_watchdog = false
+thinking_default = false
+
+[[model_types]]
+model_type = "whisper"
+hidden_size = 1280
