@@ -26,7 +26,7 @@ pub(super) use config::{
     load_model_config, merge_sidecar_quant_config, resolve_model_dir,
 };
 #[cfg(feature = "cuda")]
-pub(super) use preseed::{registered_model, run_boot_preseed};
+pub(super) use preseed::{registered_model_checked, run_boot_preseed};
 #[cfg(feature = "cuda")]
 pub(super) use swap_target::{prepare_swap_target, target_key};
 pub(super) use kv_cache::{

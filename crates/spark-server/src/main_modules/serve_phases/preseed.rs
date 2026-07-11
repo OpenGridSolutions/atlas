@@ -34,6 +34,48 @@ pub(crate) fn registered_model(
     })
 }
 
+/// [`registered_model`] plus servability gates (multiclass Plan.md, ENV
+/// caveat): a preseed entry is only REGISTERED when Atlas can actually
+/// serve it end to end — config parses, a weight loader exists for its
+/// model_type, a compiled kernel target matches, and the quants are
+/// compatible. Callers skip (warn, not bail) on `Err`, so a full preseed
+/// list containing not-yet-implemented model classes (e.g. the dense
+/// qwen3 embedding/reranker checkpoints before their loader lands) no
+/// longer aborts boot — the server comes up with whatever is loadable.
+pub(crate) fn registered_model_checked(
+    args: &cli::ServeArgs,
+    model_id: &str,
+) -> Result<RegisteredModel> {
+    let reg = registered_model(args, model_id)?;
+    let model_dir =
+        crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
+    let (mut config, _json) = super::load_model_config(&model_dir)
+        .with_context(|| format!("parsing config.json of preseed model '{model_id}'"))?;
+    super::apply_lm_head_dtype_override(args, &mut config)?;
+    super::merge_sidecar_quant_config(&model_dir, &mut config);
+    // Loader gate first — its message names the actionable gap.
+    spark_model::factory::loader_for_config(&config).map_err(|e| {
+        anyhow::anyhow!("no weight loader for model_type '{}' yet: {e}", config.model_type)
+    })?;
+    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
+        .with_context(|| {
+            format!(
+                "no compiled kernel target matches model_type '{}' / hidden_size {}",
+                config.model_type, config.hidden_size
+            )
+        })?;
+    let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
+    if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
+        bail!(
+            "kernel/model quant mismatch (kernel target {} quant={} vs model quant={})",
+            ptx_set.target,
+            ptx_set.target.quant,
+            model_quant,
+        );
+    }
+    Ok(reg)
+}
+
 /// True when `path` holds a snapshot whose full 32-byte model_version_hash
 /// matches — the filename alone (4 hash bytes) is NOT trusted, per plan:
 /// a stale snapshot after a kernel/format change must be regenerated.

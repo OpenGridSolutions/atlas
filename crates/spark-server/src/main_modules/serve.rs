@@ -538,7 +538,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         if model_registry.iter().any(|m| m.model_id == *id) {
             continue;
         }
-        model_registry.push(serve_phases::registered_model(&args, id)?);
+        // Servability-gated registration: a preseed entry whose model
+        // class Atlas cannot serve yet (no loader / no kernel target /
+        // quant mismatch / unparseable config) is SKIPPED with a warning
+        // instead of aborting boot — the full .env list stays in place
+        // and the server comes up with whatever is loadable. Skipped ids
+        // are not registered, so requests naming them get the regular
+        // 404 + available-models listing.
+        match serve_phases::registered_model_checked(&args, id) {
+            Ok(m) => model_registry.push(m),
+            Err(e) => tracing::warn!(
+                "Preseed: skipping '{id}': {e:#} — model NOT registered (boot continues)"
+            ),
+        }
     }
     #[cfg(not(feature = "cuda"))]
     if !preseed_models.is_empty() {
