@@ -364,6 +364,100 @@ NVFP4 (revisit only if bf16 latency disappoints).
 
 ---
 
+## Phase W — Whisper speech-to-text (re-scoped 2026-07-11, after Phase 2)
+
+### W.0 GATE FINDING — encoder-decoder feasibility (checked FIRST, per mandate)
+
+**Verdict: ADDITIVE — no fundamental rebuild of Atlas' abstractions. Proceeding
+autonomously.** Grounds:
+
+1. **The decoder-only Model/scheduler stack cannot carry Whisper cheaply**: the
+   `Model` trait has 30 REQUIRED methods (of 74), shaped around paged KV, SSM
+   checkpoints, MTP/speculative and spill — a `WhisperModel: Model` would be
+   ~16 real methods + 14 landmine stubs, and the scheduler's prefill/decode
+   phases assume token prompts, not audio. Forcing whisper through it touches
+   the paths we must not destabilize.
+2. **Atlas already ships the escape hatch**: the `VisionEncoder`
+   (`layers/vision_encoder/enc_impl/*`) is a self-contained GPU transformer
+   encoder OUTSIDE the Model trait — bias-ful GEMMs (`vision_gemm_bias`),
+   GELU, NON-causal attention at an odd head_dim (72), own kernel module,
+   driven synchronously. Whisper's audio encoder (conv×2 + 32 bidirectional
+   layers, head_dim 64, sinusoidal pos-emb) is architecturally the same
+   animal; the decoder (32 layers, causal self-attn ≤448 pos + cross-attn
+   over a STATIC 1500-frame encoder output + GELU MLP) is small enough
+   (per-seq KV = [448, 20, 64] × 2 × 32 L ≈ 88 MB bf16 dense buffers) to run
+   as a plain greedy loop in the same module — no paged KV, no scheduler.
+3. **Consequence — Whisper as a resident sidecar module**, invoked directly by
+   the /v1/audio/transcriptions handler behind its own async mutex: it never
+   enters the scheduler, the hot-swap arena, or the registry. ~3.2 GiB BF16
+   weights stay resident next to the chat model (128 GB UMA absorbs it), so
+   transcription NEVER forces a 7 s model swap and the active chat model
+   stays untouched. **Deliberate deviation from "Lazy-Swap-Verhalten wie
+   gehabt"** — a swap-based whisper would evict the chat model on every
+   transcription; resident is strictly better and additive.
+4. **Kernels**: one genuinely new kernel is required — `whisper_attention`
+   (bf16, runtime `causal` flag, head_dim 64, Q/K/V as dense buffers; naive
+   tiled implementation suffices: encoder worst case ≈ 0.4 TFLOP per 30 s
+   chunk, milliseconds on GB10). Everything else composes from existing
+   kernels: `dense_gemm_bf16`/`gemm` (+ host-side bias add fused via the
+   vision module's `vision_gemm_bias` pattern), `gelu` (gemma override),
+   conv frontend via host im2col (3000×128 mel is 1.5 MB) + GEMM.
+5. **Precision (deviation from "F16 nativ")**: the weight pipeline has NO
+   FP16 dtype (BF16/FP32/FP8 only) — and the cached checkpoint ships
+   `model.fp32-*.safetensors` (FP32, not F16). Loading converts FP32→BF16
+   (lossless vs F16 in exponent, −3 mantissa bits); compute is BF16. The
+   requirement's core intent — do NOT route through runtime BF16→NVFP4
+   quantization — is honored: no quantization anywhere in the whisper path.
+
+### W.1 Audio frontend (CPU)
+`spark-model/src/audio_preprocess.rs`: multipart bytes → decode (`symphonia`:
+wav/mp3/flac/m4a/ogg) → resample to 16 kHz mono (linear) → log-mel spectrogram
+(**128 mel bins — verified against HF config `num_mel_bins: 128`**; n_fft 400,
+hop 160, HF Whisper mel filterbank formula, log10 + max-8dB clamp + /4 scaling
+per reference) → `[n_frames, 128]` f32, padded/split to 3000-frame (30 s)
+windows. Pure CPU, unit-tested against golden values (synthetic sine).
+
+### W.2 Whisper module (GPU, VisionEncoder pattern)
+`spark-model/src/whisper/`: weight loader (name-keyed from the store —
+`model.encoder.*` / `model.decoder.*`, FP32→BF16 via `dense_f32_safe`),
+encoder forward (conv1(s1)+GELU → conv2(s2)+GELU → +sinusoid pos →
+32×[LN, self-attn(non-causal), LN, MLP-GELU] → LN), decoder greedy loop
+(SOT/lang/task/notimestamps protocol from `generation_config.json`, causal
+self-attn with dense KV append, cross-attn over the per-chunk encoder output,
+suppress/begin-suppress token sets, EOT stop, max 448). Kernel target
+`gb10/whisper-large-v3/bf16`: `whisper_attention.cu` (new) + `gelu.cu`
+(gemma copy) + w4a16_gemm.cu (eager-symbol standard copy) on top of common.
+Chunking **stage 1: fixed 30 s slicing**, transcripts concatenated in order —
+the module API takes `Vec<MelChunk>` so overlapping/merging is a later
+additive change (documented).
+
+### W.3 Serving
+Resident sidecar: loaded on first /v1/audio/transcriptions request (guarded by
+an async `OnceCell`-style mutex; weights via the existing model_resolver +
+WeightStore, NOT the hot-swap arena), then kept for process lifetime.
+Endpoint: OpenAI multipart (`file`, `model`, optional `language`,
+`response_format` json|text|verbose_json subset). Whisper is NOT added to the
+preseed registry (it can't be scheduler-served); the resolver accepts
+`openai/whisper-large-v3` and the endpoint 404s other model ids with a clear
+message.
+
+### W.4 Acceptance (scripts/whisper_test.sh; temp-file response reads)
+Fixtures: deterministic synthetic speech is unreliable — fixture strategy is
+espeak-ng if present on the box, else a checked-in generated WAV
+(`test_data/whisper_fixture.wav`, spoken digits via espeak at build time of
+the fixture, committed once). A1 short audio → non-empty text; A2 keyword
+check (case-insensitive, no WER obsession); A3 >30 s audio (fixture repeated
++ distinct second-half keyword) → late keyword present (chunking works); A4
+the 6 existing models still answer afterwards (S1 pattern).
+
+### W risks
+| Risk | Mitigation |
+|---|---|
+| New whisper_attention kernel correctness | CPU-reference microtest (bf16_target_smoke pattern) BEFORE end-to-end |
+| Mel filterbank mismatch vs HF | golden-value unit test from the HF formula; keywords-not-WER acceptance |
+| FP32 checkpoint is 6.2 GiB on disk | loads once, converts to ~3.2 GiB BF16 resident |
+| Sidecar memory vs KV budget | 3.2 GiB; boot order note — start Atlas after, or accept the self-relative KV measure absorbing it |
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
