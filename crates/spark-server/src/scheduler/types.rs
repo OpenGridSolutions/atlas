@@ -134,6 +134,11 @@ pub(super) struct PrefillInProgress {
     /// Raw first-token logits at `logit_probe` ids (filled by the
     /// first-token sampling site that completes this prefill).
     pub probed_logits: Option<Vec<f32>>,
+    /// Capture the pooled last-token hidden state at the first-token
+    /// sampling site (multiclass 1.3, embeddings).
+    pub capture_hidden: bool,
+    /// The captured pooled hidden state (parallel to `probed_logits`).
+    pub pooled_hidden: Option<Vec<f32>>,
 }
 
 /// An in-flight sequence participating in batched decode.
@@ -356,6 +361,9 @@ pub(super) struct ActiveSeq {
     /// scheduler tick they become active, so they can never be swapped
     /// out.
     pub probed_logits: Option<Vec<f32>>,
+    /// Pooled last-token hidden state (multiclass 1.3, embeddings) —
+    /// same lifecycle contract as `probed_logits`.
+    pub pooled_hidden: Option<Vec<f32>>,
 }
 
 impl ActiveSeq {

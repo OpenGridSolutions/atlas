@@ -91,6 +91,15 @@ impl InferenceRequest {
         }
     }
 
+    /// Whether to capture the pooled last-token hidden state (multiclass
+    /// 1.3, embeddings). Blocking-only, like the logit probe.
+    pub fn capture_hidden(&self) -> bool {
+        match self {
+            InferenceRequest::Blocking { capture_hidden, .. } => *capture_hidden,
+            InferenceRequest::Streaming { .. } => false,
+        }
+    }
+
     /// Top-k sampling parameter.
     pub fn top_k(&self) -> u32 {
         match self {

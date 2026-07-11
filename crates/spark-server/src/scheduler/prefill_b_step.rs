@@ -20,8 +20,10 @@ pub fn prefill_request(
 ) -> Result<Option<ActiveSeq>> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
-    // Logit probe (multiclass 1.3, rerank) — extracted after prefill below.
+    // Logit probe + pooled-hidden capture (multiclass 1.3) — extracted
+    // after prefill below.
     let logit_probe = req.take_logit_probe();
+    let capture_hidden = req.capture_hidden();
     let eos_tokens = if stop_tokens.is_empty() {
         eos_tokens.to_vec()
     } else {
@@ -116,7 +118,9 @@ pub fn prefill_request(
     seq.session_hash = req_session_hash;
 
     // Guard: free SSM slot on any error after allocation (Bug #16).
-    let prefill_result = (|| -> Result<(u32, Option<Vec<f32>>)> {
+    // (first token, probed logits, pooled hidden) — multiclass 1.3.
+    type FirstTokenOutputs = (u32, Option<Vec<f32>>, Option<Vec<f32>>);
+    let prefill_result = (|| -> Result<FirstTokenOutputs> {
         // Vision: encode images and store embeddings for prefill token overwrite.
         if !image_pixels.is_empty() {
             model.prepare_vision_embed(&image_pixels)?;
@@ -151,10 +155,16 @@ pub fn prefill_request(
                 Vec::new()
             })
         });
-        Ok((tok, probed))
+        let pooled = capture_hidden.then(|| {
+            model.pooled_hidden_f32().unwrap_or_else(|e| {
+                tracing::error!("pooled-hidden capture failed: {e:#}");
+                Vec::new()
+            })
+        });
+        Ok((tok, probed, pooled))
     })();
 
-    let (first, probed_logits) = match prefill_result {
+    let (first, probed_logits, pooled_hidden) = match prefill_result {
         Ok(token) => token,
         Err(e) => {
             let msg = format!("prefill failed: {e:#}");
@@ -275,6 +285,7 @@ pub fn prefill_request(
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
             probed_logits: probed_logits.clone(),
+            pooled_hidden: pooled_hidden.clone(),
         };
         finish_sequence(model, &mut a);
         return Ok(None);
@@ -362,5 +373,6 @@ pub fn prefill_request(
         timeout_at: req_timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         probed_logits,
+        pooled_hidden,
     }))
 }

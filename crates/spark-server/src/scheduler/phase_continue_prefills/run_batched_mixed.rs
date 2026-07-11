@@ -140,7 +140,7 @@ pub(super) fn run_batched_mixed_step(
                     chunk_lens[i],
                     p.prompt_tokens.len(),
                 );
-                crate::scheduler::sample_step::probe_first_token_into(model, logits, p);
+                crate::scheduler::sample_step::probe_first_token_into(model, logits, p, false);
                 completed_indices.push((i, Some(first)));
             }
             Err(e) => {

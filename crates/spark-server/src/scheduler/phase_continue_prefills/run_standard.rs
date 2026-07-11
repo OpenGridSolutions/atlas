@@ -143,6 +143,7 @@ pub(super) fn run_standard_chunk_loop(
                                 model,
                                 result.prefill_logits,
                                 p,
+                                true,
                             );
                             completed_indices.push((idx, Some(first)));
                         }
@@ -229,7 +230,9 @@ pub(super) fn run_standard_chunk_loop(
                 ) {
                     Ok(first) => {
                         tracing::info!("Prefill first token: {first}");
-                        crate::scheduler::sample_step::probe_first_token_into(model, logits, p);
+                        crate::scheduler::sample_step::probe_first_token_into(
+                            model, logits, p, true,
+                        );
                         completed_indices.push((idx, Some(first)));
                     }
                     Err(e) => {

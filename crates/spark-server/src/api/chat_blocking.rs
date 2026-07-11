@@ -146,6 +146,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             top_logprobs,
             timeout_at,
             logit_probe: None,
+            capture_hidden: false,
             response_tx: tx,
         };
 

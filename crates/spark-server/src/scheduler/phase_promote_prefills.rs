@@ -203,5 +203,6 @@ fn build_active_seq_from_prefill(
         // Filled by the first-token sampling site in the continue-prefills
         // paths (multiclass 1.3).
         probed_logits: p.probed_logits,
+        pooled_hidden: p.pooled_hidden,
     }
 }

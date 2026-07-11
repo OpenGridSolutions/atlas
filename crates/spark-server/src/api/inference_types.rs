@@ -144,6 +144,11 @@ pub enum InferenceRequest {
         /// `max_tokens = 1` (immediate finish; the sampled token is
         /// discarded by the caller). `None` = no probe (default).
         logit_probe: Option<std::sync::Arc<[u32]>>,
+        /// Capture the post-final-norm LAST-TOKEN hidden state into
+        /// [`InferenceResponse::pooled_hidden`] (multiclass 1.3,
+        /// embeddings — Qwen3-Embedding last-token/EOS pooling). Like
+        /// `logit_probe`, combine with `max_tokens = 1`.
+        capture_hidden: bool,
         response_tx: tokio::sync::oneshot::Sender<anyhow::Result<InferenceResponse>>,
     },
     /// Streaming: sends tokens as they're generated.
@@ -267,6 +272,9 @@ pub struct InferenceResponse {
     /// `InferenceRequest::Blocking::logit_probe`, in request order.
     /// Empty when no probe was requested.
     pub probed_logits: Vec<f32>,
+    /// Post-final-norm last-token hidden state (f32, NOT yet
+    /// L2-normalized) when `capture_hidden` was requested; else empty.
+    pub pooled_hidden: Vec<f32>,
 }
 
 /// Events sent during streaming generation.

@@ -254,6 +254,16 @@ pub trait Model: Send + Sync {
     /// post-norm hidden states as input alongside the token embedding.
     fn hidden_after_norm(&self) -> DevicePtr;
 
+    /// Copy the post-final-norm LAST-TOKEN hidden state to the host as
+    /// f32 (multiclass Plan.md 1.3, embeddings): for Qwen3-Embedding
+    /// this vector — the final norm of the trailing EOS token — IS the
+    /// text embedding (last-token pooling); the caller L2-normalizes.
+    /// Must be read at the first-token sampling site, before any other
+    /// prefill/decode overwrites the shared norm buffer.
+    fn pooled_hidden_f32(&self) -> anyhow::Result<Vec<f32>> {
+        anyhow::bail!("pooled_hidden_f32: not supported by this model implementation")
+    }
+
     /// L2-resident multi-token verification: per-position argmax token IDs;
     /// each token advances KV/SSM state. All tokens go through each layer
     /// before moving on so weights stay in L2.

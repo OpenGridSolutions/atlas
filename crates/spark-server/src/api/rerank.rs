@@ -163,6 +163,7 @@ pub async fn rerank(
             top_logprobs: None,
             timeout_at,
             logit_probe: Some(probe.clone()),
+            capture_hidden: false,
             response_tx: tx,
         };
         if state.request_tx.send(request).await.is_err() {

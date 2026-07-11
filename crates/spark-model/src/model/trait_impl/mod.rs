@@ -185,6 +185,9 @@ impl Model for TransformerModel {
     fn hidden_after_norm(&self) -> DevicePtr {
         self.hidden_after_norm_dispatch()
     }
+    fn pooled_hidden_f32(&self) -> Result<Vec<f32>> {
+        self.pooled_hidden_f32_dispatch()
+    }
     fn decode_verify(
         &self,
         tokens: &[u32],

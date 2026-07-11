@@ -284,20 +284,43 @@ pub fn probe_logits(model: &dyn Model, logits: DevicePtr, ids: &[u32]) -> Result
     Ok(pick_logits(&f32_logits, ids))
 }
 
-/// Run the logit probe for a prefill that just sampled its first token
-/// (the continue-prefills paths, where results travel via
-/// `PrefillInProgress` until promotion). No-op without a probe; a probe
-/// failure degrades to an empty result rather than killing the sequence.
+/// Run the first-token output captures (logit probe + pooled hidden,
+/// multiclass 1.3) for a prefill that just sampled its first token —
+/// the continue-prefills paths, where results travel via
+/// `PrefillInProgress` until promotion. No-op without a capture
+/// request; failures degrade to an empty result rather than killing
+/// the sequence.
+///
+/// `hidden_valid`: false on the BATCHED prefill paths — the per-stream
+/// finalize passes share one norm-output buffer, so only the last
+/// stream's pooled hidden would survive; capturing there would return
+/// another request's vector. Per-stream logits buffers are distinct,
+/// so the probe stays valid everywhere.
 pub(super) fn probe_first_token_into(
     model: &dyn Model,
     logits: DevicePtr,
     p: &mut super::types::PrefillInProgress,
+    hidden_valid: bool,
 ) {
     if let Some(ids) = p.logit_probe.as_ref() {
         p.probed_logits = Some(probe_logits(model, logits, ids).unwrap_or_else(|e| {
             tracing::error!("logit probe failed: {e:#}");
             Vec::new()
         }));
+    }
+    if p.capture_hidden {
+        if hidden_valid {
+            p.pooled_hidden = Some(model.pooled_hidden_f32().unwrap_or_else(|e| {
+                tracing::error!("pooled-hidden capture failed: {e:#}");
+                Vec::new()
+            }));
+        } else {
+            tracing::error!(
+                "pooled-hidden capture requested on a BATCHED prefill path — norm buffer is \
+                 shared per batch; returning empty (handler will reject)"
+            );
+            p.pooled_hidden = Some(Vec::new());
+        }
     }
 }
 

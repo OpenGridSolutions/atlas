@@ -288,4 +288,14 @@ impl TransformerModel {
         // norm_output() holds the post-final-norm hidden state from the last decode
         self.buffers.norm_output()
     }
+
+    /// Post-final-norm last-token hidden state, D2H as f32 (multiclass
+    /// 1.3, embeddings). BF16 in the norm buffer; the preceding logits
+    /// D2H at the sampling site already ordered the norm write, so a
+    /// plain synchronous copy is race-free.
+    pub(super) fn pooled_hidden_f32_dispatch(&self) -> Result<Vec<f32>> {
+        let h = self.config.hidden_size;
+        let (vals, _norm) = self.readback_bf16(self.buffers.norm_output(), h)?;
+        Ok(vals)
+    }
 }
