@@ -11,8 +11,8 @@ use anyhow::{Context, Result};
 use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2,
-    parse_mistral_params, parse_quantization_config, parse_step3p7, parse_vision_config,
-    validate_config,
+    parse_mistral_params, parse_quantization_config, parse_qwen3_dense, parse_qwen3_vl_dense,
+    parse_step3p7, parse_vision_config, validate_config,
 };
 
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
@@ -176,6 +176,13 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
             finalize_config(&mut config, &raw)?;
             Ok(config)
         }
+        // Dense Qwen3 family (Embedding/Reranker-8B + their VL siblings).
+        // Multiclass Plan.md 1.1 (config half): "qwen3" is flat but
+        // UNGATED attention; "qwen3_vl" nests the text tower under
+        // text_config (no top-level hidden_size → the flat fallback arm
+        // failed with "missing field hidden_size at line 65").
+        "qwen3" => parse_qwen3_dense(json, &raw),
+        "qwen3_vl" => parse_qwen3_vl_dense(&raw),
         "gemma4" => parse_gemma4_params(&raw),
         "minimax_m2" => parse_minimax_m2(&raw),
         "step3p7" => parse_step3p7(&raw),

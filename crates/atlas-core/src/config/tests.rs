@@ -6,6 +6,9 @@
 
 use super::*;
 
+#[path = "tests/multiclass.rs"]
+mod multiclass;
+
 #[test]
 fn test_qwen3_default_config() {
     let cfg = ModelConfig::qwen3_next_80b_nvfp4();
