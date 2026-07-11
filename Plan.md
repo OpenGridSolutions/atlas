@@ -224,9 +224,13 @@ One commit per numbered step, `hotswap:`/`multiclass:` prefix, branch
 ### Phase 1 — Text reranker + embeddings (cheapest win; no new kernels)
 
 **1.0 bf16 target smoke test — GATE for everything below.**
-*Status: implemented (`2648317`) — target compiles as `(gb10, qwen3-dense-8b,
-bf16)` with 0 overrides; quant gates needed no change (bf16 already accepted);
-awaiting on-box `scripts/bf16_smoke_test.sh` PASS before 1.1 starts.*
+*Status: **PASSED on the box 2026-07-11** (`2648317`) — target compiles as
+`(gb10, qwen3-dense-8b, bf16)`, `ptx_for_config("qwen3", 4096)` selects it,
+dense_gemm_bf16 / dense_gemv_bf16 / rms_norm all cosine=1.000000, 0 NaN,
+non-degenerate. 1.1+ unblocked. Config half of 1.1 already landed early
+(`caf0af5`: dense qwen3 + qwen3_vl parsers, 6/6 cached configs parse) plus
+servability-gated preseed registration (`5ad90c2`: full 6-model .env list
+boots, unservable classes skip with a warning) — both verified on the box.*
 `quant=bf16` is supported by the runtime per D2 but has **never been built or
 executed** — "supported but never exercised" is exactly the latent-bug category
 that bit us with the watchdog stack. Before any dense-loader work: create the
