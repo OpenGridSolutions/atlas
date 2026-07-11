@@ -7,6 +7,7 @@ mod chat_message;
 mod chat_request;
 mod chat_response;
 mod completions;
+pub mod rerank;
 mod responses;
 mod responses_lowering;
 mod stream_chunk;

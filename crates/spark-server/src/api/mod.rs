@@ -40,6 +40,7 @@ pub mod inference_impl;
 pub mod inference_types;
 pub mod lazy_swap;
 pub mod misc_handlers;
+pub mod rerank;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;

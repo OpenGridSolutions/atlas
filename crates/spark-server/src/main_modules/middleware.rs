@@ -86,18 +86,25 @@ pub(crate) async fn model_state_middleware(
     if let Some(ctx) = state.hotswap.as_ref() {
         let swap_state = ctx.state();
         if swap_state != crate::main_modules::hotswap::SwapState::Running {
-            const GATED: [&str; 5] = [
+            const GATED: [&str; 7] = [
                 "/v1/chat/completions",
                 "/v1/completions",
                 "/v1/responses",
                 "/v1/messages",
                 "/v1/embeddings",
+                "/v1/rerank",
+                "/rerank",
             ];
-            // Lazy multi-model mode (Task 6 Phase 3): the two lazy-load
+            // Lazy multi-model mode (Task 6 Phase 3): the lazy-load
             // endpoints handle a non-Running state themselves — the
             // handler-side interceptor synchronously loads the requested
             // registered model instead of bouncing with 503.
-            const LAZY_HANDLED: [&str; 2] = ["/v1/chat/completions", "/v1/completions"];
+            const LAZY_HANDLED: [&str; 4] = [
+                "/v1/chat/completions",
+                "/v1/completions",
+                "/v1/rerank",
+                "/rerank",
+            ];
             let lazy_pass = ctx.lazy_enabled && LAZY_HANDLED.contains(&req.uri().path());
             if !lazy_pass && GATED.contains(&req.uri().path()) {
                 let body = serde_json::json!({

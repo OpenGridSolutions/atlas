@@ -76,6 +76,10 @@ pub(crate) async fn build_and_serve(
         .route("/v1/models", get(api::list_models))
         .route("/v1/models/{*model_id}", get(api::get_model))
         .route("/v1/embeddings", post(api::embeddings_stub))
+        // Qwen3-Reranker scoring (multiclass Plan.md 1.4): Jina/Cohere-
+        // compatible rerank API over the yes/no logit probe.
+        .route("/v1/rerank", post(api::rerank::rerank))
+        .route("/rerank", post(api::rerank::rerank))
         // 501 stubs: return an OpenAI-shaped error body so auto-probe
         // clients (Helicone, LangChain, Vercel AI SDK) fall back instead
         // of hanging on a silent 404.
