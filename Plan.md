@@ -450,6 +450,13 @@ check (case-insensitive, no WER obsession); A3 >30 s audio (fixture repeated
 + distinct second-half keyword) → late keyword present (chunking works); A4
 the 6 existing models still answer afterwards (S1 pattern).
 
+### W status (2026-07-12)
+*W.1 `9af625d` (frontend + 5 unit tests green) · W.2a `881d5a9` (kernel target
+22 + microtest — **on-box microtest run pending, the W-risk gate**) · W.2b
+`13043b4` (encoder/decoder module) · W.3 `b7d4894` (endpoint, sidecar) · W.4
+`scripts/whisper_test.sh` + checked-in JFK fixture. Awaiting on-box:
+whisper_kernel_microtest FIRST, then whisper_test.sh.*
+
 ### W risks
 | Risk | Mitigation |
 |---|---|
