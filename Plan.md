@@ -303,6 +303,9 @@ related > unrelated similarity; /v1/rerank orders an obvious (query, docs) set
 correctly; swap back to chat still bit-identical (existing A/B methodology).
 
 ### Phase 2 — VL embedding + reranker (reuses the wired vision path)
+*Status: implemented (`5b43425` target + loader, `47ac302` multimodal inputs)
+— awaiting on-box `scripts/vl_embed_test.sh`. Note: the ViT's deepstack taps
+are computed but LLM-unused (pre-existing, applies to VL-MoE serving too).*
 
 **2.1 Target `gb10/qwen3-vl-dense-8b/bf16`** (per D3): vision override kernels
 copied from `qwen3-vl-30b-a3b`, text from common.
