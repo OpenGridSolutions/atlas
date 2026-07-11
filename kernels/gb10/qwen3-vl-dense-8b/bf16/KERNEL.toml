@@ -1,0 +1,16 @@
+# Qwen3-VL dense 8B — bf16 quant variant (multiclass Plan.md 2.1).
+#
+# Two override .cu files, both verbatim copies:
+# - vision_encoder.cu (from qwen3-vl-30b-a3b): the ViT module the
+#   serve/swap vision gate requires — without it config.vision is
+#   forced to None and the model serves text-only.
+# - w4a16_gemm.cu (standard 14-target variant): eagerly resolved
+#   *_t_k64 / *_m128 symbols missing from common (see qwen3-dense-8b).
+# Everything else reuses the common base set; flags match the six
+# existing head_dim=128 targets so compiles are build-cache hits.
+# NOTE: common's rms_norm.cu is used on purpose — the qwen3-vl-30b
+# override is an older subset of common, and the dense text tower's
+# norm convention is handled at load time (dense_minus_one).
+
+[build]
+extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]

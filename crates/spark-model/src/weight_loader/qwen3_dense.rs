@@ -49,10 +49,13 @@ use crate::weight_map::{
 
 pub struct Qwen3DenseWeightLoader;
 
-/// Weight-name prefix for this checkpoint: `"model."` (standard HF,
-/// Reranker-8B) or `""` (sentence-transformers export, Embedding-8B).
+/// Weight-name prefix for this checkpoint: `"model.language_model."`
+/// (Qwen3-VL nested layout), `"model."` (standard HF, Reranker-8B) or
+/// `""` (sentence-transformers export, Embedding-8B).
 fn store_prefix(store: &WeightStore) -> &'static str {
-    if store.contains("model.embed_tokens.weight") {
+    if store.contains("model.language_model.embed_tokens.weight") {
+        "model.language_model."
+    } else if store.contains("model.embed_tokens.weight") {
         "model."
     } else {
         ""
@@ -239,5 +242,18 @@ impl super::ModelWeightLoader for Qwen3DenseWeightLoader {
         _gpu: &dyn GpuBackend,
     ) -> Result<Option<MtpWeights>> {
         Ok(None)
+    }
+
+    /// Qwen3-VL dense (VL-Embedding/Reranker-8B): the ViT lives under
+    /// `model.visual.*` in exactly the layout the Qwen3-VL loader reads —
+    /// delegate. No-op (`None`) for plain-text checkpoints: the delegate
+    /// returns early when `config.vision` is absent.
+    fn load_vision_encoder(
+        &self,
+        store: &WeightStore,
+        config: &ModelConfig,
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<crate::layers::VisionEncoder>> {
+        super::Qwen3VLWeightLoader.load_vision_encoder(store, config, gpu)
     }
 }

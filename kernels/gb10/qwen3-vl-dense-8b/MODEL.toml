@@ -1,0 +1,48 @@
+# Qwen3-VL dense 8B — shared kernel target for Qwen3-VL-Embedding-8B and
+# Qwen3-VL-Reranker-8B (multiclass Plan.md D3, Phase 2).
+#
+# Same dense 8B text tower as qwen3-dense-8b (hidden 4096, 36 L, GQA
+# 32/8, head_dim 128, ungated attention, dense SwiGLU) plus the Qwen3-VL
+# ViT (27 blocks, hidden 1152, deepstack [8,16,24]) and MRoPE-interleaved
+# rope (mrope_section [24,20,20] — kernel in common, selected at runtime
+# via config.mrope_interleaved). Text kernels are 100% common; the bf16
+# dir carries only the vision_encoder module (copied from
+# qwen3-vl-30b-a3b — serve.rs forces text-only serving when the target
+# ships no vision module) and the standard w4a16_gemm override (eagerly
+# resolved *_t_k64/*_m128 symbols, see qwen3-dense-8b).
+
+[model]
+name = "qwen3-vl-dense-8b"
+hf_id = "Qwen/Qwen3-VL-Embedding-8B"  # also Qwen/Qwen3-VL-Reranker-8B
+model_type = "qwen3_vl"
+architecture = "dense_attention"
+parameters = "8B"
+active_parameters = "8B"
+
+layers_total = 36
+hidden_dim = 4096
+head_dim = 128
+q_heads = 32
+kv_heads = 8
+
+intermediate_size = 12288
+vocab_size = 151936
+max_position_embeddings = 262144
+
+rms_norm_eps = 1e-6
+tie_word_embeddings = false
+vision = true
+
+# Dense model — no MoE, no MTP.
+moe_experts = 0
+mtp_layers = 0
+
+[behavior]
+# Embedding/reranker class: single-forward use, no thinking, no tool
+# calls, no generation-quality watchdogs.
+enable_loop_watchdog = false
+thinking_default = false
+
+[[model_types]]
+model_type = "qwen3_vl"
+hidden_size = 4096

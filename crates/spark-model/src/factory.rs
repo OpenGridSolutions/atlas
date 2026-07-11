@@ -50,6 +50,11 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // Standard dense attention-only Qwen3 (Embedding-8B / Reranker-8B —
         // multiclass Plan.md 1.1). No SSM, no MoE, ungated attention.
         "qwen3" => Ok(Box::new(Qwen3DenseWeightLoader)),
+        // Dense Qwen3-VL (VL-Embedding/Reranker-8B — multiclass Plan.md
+        // 2.2): same dense text tower under `model.language_model.*` +
+        // MRoPE (config-selected) + the Qwen3-VL ViT via the loader's
+        // vision delegation. NOT the MoE VL family (`qwen3_vl_moe`).
+        "qwen3_vl" => Ok(Box::new(Qwen3DenseWeightLoader)),
         "qwen3_vl_moe" => Ok(Box::new(Qwen3VLWeightLoader)),
         "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35" => {
             // Dense check has to come first. Qwen3.6-27B-FP8 is the dense text
