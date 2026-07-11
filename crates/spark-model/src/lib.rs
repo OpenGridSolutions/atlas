@@ -33,4 +33,5 @@ pub mod tp_shard;
 pub mod traits;
 pub mod vision_preprocess;
 pub mod weight_loader;
+pub mod whisper;
 pub mod weight_map;
