@@ -1,12 +1,16 @@
 # Qwen3 dense 8B — bf16 quant variant (first bf16-labeled target,
 # Plan.md multiclass step 1.0).
 #
-# No override .cu files: the model reuses the common base kernel set
-# in full (dense bf16 GEMM/GEMV, bf16 paged attention, norms, rope).
-# The flag set matches the six existing head_dim=128 targets
-# (minimax-m2, mistral-small-4, nemotron-3-nano/super, step3p7,
-# qwen3-vl-30b-a3b) exactly, so every kernel compile is a build-cache
-# hit. [modules] renames are inherited from common/KERNEL.toml.
+# One override .cu: w4a16_gemm.cu (verbatim copy of the 14-target
+# standard variant, e.g. qwen3-next-80b-a3b's). Qwen3AttentionLayer /
+# DenseFfnLayer eagerly resolve w4a16_gemm_t_k64 / *_m128 symbols that
+# exist ONLY in the model-dir overrides, never in common — the first
+# Reranker-8B swap failed with CUDA_ERROR_NOT_FOUND on the zero-override
+# target (2026-07-11). Everything else reuses the common base set
+# (dense bf16 GEMM/GEMV, bf16 paged attention, norms, rope). The flag
+# set matches the six existing head_dim=128 targets exactly, so every
+# kernel compile is a build-cache hit. [modules] renames are inherited
+# from common/KERNEL.toml.
 
 [build]
 extra_nvcc_flags = ["--fmad=false", "-DHDIM=128"]
