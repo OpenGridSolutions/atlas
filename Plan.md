@@ -271,6 +271,10 @@ thinking, sampling presets).
 `ptx_for_config`; behavior audit logs show watchdogs off.
 
 **1.3 Non-generative request path.**
+*Status: implemented (`1e556e9` logit probe, `2f71b89` pooled hidden) —
+as flags on Blocking requests (`logit_probe`, `capture_hidden`) rather than a
+new variant; wired at all seven first-token sampling sites; batched-prefill
+paths refuse hidden capture (shared norm buffer).*
 New `InferenceRequest::Pooled { prompt_tokens, pooling: LastToken|MeanNorm|
 LogitPair(u32,u32), reply: oneshot }` (or a flag on Blocking); scheduler branch in
 the two immediate-finish sites returns after prefill; new Model methods
@@ -283,6 +287,9 @@ identical across two runs and across batch-of-1 vs batch-of-8 (bitwise, temp-0
 path has no sampling).
 
 **1.4 Endpoints.**
+*Status: implemented (`dd8ba4d` /v1/rerank + /rerank, `1e6002b`
+/v1/embeddings replacing the 501 stub) — awaiting on-box
+`scripts/embed_rerank_test.sh` against the running server.*
 Replace the `/v1/embeddings` stub (OpenAI shape: `input: str|[str]`, returns
 float arrays, L2-normalized; instruction-prefix support per Qwen3-Embedding
 usage); add `/v1/rerank` (renders the Qwen3-Reranker chat template per
