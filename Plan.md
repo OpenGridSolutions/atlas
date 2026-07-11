@@ -1,7 +1,9 @@
-# Plan — Multi-class model integration (embeddings, reranking, VL, audio)
+# Plan — Multi-class model integration (embeddings, reranking, VL)
 
-Status: read-only architecture analysis complete (2026-07-10); implementation not started.
-Scope: integrate the five cached models into Atlas alongside the running
+Status: read-only architecture analysis complete (2026-07-10); step 1.0 implemented.
+Scope reduction 2026-07-11: **Whisper / audio transcription is descoped entirely**
+to focus on the embedding and reranker classes first.
+Scope: integrate the four cached models into Atlas alongside the running
 Qwen3-Next-80B-Thinking / Qwen3-Coder-Next (both `qwen3_next`, NVFP4, hot-swap +
 arena + snapshot infrastructure from Task 6):
 
@@ -11,7 +13,6 @@ arena + snapshot infrastructure from Task 6):
 | Qwen/Qwen3-Reranker-8B | `qwen3` (dense) | **identical** to Embedding-8B | text reranking |
 | Qwen/Qwen3-VL-Embedding-8B | `qwen3_vl` | same 8B text tower + ViT (27 blocks, hidden 1152, deepstack [8,16,24]) | VL embedding |
 | Qwen/Qwen3-VL-Reranker-8B | `qwen3_vl` | same as VL-Embedding | VL reranking |
-| openai/whisper-large-v3 | `whisper` | encoder-decoder, 32 L, vocab 51866, head_dim 64 | audio transcription |
 
 ---
 
@@ -45,10 +46,6 @@ It is loaded only by the Qwen3-VL-family loaders (`weight_loader/qwen3_vl.rs:193
 `qwen35.rs:139`, `qwen35_dense.rs:774`); all other archs return `None`. Critical
 gate: if the selected **kernel target ships no vision module**, `serve.rs:143-155`
 forces `config.vision = None` and serves text-only.
-
-**Audio: nothing.** `/v1/audio/*` are 501 stubs (`serve_router.rs:97-99`,
-`api/stubs.rs:64`); no mel/wav/mp3/whisper code anywhere; no `input_audio`
-content-part parsing.
 
 **The missing primitive for embeddings** is small and precisely located: every
 forward entry returns **logits** (`traits/model.rs:44,50,64`), and the only host
@@ -112,11 +109,6 @@ base kernels include bf16 GEMM/GEMV/attention paths).
 - Reranker scoring: blocking requests already read full-vocab logits D2H
   (`sample_step.rs:238-273` via `copy_logits_to_host`); indexing 2 entries
   (yes/no token ids) is free.
-- Encoder-decoder: **nothing** (zero cross-attention/encoder hits). One nuance:
-  the flashinfer ragged prefill kernel takes a **runtime `causal: bool`**
-  (`flashinfer.rs:182`), currently hardcoded `true` at the call site
-  (`qwen3_attention/prefill/paged.rs:561`) — non-causal attention is a call-site
-  flag, not a kernel change.
 - `crates/atlas-embed/` exists as an explicit scaffolding crate (`lib.rs:5`,
   `token.rs:19 todo!`) — the intended home for pooling was already reserved.
 
@@ -128,9 +120,15 @@ health, metrics. Missing for this plan:
 - `POST /v1/embeddings` — exists as **501 stub** (`serve_router.rs:78`) — replace.
 - `POST /v1/rerank` — **does not exist** — add (Jina/Cohere-compatible shape:
   `{model, query, documents[], top_n?}` → `results[{index, relevance_score}]`).
-- `POST /v1/audio/transcriptions` — **501 stub** (`serve_router.rs:97`) — replace
-  (multipart file upload + `model`, `language?`, `response_format?`).
 All routes register in the `Router::new()` chain at `serve_router.rs:44-107`.
+(`/v1/audio/*` stays an untouched 501 stub — audio is out of scope.)
+
+**ENV caveat:** listing the embedding/reranker models in `ATLAS_PRESEED_MODELS`
+does NOT make them runnable. `model_type = "qwen3"` (dense) has no loader match
+in `factory.rs::loader_for_config`, and before step 1.0 had no kernel target
+either — a preseed/boot of these models fails at target selection
+(`serve.rs:87-98`) or at loader dispatch. The ENV setting presupposes phases
+1.0–1.4; it does not replace them.
 
 ---
 
@@ -175,22 +173,8 @@ kernel overrides copied from qwen3-vl-30b-a3b** — text kernels stay 100% commo
 vision modules and per-class `[behavior]` without burdening the text-only one.)
 Both VL models share this one target with each other — same justification as D1.
 
-**D4 — Whisper is a genuinely new target AND a new architecture family — do not
-attempt to share.** Encoder-decoder with cross-attention has no counterpart in
-the codebase (§1.3). What CAN be reused: the encoder's bidirectional self-attention
-is the existing ragged prefill kernel with `causal=false` (runtime flag,
-`flashinfer.rs:182`); decoder self-attention is the normal paged path;
-**cross-attention is decoder attention over a static 1500-position KV** written
-once by the encoder — structurally `paged_decode_attn` over a pre-filled,
-never-growing KV cache, which the kernels support. The real risks: head_dim 64
-(HDIM supports 128/256/320 today — a `-DHDIM=64` build variant must be validated,
-else pad heads to 128), the mel front-end, and a new loader/layer composition.
-New target `kernels/gb10/whisper-large-v3/bf16` (1.5B → ~3 GiB, quantization
-pointless).
-
-Summary: **2 new thin targets (text-dense, VL-dense) sharing everything, + 1 real
-new target (whisper). Zero new kernels for phases 1–2 except copied vision
-overrides; whisper validates one new HDIM flag variant.**
+Summary: **2 new thin targets (text-dense, VL-dense) sharing everything. Zero
+new kernels except the vision overrides copied for the VL target.**
 
 ---
 
@@ -201,12 +185,6 @@ overrides; whisper validates one new HDIM flag variant.**
   `/v1/embeddings` (VL) and `/v1/rerank` (VL) handlers call the same helper and
   produce the same `image_pixels` + pad-expanded `prompt_tokens`; the ViT splice
   is downstream and unchanged.
-- **Audio**: new `spark-model/src/audio_preprocess.rs` mirroring the vision one:
-  multipart bytes → `symphonia` decode (mp3/wav/flac/m4a) → resample to 16 kHz
-  mono → 128-bin log-mel spectrogram (rustfft; whisper-large-v3 uses 128 mels) →
-  `[n_frames, 128]` f32, chunked to 30 s windows. This runs in the endpoint
-  handler (CPU, before enqueue) exactly where vision decode runs today; the model
-  receives a pixel-buffer-analogous `audio_features` field on the request.
 
 ---
 
@@ -216,13 +194,12 @@ The Task 6 model is **one resident model, swap on demand**. That is fine for
 "switch chat model", and it technically *works* for embeddings (preseed
 Embedding-8B, lazy-swap to it on an /v1/embeddings call, swap back). But **RAG
 traffic interleaves embeddings and generation per user request** — with ~7 s
-swaps each way this is unusable beyond a demo. Whisper+chat voice flows have the
-same shape.
+swaps each way this is unusable beyond a demo.
 
 Decision: plan an **auxiliary resident model slot** (Phase 3) rather than bending
 the swap machinery:
 - A second, small `WeightsArena` (own capacity flag, e.g. `--aux-arena-gb 20`)
-  holding one auxiliary model (embedding/reranker/whisper class) **concurrently**
+  holding one auxiliary model (embedding/reranker class) **concurrently**
   with the primary chat model. UMA budget: 47 GiB chat + 15–18 GiB aux + KV
   still fits 128 GB (KV budget must subtract the aux arena — feeds the existing
   Phase-3 KV-sizing work from the truncation plan).
@@ -233,9 +210,6 @@ the swap machinery:
 - Registry/kernels: aux target loads via the existing `ensure_target` (append-only,
   already hot-swap-proof). Snapshots/preseed reuse the same `.raw` format —
   arch-agnostic (§1.3).
-- Whisper is aux-slot-shaped too (encoder forward + short decode loop), but its
-  decode loop makes it the one aux class that may justify staying swap-based
-  initially.
 
 Until Phase 3 lands, Phases 1–2 ship on the existing swap model (correct, slow
 for interleaved traffic — documented limitation).
@@ -356,22 +330,6 @@ loaded = block count without aux minus exactly the aux-arena share), and a boot
 with chat + aux shows neither OOM nor silent KV shrinkage (block count matches
 the deterministic prediction).
 
-### Phase 4 — Whisper (most new work; greenfield arch)
-
-**4.1** Audio front-end: `audio_preprocess.rs` (symphonia + 128-mel, 30 s
-windows) + golden-vector test against reference mels.
-**4.2** Whisper model: encoder (conv frontend + bidirectional self-attn via
-`causal=false` at the existing flag site), decoder (causal self-attn + cross-attn
-as paged decode over the static encoder KV), loader + config parse; **validate
-`-DHDIM=64`** early (fallback: head-padding to 128 or a small attention variant —
-this is the phase's main kernel risk, front-load it).
-**4.3** Target `gb10/whisper-large-v3/bf16` + generation loop (special-token
-protocol: language/task/timestamp tokens), `/v1/audio/transcriptions`
-(multipart), long-audio chunking with overlap.
-*Acceptance:* `scripts/whisper_test.sh` — known WAV transcribes to reference
-text (WER < 5% on a small fixture set); 3-minute file chunks correctly;
-runs in the aux slot or via swap.
-
 ### Explicit infra reuse (all phases)
 Arena/snapshot/preseed/lazy-swap apply unchanged to every model here: weights are
 name-keyed (`WeightStore`/`WeightsArena`/`.raw` snapshots are arch-agnostic), the
@@ -380,9 +338,10 @@ first swap. The only touched invariants: quant gate learns bf16 (1.2), KV budget
 learns the aux arena (3.3).
 
 ### Deliberately out of scope
-`/v1/audio/speech` (TTS), image generation, EP/world_size>1 for aux models,
-quantizing the embedding models to NVFP4 (revisit only if bf16 latency
-disappoints), streaming transcription.
+Audio entirely (whisper-large-v3 transcription descoped 2026-07-11 to focus on
+the embedding/reranker classes; `/v1/audio/*` stays a 501 stub), image
+generation, EP/world_size>1 for aux models, quantizing the embedding models to
+NVFP4 (revisit only if bf16 latency disappoints).
 
 ---
 
@@ -392,6 +351,5 @@ disappoints), streaming transcription.
 |---|---|---|
 | First-ever bf16 target exposes untested kernel paths | **1.0 (gate)** | front-loaded as step 1.0: bf16 skeleton + quant gates + on-box smoke with hard non-NaN/reference acceptance BEFORE any loader work |
 | Embedding checkpoint lacks lm_head → loader assumptions | 1.1 | make `load_lm_head` optional; Pooled path never calls lm_head |
-| `-DHDIM=64` unsupported by paged decode | 4.2 | validate first thing in Phase 4; fallback head-padding |
 | Aux slot memory pressure silently shrinks / OOMs primary KV | **3.0 (blocking gate)** | deterministic KV sizing (truncation-plan Phase 3) MUST be completed and verified before 3.1 starts; 3.3 acceptance proves the aux-arena subtraction explicitly |
 | Qwen3-VL config variance (deepstack/dtype differs between the two VL checkpoints: bf16 vs f32 vision dtype) | 2.2 | config-parse test against both cached config.json before loader work |
