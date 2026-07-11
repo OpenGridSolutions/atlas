@@ -38,6 +38,7 @@ pub mod completions;
 pub mod conversations;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod embeddings;
 pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod rerank;
@@ -63,7 +64,7 @@ pub use chat::chat_completions;
 pub(crate) use chat::chat_completions_inner;
 #[allow(unused_imports)]
 pub use compact::compact_messages;
-pub use completions::{completions, embeddings_stub, get_model, list_models};
+pub use completions::{completions, get_model, list_models};
 #[allow(unused_imports)]
 pub use conversations::{
     AddItemsRequest, CreateConversationRequest, UpdateConversationRequest, add_conversation_items,

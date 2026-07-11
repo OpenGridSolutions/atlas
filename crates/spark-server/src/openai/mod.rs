@@ -7,6 +7,7 @@ mod chat_message;
 mod chat_request;
 mod chat_response;
 mod completions;
+pub mod embeddings;
 pub mod rerank;
 mod responses;
 mod responses_lowering;

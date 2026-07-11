@@ -244,6 +244,7 @@ pub async fn completions(
             }
         },
         logit_probe: None,
+        capture_hidden: false,
         response_tx: tx,
     };
 
@@ -506,14 +507,6 @@ pub async fn get_model(
             format!("The model '{model_id}' does not exist"),
         )
     }
-}
-
-/// POST /v1/embeddings — stub for clients that probe this endpoint during auto-detection.
-pub async fn embeddings_stub() -> Response {
-    openai_error_response(
-        StatusCode::NOT_IMPLEMENTED,
-        "Embeddings are not supported by this model. Atlas serves generative (chat/completion) models only.".into(),
-    )
 }
 
 /// Generic 501 "not supported" response used by the auto-probe stubs

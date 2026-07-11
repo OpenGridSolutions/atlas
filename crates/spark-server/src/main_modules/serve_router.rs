@@ -75,7 +75,9 @@ pub(crate) async fn build_and_serve(
         .route("/v1/messages/count_tokens", post(anthropic::count_tokens))
         .route("/v1/models", get(api::list_models))
         .route("/v1/models/{*model_id}", get(api::get_model))
-        .route("/v1/embeddings", post(api::embeddings_stub))
+        // Qwen3-Embedding serving (multiclass Plan.md 1.4): last-token
+        // pooled + L2-normalized hidden states, OpenAI shape.
+        .route("/v1/embeddings", post(api::embeddings::embeddings))
         // Qwen3-Reranker scoring (multiclass Plan.md 1.4): Jina/Cohere-
         // compatible rerank API over the yes/no logit probe.
         .route("/v1/rerank", post(api::rerank::rerank))

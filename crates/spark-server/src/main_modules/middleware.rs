@@ -99,9 +99,10 @@ pub(crate) async fn model_state_middleware(
             // endpoints handle a non-Running state themselves — the
             // handler-side interceptor synchronously loads the requested
             // registered model instead of bouncing with 503.
-            const LAZY_HANDLED: [&str; 4] = [
+            const LAZY_HANDLED: [&str; 5] = [
                 "/v1/chat/completions",
                 "/v1/completions",
+                "/v1/embeddings",
                 "/v1/rerank",
                 "/rerank",
             ];
