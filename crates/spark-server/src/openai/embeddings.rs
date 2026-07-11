@@ -5,17 +5,21 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::multimodal_input::MultimodalItem;
+
 #[derive(Debug, Deserialize)]
 #[serde(untagged)]
 pub enum EmbeddingsInput {
     Single(String),
-    Batch(Vec<String>),
+    /// Batch of plain strings and/or `{text?, image?}` objects
+    /// (multiclass 2.3 — Qwen3-VL multimodal embeddings).
+    Batch(Vec<MultimodalItem>),
 }
 
 impl EmbeddingsInput {
-    pub fn into_vec(self) -> Vec<String> {
+    pub fn into_items(self) -> Vec<MultimodalItem> {
         match self {
-            Self::Single(s) => vec![s],
+            Self::Single(s) => vec![MultimodalItem::Text(s)],
             Self::Batch(v) => v,
         }
     }

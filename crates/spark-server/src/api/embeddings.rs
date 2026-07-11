@@ -61,9 +61,12 @@ pub async fn embeddings(
             format!("encoding_format '{fmt}' not supported (only \"float\")"),
         );
     }
-    let inputs = req.input.into_vec();
-    if inputs.is_empty() {
-        return openai_error_response(StatusCode::BAD_REQUEST, "input must not be empty".into());
+    let inputs = req.input.into_items();
+    if inputs.is_empty() || inputs.iter().any(|i| i.is_empty()) {
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "input must not be empty (each item needs text and/or image)".into(),
+        );
     }
 
     // Lazy multi-model swap BEFORE the runtime snapshot.
@@ -86,23 +89,25 @@ pub async fn embeddings(
     crate::metrics::REQUESTS_ACTIVE.inc();
     let mut pending = Vec::with_capacity(inputs.len());
     let mut prompt_tokens_total = 0usize;
-    for (index, text) in inputs.iter().enumerate() {
+    for (index, item) in inputs.iter().enumerate() {
+        let (text, image) = item.parts();
         // Model-card format: queries carry an instruct prefix, documents
-        // embed raw; the caller decides via the `instruction` field.
-        let full_text = match req.instruction.as_deref() {
-            Some(instr) => format!("Instruct: {instr}\nQuery: {text}{EOS_SUFFIX}"),
-            None => format!("{text}{EOS_SUFFIX}"),
-        };
-        let prompt_tokens = match rt.tokenizer.encode(&full_text) {
-            Ok(t) => t,
-            Err(e) => {
+        // embed raw; the caller decides via the `instruction` field. An
+        // image item gets the vision frame before the text (2.3).
+        let encoded = super::multimodal_input::encode_item(&state, &rt, image, |vision| {
+            match req.instruction.as_deref() {
+                Some(instr) => format!("Instruct: {instr}\nQuery: {vision}{text}{EOS_SUFFIX}"),
+                None => format!("{vision}{text}{EOS_SUFFIX}"),
+            }
+        });
+        let encoded = match encoded {
+            Ok(e) => e,
+            Err((status, msg)) => {
                 crate::metrics::REQUESTS_ACTIVE.dec();
-                return openai_error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("tokenizing input {index}: {e:#}"),
-                );
+                return openai_error_response(status, format!("input {index}: {msg}"));
             }
         };
+        let prompt_tokens = encoded.tokens;
         if prompt_tokens.len() >= state.max_seq_len {
             crate::metrics::REQUESTS_ACTIVE.dec();
             return openai_error_response(
@@ -120,7 +125,7 @@ pub async fn embeddings(
         let request = InferenceRequest::Blocking {
             prompt_tokens: Arc::new(prompt_tokens),
             session_hash,
-            image_pixels: Vec::new(),
+            image_pixels: encoded.image_pixels,
             max_tokens: 1, // immediate finish: prefill + one discarded sample
             min_tokens: 0,
             temperature: 0.0,

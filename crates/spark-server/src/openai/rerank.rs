@@ -9,11 +9,15 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::api::multimodal_input::MultimodalItem;
+
 #[derive(Debug, Deserialize)]
 pub struct RerankRequest {
     pub model: String,
     pub query: String,
-    pub documents: Vec<String>,
+    /// Plain strings and/or `{text?, image?}` objects (multiclass 2.3 —
+    /// Qwen3-VL multimodal reranking).
+    pub documents: Vec<MultimodalItem>,
     /// Return only the best `top_n` results (default: all).
     #[serde(default)]
     pub top_n: Option<usize>,

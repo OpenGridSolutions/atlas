@@ -41,6 +41,7 @@ pub mod inference_types;
 pub mod embeddings;
 pub mod lazy_swap;
 pub mod misc_handlers;
+pub mod multimodal_input;
 pub mod rerank;
 pub mod responses;
 pub mod responses_stream;

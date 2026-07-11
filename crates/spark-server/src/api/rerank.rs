@@ -102,21 +102,24 @@ pub async fn rerank(
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
     for (index, doc) in req.documents.iter().enumerate() {
-        let prompt = format!(
-            "{SYSTEM_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n<Document>: \
-             {doc}{ASSISTANT_SUFFIX}",
-            query = req.query,
-        );
-        let prompt_tokens = match rt.tokenizer.encode(&prompt) {
-            Ok(t) => t,
-            Err(e) => {
+        let (doc_text, doc_image) = doc.parts();
+        // Image documents get the vision frame inside <Document>: (2.3).
+        let encoded =
+            super::multimodal_input::encode_item(&state, &rt, doc_image, |vision| {
+                format!(
+                    "{SYSTEM_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n<Document>: \
+                     {vision}{doc_text}{ASSISTANT_SUFFIX}",
+                    query = req.query,
+                )
+            });
+        let encoded = match encoded {
+            Ok(e) => e,
+            Err((status, msg)) => {
                 crate::metrics::REQUESTS_ACTIVE.dec();
-                return openai_error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("tokenizing document {index}: {e:#}"),
-                );
+                return openai_error_response(status, format!("document {index}: {msg}"));
             }
         };
+        let prompt_tokens = encoded.tokens;
         if prompt_tokens.len() >= state.max_seq_len {
             crate::metrics::REQUESTS_ACTIVE.dec();
             return openai_error_response(
@@ -134,7 +137,7 @@ pub async fn rerank(
         let request = InferenceRequest::Blocking {
             prompt_tokens: Arc::new(prompt_tokens),
             session_hash,
-            image_pixels: Vec::new(),
+            image_pixels: encoded.image_pixels,
             max_tokens: 1, // immediate finish: prefill + one discarded sample
             min_tokens: 0,
             temperature: 0.0,
@@ -211,7 +214,7 @@ pub async fn rerank(
             relevance_score: score,
             document: req
                 .return_documents
-                .then(|| RerankDocument { text: req.documents[index].clone() }),
+                .then(|| RerankDocument { text: req.documents[index].text_owned() }),
         });
     }
     crate::metrics::REQUESTS_ACTIVE.dec();
