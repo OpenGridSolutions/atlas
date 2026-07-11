@@ -232,6 +232,75 @@ pub fn verify_resample(model: &dyn Model, argmax_tokens: &[u32], temperature: f3
         .collect()
 }
 
+/// Read the full logit vector from device to host as f32. Gemma-4 dense
+/// single-token decode produces FP32 logits via the FP32 lm_head +
+/// softcap path (margin between top-1 and top-2 sits on a BF16
+/// representable boundary at value 16-32, so storing BF16 there flips
+/// the greedy argmax). Other paths still produce BF16 and need
+/// expansion. Dispatch by `logits_ptr_is_fp32`.
+pub fn read_logits_f32(model: &dyn Model, logits: DevicePtr) -> Result<Vec<f32>> {
+    let vocab_size = model.vocab_size();
+    if model.logits_ptr_is_fp32(logits) {
+        let mut buf = vec![0u8; vocab_size * 4];
+        model.copy_logits_to_host(logits, &mut buf)?;
+        // SAFETY: buf has length vocab_size * 4 and the device kernel wrote
+        // little-endian f32 values; reinterpret is byte-equivalent on x86/arm.
+        let f32_slice: &[f32] =
+            unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, vocab_size) };
+        Ok(f32_slice.to_vec())
+    } else {
+        let mut bf16_buf = vec![0u8; vocab_size * 2];
+        model.copy_logits_to_host(logits, &mut bf16_buf)?;
+        Ok((0..vocab_size)
+            .map(|i| {
+                let lo = bf16_buf[i * 2];
+                let hi = bf16_buf[i * 2 + 1];
+                bf16_to_f32(lo, hi)
+            })
+            .collect())
+    }
+}
+
+/// Pick the logit values at `ids` (out-of-range ids yield f32::NEG_INFINITY
+/// — a probed special token can legitimately sit above the capped vocab).
+pub(crate) fn pick_logits(f32_logits: &[f32], ids: &[u32]) -> Vec<f32> {
+    ids.iter()
+        .map(|&id| {
+            f32_logits
+                .get(id as usize)
+                .copied()
+                .unwrap_or(f32::NEG_INFINITY)
+        })
+        .collect()
+}
+
+/// Logit probe (multiclass Plan.md 1.3, reranker path): read the raw
+/// first-token logits at `ids` — e.g. the yes/no token pair whose
+/// softmax IS the Qwen3-Reranker relevance score. Runs on the same
+/// D2H readout `sample_token` uses; called once per probe request at
+/// the first-token sampling sites.
+pub fn probe_logits(model: &dyn Model, logits: DevicePtr, ids: &[u32]) -> Result<Vec<f32>> {
+    let f32_logits = read_logits_f32(model, logits)?;
+    Ok(pick_logits(&f32_logits, ids))
+}
+
+/// Run the logit probe for a prefill that just sampled its first token
+/// (the continue-prefills paths, where results travel via
+/// `PrefillInProgress` until promotion). No-op without a probe; a probe
+/// failure degrades to an empty result rather than killing the sequence.
+pub(super) fn probe_first_token_into(
+    model: &dyn Model,
+    logits: DevicePtr,
+    p: &mut super::types::PrefillInProgress,
+) {
+    if let Some(ids) = p.logit_probe.as_ref() {
+        p.probed_logits = Some(probe_logits(model, logits, ids).unwrap_or_else(|e| {
+            tracing::error!("logit probe failed: {e:#}");
+            Vec::new()
+        }));
+    }
+}
+
 /// Sample one token from device logits, applying temperature/top-k/top-p if non-greedy.
 ///
 /// `suppress_ids`: token IDs to mask to -inf before sampling (e.g. EOS on first token).
@@ -246,31 +315,8 @@ pub fn sample_token(
     if temperature == 0.0 && suppress_ids.is_empty() {
         return model.argmax_on_device(logits, 0);
     }
-    let vocab_size = model.vocab_size();
-    // Read logits from device. Gemma-4 dense single-token decode produces FP32
-    // logits via the FP32 lm_head + softcap path (margin between top-1 and
-    // top-2 sits on a BF16 representable boundary at value 16-32, so storing
-    // BF16 there flips the greedy argmax). Other paths still produce BF16
-    // and need expansion. Dispatch by `logits_ptr_is_fp32`.
-    let mut f32_logits: Vec<f32> = if model.logits_ptr_is_fp32(logits) {
-        let mut buf = vec![0u8; vocab_size * 4];
-        model.copy_logits_to_host(logits, &mut buf)?;
-        // SAFETY: buf has length vocab_size * 4 and the device kernel wrote
-        // little-endian f32 values; reinterpret is byte-equivalent on x86/arm.
-        let f32_slice: &[f32] =
-            unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const f32, vocab_size) };
-        f32_slice.to_vec()
-    } else {
-        let mut bf16_buf = vec![0u8; vocab_size * 2];
-        model.copy_logits_to_host(logits, &mut bf16_buf)?;
-        (0..vocab_size)
-            .map(|i| {
-                let lo = bf16_buf[i * 2];
-                let hi = bf16_buf[i * 2 + 1];
-                bf16_to_f32(lo, hi)
-            })
-            .collect()
-    };
+    let mut f32_logits: Vec<f32> = read_logits_f32(model, logits)?;
+    let vocab_size = f32_logits.len();
     // Suppress EOS tokens on first token by setting to -inf.
     for &id in suppress_ids {
         if (id as usize) < vocab_size {
@@ -522,6 +568,32 @@ pub fn sample_first_token(
     // emit_step disengage path handles any later desync gracefully.
     gs.accept_token(tok);
     Ok(tok)
+}
+
+#[cfg(test)]
+mod logit_probe_tests {
+    use super::pick_logits;
+
+    #[test]
+    fn picks_values_in_request_order() {
+        let logits = [0.5f32, -1.25, 3.0, 42.0];
+        assert_eq!(pick_logits(&logits, &[2, 0]), vec![3.0, 0.5]);
+    }
+
+    #[test]
+    fn out_of_range_id_yields_neg_infinity() {
+        // A probed id above the capped vocab must not panic — it scores
+        // as "impossible" so the softmax pair degrades gracefully.
+        let logits = [1.0f32, 2.0];
+        let picked = pick_logits(&logits, &[1, 9999]);
+        assert_eq!(picked[0], 2.0);
+        assert_eq!(picked[1], f32::NEG_INFINITY);
+    }
+
+    #[test]
+    fn empty_probe_is_empty() {
+        assert!(pick_logits(&[1.0, 2.0], &[]).is_empty());
+    }
 }
 
 #[cfg(test)]

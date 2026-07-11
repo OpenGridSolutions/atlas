@@ -127,6 +127,13 @@ pub(super) struct PrefillInProgress {
     pub seed: Option<u64>,
     pub top_logprobs: Option<u8>,
     pub timeout_at: Option<Instant>,
+    /// Logit probe ids (multiclass 1.3, rerank). Read at the first-token
+    /// sampling site; the extracted values land in `probed_logits` and
+    /// are propagated to `ActiveSeq` on promotion.
+    pub logit_probe: Option<std::sync::Arc<[u32]>>,
+    /// Raw first-token logits at `logit_probe` ids (filled by the
+    /// first-token sampling site that completes this prefill).
+    pub probed_logits: Option<Vec<f32>>,
 }
 
 /// An in-flight sequence participating in batched decode.
@@ -342,6 +349,13 @@ pub(super) struct ActiveSeq {
     pub adaptive: crate::adaptive_sampler::AdaptiveSamplingState,
     /// Number of prompt tokens served by the prefix cache (no prefill cost).
     pub cached_prompt_tokens: u32,
+    /// Raw first-token logits at the request's probed ids (multiclass
+    /// 1.3, rerank) — returned via `InferenceResponse::probed_logits`.
+    /// `None` for non-probe requests. NOT preserved across KV spill:
+    /// probe requests run with `max_tokens = 1` and finish in the same
+    /// scheduler tick they become active, so they can never be swapped
+    /// out.
+    pub probed_logits: Option<Vec<f32>>,
 }
 
 impl ActiveSeq {

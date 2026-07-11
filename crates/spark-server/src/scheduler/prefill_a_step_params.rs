@@ -58,6 +58,7 @@ pub(super) fn build_prefill_in_progress(
     seed: Option<u64>,
     top_logprobs: Option<u8>,
     timeout_at: Option<Instant>,
+    logit_probe: Option<Arc<[u32]>>,
 ) -> PrefillInProgress {
     PrefillInProgress {
         prompt_tokens,
@@ -97,5 +98,9 @@ pub(super) fn build_prefill_in_progress(
         seed,
         top_logprobs,
         timeout_at,
+        logit_probe,
+        // Filled by whichever first-token sampling site completes this
+        // prefill (multiclass 1.3).
+        probed_logits: None,
     }
 }

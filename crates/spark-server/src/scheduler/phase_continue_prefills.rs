@@ -306,6 +306,7 @@ pub(super) fn continue_in_progress_prefills(
                     ) {
                         Ok(first) => {
                             tracing::info!("Two-phase prefill first token: {first}");
+                            super::sample_step::probe_first_token_into(model, logits, p);
                             completed_indices.push((idx, Some(first)));
                         }
                         Err(e) => {

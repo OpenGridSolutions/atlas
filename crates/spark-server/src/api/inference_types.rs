@@ -136,6 +136,14 @@ pub enum InferenceRequest {
         top_logprobs: Option<u8>,
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
+        /// Logit probe (multiclass Plan.md 1.3): token ids whose RAW
+        /// first-token logits are returned in
+        /// [`InferenceResponse::probed_logits`]. Drives /v1/rerank —
+        /// the Qwen3-Reranker relevance score is softmax over the
+        /// yes/no logit pair at the last prompt position. Combine with
+        /// `max_tokens = 1` (immediate finish; the sampled token is
+        /// discarded by the caller). `None` = no probe (default).
+        logit_probe: Option<std::sync::Arc<[u32]>>,
         response_tx: tokio::sync::oneshot::Sender<anyhow::Result<InferenceResponse>>,
     },
     /// Streaming: sends tokens as they're generated.
@@ -255,6 +263,10 @@ pub struct InferenceResponse {
     /// Number of prompt tokens served by the prefix cache (no prefill compute
     /// cost). Reported as `usage.prompt_tokens_details.cached_tokens`.
     pub cached_prompt_tokens: u32,
+    /// Raw first-token logits at the ids requested via
+    /// `InferenceRequest::Blocking::logit_probe`, in request order.
+    /// Empty when no probe was requested.
+    pub probed_logits: Vec<f32>,
 }
 
 /// Events sent during streaming generation.

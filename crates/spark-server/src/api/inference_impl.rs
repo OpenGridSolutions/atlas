@@ -81,6 +81,16 @@ impl InferenceRequest {
         }
     }
 
+    /// Logit probe ids (multiclass 1.3), consumed by the scheduler.
+    /// Always `None` for streaming requests — probing is a blocking-only
+    /// feature (rerank/embeddings).
+    pub fn take_logit_probe(&mut self) -> Option<std::sync::Arc<[u32]>> {
+        match self {
+            InferenceRequest::Blocking { logit_probe, .. } => logit_probe.take(),
+            InferenceRequest::Streaming { .. } => None,
+        }
+    }
+
     /// Top-k sampling parameter.
     pub fn top_k(&self) -> u32 {
         match self {

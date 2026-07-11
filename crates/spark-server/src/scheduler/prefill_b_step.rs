@@ -20,6 +20,8 @@ pub fn prefill_request(
 ) -> Result<Option<ActiveSeq>> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
+    // Logit probe (multiclass 1.3, rerank) — extracted after prefill below.
+    let logit_probe = req.take_logit_probe();
     let eos_tokens = if stop_tokens.is_empty() {
         eos_tokens.to_vec()
     } else {
@@ -114,7 +116,7 @@ pub fn prefill_request(
     seq.session_hash = req_session_hash;
 
     // Guard: free SSM slot on any error after allocation (Bug #16).
-    let prefill_result = (|| -> Result<u32> {
+    let prefill_result = (|| -> Result<(u32, Option<Vec<f32>>)> {
         // Vision: encode images and store embeddings for prefill token overwrite.
         if !image_pixels.is_empty() {
             model.prepare_vision_embed(&image_pixels)?;
@@ -132,7 +134,7 @@ pub fn prefill_request(
         // the matcher). The plain decode loop only masks/accepts tokens 2..N,
         // so without this a leading prose token escapes before the grammar's
         // opening `{`. No-op vs `sample_token` when no grammar is active.
-        sample_first_token(
+        let tok = sample_first_token(
             model,
             logits,
             temperature,
@@ -140,10 +142,19 @@ pub fn prefill_request(
             top_p,
             eos_tokens,
             grammar_state.as_mut(),
-        )
+        )?;
+        // Logit probe (multiclass 1.3) while the logits buffer is live;
+        // failure degrades to an empty result rather than killing the seq.
+        let probed = logit_probe.as_ref().map(|ids| {
+            probe_logits(model, logits, ids).unwrap_or_else(|e| {
+                tracing::error!("logit probe failed: {e:#}");
+                Vec::new()
+            })
+        });
+        Ok((tok, probed))
     })();
 
-    let first = match prefill_result {
+    let (first, probed_logits) = match prefill_result {
         Ok(token) => token,
         Err(e) => {
             let msg = format!("prefill failed: {e:#}");
@@ -263,6 +274,7 @@ pub fn prefill_request(
             logprobs_data: Vec::new(),
             timeout_at: req_timeout_at,
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+            probed_logits: probed_logits.clone(),
         };
         finish_sequence(model, &mut a);
         return Ok(None);
@@ -349,5 +361,6 @@ pub fn prefill_request(
         logprobs_data: Vec::new(),
         timeout_at: req_timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+        probed_logits,
     }))
 }

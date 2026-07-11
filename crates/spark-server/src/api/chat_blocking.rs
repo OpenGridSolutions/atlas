@@ -145,6 +145,7 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
             seed: req.seed.map(|s| s.wrapping_add(choice_idx as u64)),
             top_logprobs,
             timeout_at,
+            logit_probe: None,
             response_tx: tx,
         };
 

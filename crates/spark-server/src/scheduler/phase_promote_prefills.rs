@@ -200,5 +200,8 @@ fn build_active_seq_from_prefill(
         logprobs_data: Vec::new(),
         timeout_at: p.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+        // Filled by the first-token sampling site in the continue-prefills
+        // paths (multiclass 1.3).
+        probed_logits: p.probed_logits,
     }
 }

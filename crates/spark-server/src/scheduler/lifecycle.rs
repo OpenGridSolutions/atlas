@@ -58,6 +58,7 @@ pub fn finish_sequence_with_reason(
                         logprobs: std::mem::take(&mut a.logprobs_data),
                         reasoning_tokens: a.thinking_tokens,
                         cached_prompt_tokens: a.cached_prompt_tokens,
+                        probed_logits: a.probed_logits.take().unwrap_or_default(),
                     }))
                     .is_err()
                 {
@@ -343,6 +344,9 @@ pub fn resume_swapped_seq(
         logprobs_data: s.logprobs_data,
         timeout_at: s.timeout_at,
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(s.temperature),
+        // Probe requests finish in the tick they become active and can
+        // never be swapped out (types.rs doc) — nothing to restore.
+        probed_logits: None,
         cached_prompt_tokens: s.cached_prompt_tokens,
     })
 }

@@ -33,6 +33,10 @@ pub fn start_chunked_prefill(
 ) -> Result<StartPrefillResult> {
     // Merge user-supplied stop tokens with model EOS tokens.
     let stop_tokens = req.take_stop_tokens();
+    // Logit probe (multiclass 1.3, rerank): extracted at the first-token
+    // sampling site below, or carried on the PrefillInProgress for the
+    // deferred / multi-chunk paths.
+    let logit_probe = req.take_logit_probe();
     let eos_tokens = if stop_tokens.is_empty() {
         eos_tokens.to_vec()
     } else {
@@ -195,6 +199,7 @@ pub fn start_chunked_prefill(
                 req_seed,
                 req_top_logprobs,
                 req_timeout_at,
+                logit_probe.clone(),
             ),
         ));
     }
@@ -328,6 +333,17 @@ pub fn start_chunked_prefill(
             }
         };
 
+        // Logit probe (multiclass 1.3): extract the raw first-token logits
+        // at the requested ids while the logits buffer is still live. A
+        // probe failure degrades to an empty result (the rerank handler
+        // rejects missing scores) rather than killing the sequence.
+        let probed_logits = logit_probe.as_ref().map(|ids| {
+            probe_logits(model, logits, ids).unwrap_or_else(|e| {
+                tracing::error!("logit probe failed: {e:#}");
+                Vec::new()
+            })
+        });
+
         let spontaneous_think = !req_enable_thinking && think_start_token == Some(first);
         if !spontaneous_think
             && let ResponseSink::Streaming(ref tx) = sink
@@ -419,6 +435,7 @@ pub fn start_chunked_prefill(
                 logprobs_data: Vec::new(),
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+                probed_logits,
             };
             finish_sequence(model, &mut a);
             Ok(StartPrefillResult::Finished)
@@ -509,6 +526,7 @@ pub fn start_chunked_prefill(
                 logprobs_data: Vec::new(),
                 timeout_at: req_timeout_at,
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
+                probed_logits,
             }))
         }
     } else {
@@ -551,6 +569,7 @@ pub fn start_chunked_prefill(
                 req_seed,
                 req_top_logprobs,
                 req_timeout_at,
+                logit_probe.clone(),
             ),
         ))
     }

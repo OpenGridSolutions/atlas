@@ -243,6 +243,7 @@ pub async fn completions(
                 None
             }
         },
+        logit_probe: None,
         response_tx: tx,
     };
 
