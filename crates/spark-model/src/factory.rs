@@ -13,8 +13,8 @@ use spark_runtime::weights::WeightStore;
 use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader,
-    ModelWeightLoader, NemotronHWeightLoader, Qwen3VLWeightLoader, Qwen3WeightLoader,
-    Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
+    ModelWeightLoader, NemotronHWeightLoader, Qwen3DenseWeightLoader, Qwen3VLWeightLoader,
+    Qwen3WeightLoader, Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -47,6 +47,9 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
     match normalized.as_str() {
         // Qwen3 family: sub-dispatch by config predicates
         "qwen3_next" => Ok(Box::new(Qwen3WeightLoader)),
+        // Standard dense attention-only Qwen3 (Embedding-8B / Reranker-8B —
+        // multiclass Plan.md 1.1). No SSM, no MoE, ungated attention.
+        "qwen3" => Ok(Box::new(Qwen3DenseWeightLoader)),
         "qwen3_vl_moe" => Ok(Box::new(Qwen3VLWeightLoader)),
         "qwen3_5_moe" | "qwen3_5" | "qwen35_moe" | "qwen35" => {
             // Dense check has to come first. Qwen3.6-27B-FP8 is the dense text
