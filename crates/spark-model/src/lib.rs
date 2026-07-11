@@ -25,6 +25,7 @@ pub mod layers;
 pub mod mistral_loader;
 pub mod model;
 pub mod precision_schedule;
+pub mod audio_preprocess;
 pub mod preflight;
 pub mod quant_format;
 pub mod speculative;
