@@ -249,6 +249,11 @@ with ~0 new nvcc invocations. **If bf16 surprises, we learn it here — at step
 passes.
 
 **1.1 Dense-Qwen3 model support.**
+*Status: implemented (`b24b41d`, config half `caf0af5`) — awaiting on-box boot
+smoke of Reranker-8B. Deviations captured in the commit: all-BF16 via the
+Gemma-4 pattern (NVFP4 placeholders shadowed), dense_minus_one for the
+standard-convention norms, per-store weight-name prefix (the Embedding
+checkpoint is an unprefixed sentence-transformers export).*
 `Qwen3DenseWeightLoader` modeled on `gemma4/loader_a.rs`
 (`Qwen3AttentionLayer::new_ungated` + `FfnComponent::Dense`, standard qwen3
 weight names); match arm `"qwen3"` in `factory.rs::loader_for_config`;
