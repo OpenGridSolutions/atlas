@@ -13,6 +13,8 @@ use super::*;
 #[path = "ssm_qwen35/dequant_fp8.rs"]
 mod dequant_fp8;
 use dequant_fp8::dequant_fp8_block_slice_bf16;
+#[path = "ssm_qwen35/fused_vl.rs"]
+mod fused_vl;
 
 /// Qwen3.5 SSM weights with separate projections.
 pub struct SsmWeightsQwen35 {
@@ -386,6 +388,7 @@ pub(crate) fn load_moe_no_shared(
     gpu: &dyn GpuBackend,
     config: &atlas_core::config::ModelConfig,
     variant: Nvfp4Variant,
+    qctx: QuantizeCtx,
 ) -> Result<MoeWeights> {
     let p = format!("{layer_prefix}.mlp");
 
@@ -433,26 +436,42 @@ pub(crate) fn load_moe_no_shared(
         weight: alloc_zero(h * 2)?,
     };
 
-    let mut experts = Vec::with_capacity(num_experts);
-    for e in 0..num_experts {
-        if config.is_local_expert(e) {
-            experts.push(ExpertWeight {
-                gate_proj: quantized_auto(
-                    store,
-                    &format!("{p}.experts.{e}.gate_proj"),
-                    gpu,
-                    variant,
-                )?,
-                up_proj: quantized_auto(store, &format!("{p}.experts.{e}.up_proj"), gpu, variant)?,
-                down_proj: quantized_auto(
-                    store,
-                    &format!("{p}.experts.{e}.down_proj"),
-                    gpu,
-                    variant,
-                )?,
-            });
-        } else {
-            experts.push(ExpertWeight::null());
+    // Qwen3-VL FP8 (Plan.md Phase Q): transformers fused serialization —
+    // one [E, h, 2*inter] gate_up + [E, inter, h] down tensor per layer,
+    // FP8 block-scaled, stored [in, out] (transposed). Dequant + slice +
+    // transpose per expert, runtime-quantize to NVFP4.
+    let mut experts;
+    if store.contains(&format!("{p}.experts.gate_up_proj")) {
+        experts = fused_vl::load_experts_fused_fp8_transposed(
+            store, &p, num_experts, inter, h, gpu, config, qctx,
+        )?;
+    } else {
+        experts = Vec::with_capacity(num_experts);
+        for e in 0..num_experts {
+            if config.is_local_expert(e) {
+                experts.push(ExpertWeight {
+                    gate_proj: quantized_auto(
+                        store,
+                        &format!("{p}.experts.{e}.gate_proj"),
+                        gpu,
+                        variant,
+                    )?,
+                    up_proj: quantized_auto(
+                        store,
+                        &format!("{p}.experts.{e}.up_proj"),
+                        gpu,
+                        variant,
+                    )?,
+                    down_proj: quantized_auto(
+                        store,
+                        &format!("{p}.experts.{e}.down_proj"),
+                        gpu,
+                        variant,
+                    )?,
+                });
+            } else {
+                experts.push(ExpertWeight::null());
+            }
         }
     }
 

@@ -12,8 +12,8 @@ use crate::layers::vision_encoder::{MergerLayer, ViTBlock};
 use crate::layers::{FfnComponent, MoeLayer, Qwen3AttentionLayer, VisionEncoder};
 use crate::tp_shard::{TpShardKind, load_qkvo_tp, shard_quantized_nvfp4};
 use crate::weight_map::{
-    AttentionWeights, DenseWeight, MtpWeights, dense, detect_nvfp4_variant, load_kv_scales,
-    load_moe_no_shared, quantize_to_nvfp4, quantized_auto,
+    AttentionWeights, DenseWeight, MtpWeights, QuantizeCtx, dense, detect_nvfp4_variant,
+    load_kv_scales, load_moe_no_shared, quantize_to_nvfp4, quantized_any,
 };
 
 pub struct Qwen3VLWeightLoader;
@@ -48,6 +48,11 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
         let absmax_k = gpu.kernel("quantize_nvfp4", "nvfp4_global_absmax")?;
         let quantize_k = gpu.kernel("quantize_nvfp4", "quantize_bf16_to_nvfp4")?;
         let stream = gpu.default_stream();
+        let qctx = QuantizeCtx {
+            absmax_k,
+            quantize_k,
+            stream,
+        };
         let h = config.hidden_size;
 
         for i in 0..config.num_hidden_layers {
@@ -57,7 +62,7 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
 
             // MoE without shared experts
             let moe_weights =
-                load_moe_no_shared(store, &lp, config.num_experts, gpu, config, variant)?;
+                load_moe_no_shared(store, &lp, config.num_experts, gpu, config, variant, qctx)?;
             let gate_nvfp4 = quantize_to_nvfp4(
                 &moe_weights.gate,
                 config.num_experts,
@@ -90,7 +95,19 @@ impl ModelWeightLoader for Qwen3VLWeightLoader {
                              full_k: usize,
                              kind: TpShardKind|
              -> Result<crate::weight_map::QuantizedWeight> {
-                let src = quantized_auto(store, &format!("{p}.{name}"), gpu, variant)?;
+                // quantized_any (not quantized_auto): the FP8 checkpoint's
+                // block-scaled attention needs dims + quant ctx for the
+                // FP8→BF16→NVFP4 requant (Plan.md Phase Q). NVFP4
+                // checkpoints take the same zero-copy path as before.
+                let src = quantized_any(
+                    store,
+                    &format!("{p}.{name}"),
+                    full_n,
+                    full_k,
+                    gpu,
+                    variant,
+                    qctx,
+                )?;
                 if tp_size == 1 {
                     return Ok(src);
                 }

@@ -39,7 +39,7 @@ unset ATLAS_PRESEED_MODELS
 export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE:-[
   \"nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4\",
   \"vincentzed-hf/Qwen3-Coder-Next-NVFP4\",
-  \"ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4\"
+  \"Qwen/Qwen3-VL-30B-A3B-Instruct-FP8\"
 ]}"
 export ATLAS_PRESEED_EMBED="${ATLAS_PRESEED_EMBED:-[
   \"Qwen/Qwen3-Embedding-8B\",
@@ -51,6 +51,11 @@ export ATLAS_PRESEED_RERANK="${ATLAS_PRESEED_RERANK:-[
 ]}"
 export ATLAS_PRESEED_TRANSCRIBE="${ATLAS_PRESEED_TRANSCRIBE:-[\"openai/whisper-large-v3\"]}"
 export ATLAS_PRESEED_TRANSLATE="${ATLAS_PRESEED_TRANSLATE:-[\"google/translategemma-12b-it\"]}"
+# Retired checkpoint (2026-07-12, Plan.md Q): ig1's NVFP4 quant has a
+# defective vision encoder — container envs created before the swap still
+# list it; substitute the official FP8 release until the container is
+# recreated from the updated compose.yml.
+export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE//ig1\/Qwen3-VL-30B-A3B-Instruct-NVFP4/Qwen\/Qwen3-VL-30B-A3B-Instruct-FP8}"
 LOG="/workspace/logs/serve-$(date +%Y%m%d-%H%M%S).log"
 echo "==> logging to ${LOG}"
 
@@ -60,7 +65,7 @@ exec "${BIN}" serve "${MODEL}" \
     --max-seq-len 104416 \
     --max-batch-size 1 \
     --kv-cache-dtype nvfp4 \
-    --gpu-memory-utilization 0.85 \
+    --gpu-memory-utilization 0.90 \
     --kv-high-precision-layers 3 \
     --scheduling-policy slai \
     --mtp-quantization nvfp4 \

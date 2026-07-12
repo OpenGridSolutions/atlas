@@ -117,3 +117,60 @@ extern "C" __global__ void dequant_fp8_blockscaled_bf16(
     float val = E4M3_LUT_DEQ[fp8_byte] * scale;
     bf16_out[n * K + k] = __float2bfloat16(val);
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Fused dequant + column-slice + transpose for STACKED FP8 experts
+// (Qwen3-VL-30B FP8, transformers fused serialization — Plan.md Q).
+//
+// The checkpoint stores one tensor per projection for ALL experts in
+// [in, out] orientation:
+//   experts.gate_up_proj  [E, H, 2I]  (columns: gate 0..I, up I..2I)
+//   experts.down_proj     [E, I, H]
+// with per-expert 128×128 block scales [ceil(in/128), ceil(out/128)].
+//
+// Atlas' MoE kernels want per-expert [out, in] row-major BF16 (which is
+// then runtime-quantized to NVFP4). This kernel reads ONE expert's
+// column range [out_start, out_start+out_count) and writes the
+// dequantized values TRANSPOSED into a dst of shape [out_count, in]:
+//
+//   dst[r, i] = E4M3_LUT[src[i, out_start + r]]
+//             * scale[i/128, (out_start + r)/128]
+//
+// Thread x walks `i` (contiguous dst writes — coalesced); the strided
+// fp8 reads are load-time-only cost.
+//
+// Grid:  (ceil(in/64), ceil(out_count/4), 1)
+// Block: (64, 4, 1)
+// ═══════════════════════════════════════════════════════════════════
+extern "C" __global__ void dequant_fp8_blockscaled_bf16_slice_t(
+    const unsigned char* __restrict__ fp8_in,   // [in, out_total] one expert
+    const void* __restrict__ scale_inv,         // [ceil(in/128), sk] BF16/FP32
+    __nv_bfloat16* __restrict__ bf16_out,       // [out_count, in]
+    unsigned int in_dim,
+    unsigned int out_total,
+    unsigned int out_start,
+    unsigned int out_count,
+    unsigned int block_in,                       // in_dim / sn (128)
+    unsigned int block_out,                      // out_total / sk (128)
+    unsigned int sk,                             // scale grid columns
+    unsigned int scale_is_fp32
+) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;  // in index
+    unsigned int r = blockIdx.y * blockDim.y + threadIdx.y;  // dst row
+    if (i >= in_dim || r >= out_count) return;
+
+    unsigned int c = out_start + r;                 // src column
+    unsigned int scale_offset = (i / block_in) * sk + (c / block_out);
+
+    float scale;
+    if (scale_is_fp32) {
+        scale = ((const float*)scale_inv)[scale_offset];
+    } else {
+        unsigned short raw = ((const unsigned short*)scale_inv)[scale_offset];
+        scale = __bfloat162float(*(const __nv_bfloat16*)&raw);
+    }
+
+    unsigned char fp8_byte = fp8_in[(unsigned long long)i * out_total + c];
+    float val = E4M3_LUT_DEQ[fp8_byte] * scale;
+    bf16_out[(unsigned long long)r * in_dim + i] = __float2bfloat16(val);
+}

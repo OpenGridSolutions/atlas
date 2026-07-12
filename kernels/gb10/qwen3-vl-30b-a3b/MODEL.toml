@@ -1,6 +1,6 @@
 [model]
 name = "qwen3-vl-30b-a3b"
-hf_id = "ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4"
+hf_id = "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"  # 2026-07-12: official FP8 replaces ig1 NVFP4 (defective vision encoder)
 params = "30B"
 active_params = "3B"
 architecture = "Full Attention + MoE"
