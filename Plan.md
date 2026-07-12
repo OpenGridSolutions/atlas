@@ -552,6 +552,74 @@ category defaults until the container is recreated).
 | eager kernel modules missing from thin target (w4a16 lesson) | copy gemma-4-31b overrides preemptively; boot smoke catches the rest |
 | category refactor breaks the 7 existing registrations | R1 regression + full test-script battery after restart |
 
+## Phase S — /v1/stats memory diagnostics (2026-07-12)
+
+Read-only GET endpoint that makes the KNOWN GB10 measurement bug visible
+as a number: on unified memory, `cudaMemGetInfo` under-reports free
+memory (swap-reclaimable DRAM is invisible — NVIDIA DGX Spark known
+issue), so the self-relative KV budget in `spark_model::factory::build`
+gets a fluctuating ~19–20 GB "free-now" instead of ~65 GB, sizes the KV
+pool at 960–1348 blocks, and translategemma-12b currently fails to load
+("KV cache can hold at most 0 concurrent sequence(s)"). This phase does
+NOT fix the budget — it ships the metric (`discrepancy_gb`) the later
+/proc/meminfo budget fix will be verified against. TranslateGemma
+continuing to fail to load is EXPECTED and correct here.
+
+### S.1 Design
+- **`GET /v1/stats`** (api/stats.rs, routed next to /health; no auth
+  beyond the global middleware). All numbers come from what Atlas
+  already computed at load time — no new measurement machinery.
+- **Memory block** (the success metric):
+  - `cuda_mem_get_info_free_gb` — live `cuMemGetInfo` from the HTTP
+    thread. CUDA contexts are shareable across threads; the process-wide
+    context is stored once at backend init
+    (`spark_runtime::cuda_backend` global, BASELINE_FREE_BYTES
+    precedent) and bound on demand (`cuCtxGetCurrent` → if none,
+    `cuCtxSetCurrent(stored)`), then `cuMemGetInfo_v2`. No scheduler
+    round-trip, works while the server idles parked.
+  - `proc_meminfo_available_gb` — NEW `spark_runtime::meminfo::read()`:
+    `MemAvailable + SwapFree`; HugePages special case (HugePages_Total
+    != 0 → `HugePages_Free × Hugepagesize`, SwapFree = 0). Deliberately
+    placed in spark-runtime: the SEPARATE budget fix will call the same
+    reader from factory::build. Display-only here — budget math
+    untouched.
+  - `discrepancy_gb` = proc − cuda (large ~40+ GB and fluctuating until
+    the fix; small/stable after — THE metric), `total_unified_memory_gb`
+    from cuMemGetInfo total (fallback MemTotal).
+- **Per-model block**: hotswap registry (id, category, Phase K) ×
+  live residency:
+  - arena model: `weights_bytes = ctx.arena.used()` (the boot-log
+    "Weights arena" number), `residency: "arena"`.
+  - KV numbers via NEW `spark_runtime::kv_stats` process-global atomics
+    (one PagedKvCache exists at a time): `new()` publishes
+    total_blocks + exact allocated pool bytes; every free-list
+    mutation (alloc_block / try_alloc_block / dec_ref-free /
+    return_evicted_block) publishes the free count (single mutator
+    thread, Relaxed stores — negligible); `Drop` clears. Handler reads
+    reserved_blocks/bytes + `kv_used_blocks = total − free` (live per
+    call).
+  - whisper sidecar: separate entry (`residency: "sidecar"`), resident
+    iff the OnceCell is initialized; `weights_bytes` = Σ tensor elems ×
+    2 (BF16) computed once at sidecar load in audio.rs; KV fields 0
+    (sidecar manages its own buffers, no paged pool).
+  - registered non-resident models: `resident: false`, zero usage.
+
+### S.2 Acceptance — scripts/stats_test.sh (temp-file convention)
+S1 valid JSON with both memory numbers + discrepancy_gb; S2
+`discrepancy_gb > 20` (documents the UNFIXED state; the later budget fix
+flips this same check to small/stable); S3 after a chat request the
+generative model shows resident with plausible weights_bytes and
+kv_reserved_blocks > 0; S4 after a transcribe the sidecar entry shows
+residency=sidecar. Regression: embed_rerank_test.sh + whisper_test.sh
+stay green.
+
+### S.3 Risks
+| Risk | Mitigation |
+|---|---|
+| binding the CUDA ctx on HTTP worker threads disturbs the scheduler | contexts are per-thread CURRENT settings; setting it on extra threads never unbinds the scheduler thread's binding; read-only cuMemGetInfo only |
+| kv_stats atomics drift from the real free list | single choke: every `free_blocks` mutation site sets the count from `free_blocks.len()` (not incremental deltas) |
+| stale stats after unload/swap | PagedKvCache::drop clears; arena bytes read live from HotswapCtx |
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
