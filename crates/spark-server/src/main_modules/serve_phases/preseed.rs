@@ -14,13 +14,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result, bail};
 
 use crate::cli;
-use crate::main_modules::hotswap::{HotswapCtx, RegisteredModel, SwapState};
+use crate::main_modules::hotswap::{HotswapCtx, ModelCategory, RegisteredModel, SwapState};
 
 /// Resolve a preseed id into its registry entry (revision-hashed). The
 /// checkpoint must be resolvable (cached or downloadable) at boot.
 pub(crate) fn registered_model(
     args: &cli::ServeArgs,
     model_id: &str,
+    category: ModelCategory,
 ) -> Result<RegisteredModel> {
     let model_dir = crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())
         .with_context(|| format!("resolving preseed model '{model_id}'"))?;
@@ -31,6 +32,7 @@ pub(crate) fn registered_model(
     Ok(RegisteredModel {
         model_id: model_id.to_string(),
         model_hash: spark_runtime::snapshot::model_version_hash(model_id, &revision),
+        category,
     })
 }
 
@@ -45,21 +47,23 @@ pub(crate) fn registered_model(
 pub(crate) fn registered_model_checked(
     args: &cli::ServeArgs,
     model_id: &str,
+    category: ModelCategory,
 ) -> Result<RegisteredModel> {
-    let reg = registered_model(args, model_id)?;
+    let reg = registered_model(args, model_id, category)?;
     let model_dir =
         crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
     let (mut config, _json) = super::load_model_config(&model_dir)
         .with_context(|| format!("parsing config.json of preseed model '{model_id}'"))?;
     // Sidecar-served classes (Plan.md W.0): whisper is deliberately NOT
     // a scheduler/hot-swap model — registering it would make it
-    // lazy-swappable on the chat endpoints, where the swap would die at
-    // the (intentionally absent) Model-trait loader. The endpoint loads
-    // it independently; a preseed entry is harmless but redundant.
+    // lazy-swappable, and the swap would die at the (intentionally
+    // absent) Model-trait loader. Belongs in ATLAS_PRESEED_TRANSCRIBE.
     if config.model_type == "whisper" {
         bail!(
-            "served by the resident Whisper sidecar (/v1/audio/transcriptions loads it \
-             on first request) — preseed registration is not applicable"
+            "whisper checkpoints belong in ATLAS_PRESEED_TRANSCRIBE (served by the \
+             resident sidecar on /v1/audio/transcriptions, not the arena) — not \
+             registrable under {}",
+            category.env_var(),
         );
     }
     super::apply_lm_head_dtype_override(args, &mut config)?;

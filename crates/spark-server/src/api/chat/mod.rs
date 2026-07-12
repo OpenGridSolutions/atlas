@@ -74,7 +74,12 @@ pub async fn chat_completions(
     // active one BEFORE the per-request ModelRuntime snapshot inside
     // `chat_completions_inner` — otherwise this request would render with
     // the previous model's tokenizer.
-    let swap_ms = match super::lazy_swap::ensure_model_active(&state, &req.model).await {
+    let swap_ms = match super::lazy_swap::ensure_model_active(
+        &state,
+        &req.model,
+        crate::main_modules::hotswap::ModelCategory::Generative,
+    )
+    .await {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };

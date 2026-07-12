@@ -279,10 +279,11 @@ pub struct ServeArgs {
     /// listed model gets a hash-verified ATLASRAW snapshot at boot (loaded
     /// from safetensors only when missing or stale), then the server waits
     /// IDLE with no model resident; the first request naming a registered
-    /// model loads it synchronously (~6 s). Also settable as a JSON array
-    /// via `ATLAS_PRESEED_MODELS='["org/model-a","org/model-b"]'` (env and
-    /// flags are combined, duplicates removed). The boot model (positional
-    /// arg) is always part of the registry.
+    /// model loads it synchronously (~6 s). Flag entries join the
+    /// GENERATIVE category; the full categorized lists come from the
+    /// `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE}` env
+    /// vars (each a JSON array, env and flags combined, duplicates
+    /// removed). The boot model (positional arg) is always registered.
     #[arg(long = "preseed-model", value_name = "HF_ID")]
     pub preseed_model: Vec<String>,
 
@@ -545,14 +546,16 @@ pub struct ServeArgs {
     pub auth_token: Option<String>,
 }
 
-/// Combined preseed model list (Task 6 Phase 2.1): `ATLAS_PRESEED_MODELS`
-/// (a JSON array string) first, then every repeatable `--preseed-model`,
-/// order-preserving with duplicates removed. Fails fast on a malformed env
-/// value, naming it — a silently ignored preseed list would surface as a
-/// mystery 404 at request time.
-pub fn resolve_preseed_models(
-    flag_models: &[String],
+/// One category's preseed model list (Plan.md Phase K): the named
+/// `ATLAS_PRESEED_<CATEGORY>` env value (a JSON array string) first, then
+/// any flag-provided ids (only GENERATIVE takes the repeatable
+/// `--preseed-model`), order-preserving with duplicates removed. Fails
+/// fast on a malformed env value, naming the variable — a silently
+/// ignored preseed list would surface as a mystery 404 at request time.
+pub fn resolve_category_models(
+    env_var: &str,
     env_value: Option<&str>,
+    flag_models: &[String],
 ) -> anyhow::Result<Vec<String>> {
     let mut out: Vec<String> = Vec::new();
     if let Some(raw) = env_value {
@@ -560,7 +563,7 @@ pub fn resolve_preseed_models(
         if !raw.is_empty() {
             let parsed: Vec<String> = serde_json::from_str(raw).map_err(|e| {
                 anyhow::anyhow!(
-                    "ATLAS_PRESEED_MODELS must be a JSON array of model-id strings \
+                    "{env_var} must be a JSON array of model-id strings \
                      (e.g. '[\"org/model-a\",\"org/model-b\"]'); got {raw:?}: {e}"
                 )
             })?;
@@ -569,7 +572,7 @@ pub fn resolve_preseed_models(
     }
     out.extend(flag_models.iter().cloned());
     if let Some(bad) = out.iter().find(|m| m.trim().is_empty()) {
-        anyhow::bail!("preseed model list contains an empty id (entry {bad:?})");
+        anyhow::bail!("{env_var} contains an empty model id (entry {bad:?})");
     }
     let mut seen = std::collections::HashSet::new();
     out.retain(|m| seen.insert(m.clone()));
@@ -578,35 +581,42 @@ pub fn resolve_preseed_models(
 
 #[cfg(test)]
 mod preseed_tests {
-    use super::resolve_preseed_models;
+    use super::resolve_category_models;
 
     #[test]
     fn env_json_array_parses_and_merges_with_flags() {
         let flags = vec!["c/d".to_string(), "a/b".to_string()];
-        let out =
-            resolve_preseed_models(&flags, Some(r#"["a/b", "e/f"]"#)).expect("valid list");
+        let out = resolve_category_models(
+            "ATLAS_PRESEED_GENERATIVE",
+            Some(r#"["a/b", "e/f"]"#),
+            &flags,
+        )
+        .expect("valid list");
         // Env first, flags appended, duplicate a/b removed.
         assert_eq!(out, vec!["a/b", "e/f", "c/d"]);
     }
 
     #[test]
-    fn malformed_env_fails_fast_naming_the_value() {
-        let err = resolve_preseed_models(&[], Some("a/b,c/d")).unwrap_err();
+    fn malformed_env_fails_fast_naming_the_variable() {
+        let err =
+            resolve_category_models("ATLAS_PRESEED_EMBED", Some("a/b,c/d"), &[]).unwrap_err();
         let msg = format!("{err}");
-        assert!(msg.contains("ATLAS_PRESEED_MODELS"), "{msg}");
+        assert!(msg.contains("ATLAS_PRESEED_EMBED"), "{msg}");
         assert!(msg.contains("a/b,c/d"), "{msg}");
     }
 
     #[test]
     fn empty_env_and_flags_yield_empty_list() {
-        assert!(resolve_preseed_models(&[], None).unwrap().is_empty());
-        assert!(resolve_preseed_models(&[], Some("  ")).unwrap().is_empty());
-        assert!(resolve_preseed_models(&[], Some("[]")).unwrap().is_empty());
+        let v = "ATLAS_PRESEED_RERANK";
+        assert!(resolve_category_models(v, None, &[]).unwrap().is_empty());
+        assert!(resolve_category_models(v, Some("  "), &[]).unwrap().is_empty());
+        assert!(resolve_category_models(v, Some("[]"), &[]).unwrap().is_empty());
     }
 
     #[test]
     fn empty_id_entry_is_rejected() {
-        assert!(resolve_preseed_models(&["".to_string()], None).is_err());
-        assert!(resolve_preseed_models(&[], Some(r#"[" "]"#)).is_err());
+        let v = "ATLAS_PRESEED_TRANSLATE";
+        assert!(resolve_category_models(v, None, &["".to_string()]).is_err());
+        assert!(resolve_category_models(v, Some(r#"[" "]"#), &[]).is_err());
     }
 }

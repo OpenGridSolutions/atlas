@@ -115,7 +115,12 @@ pub async fn completions(
     // Lazy multi-model swap (Task 6 Phase 3): must run BEFORE the
     // per-model snapshot below — the requested model's tokenizer has to
     // be the one that encodes this prompt.
-    let swap_ms = match super::lazy_swap::ensure_model_active(&state, &req.model).await {
+    let swap_ms = match super::lazy_swap::ensure_model_active(
+        &state,
+        &req.model,
+        crate::main_modules::hotswap::ModelCategory::Generative,
+    )
+    .await {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };

@@ -119,6 +119,11 @@ pub struct AppState {
     /// Hot-swap context (weights arena + snapshot/unload/load state).
     /// `None` ⇒ `--weights-arena-gb 0`; /admin/models endpoints answer 503.
     pub hotswap: Option<Arc<crate::main_modules::hotswap::HotswapCtx>>,
+    /// Model ids from ATLAS_PRESEED_TRANSCRIBE (Plan.md Phase K). Served
+    /// by the Whisper sidecar on /v1/audio/transcriptions — never part of
+    /// the arena swap registry. Used for the endpoint's model check and
+    /// for the "categorized as transcribe" 400 on foreign endpoints.
+    pub transcribe_models: Vec<String>,
 }
 
 impl AppState {

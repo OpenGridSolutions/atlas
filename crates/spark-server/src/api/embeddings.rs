@@ -70,7 +70,12 @@ pub async fn embeddings(
     }
 
     // Lazy multi-model swap BEFORE the runtime snapshot.
-    let swap_ms = match super::lazy_swap::ensure_model_active(&state, &req.model).await {
+    let swap_ms = match super::lazy_swap::ensure_model_active(
+        &state,
+        &req.model,
+        crate::main_modules::hotswap::ModelCategory::Embed,
+    )
+    .await {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };

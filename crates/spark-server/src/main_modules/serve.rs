@@ -26,18 +26,69 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     tracing::info!("Atlas Spark starting...");
     tracing::info!("Licensed under AGPL-3.0-only — see /LICENSE in this container");
 
-    // Preseed list (Task 6 Phase 2.1) — parsed FIRST so a malformed
-    // ATLAS_PRESEED_MODELS fails the boot before any GPU work starts.
-    let preseed_models = cli::resolve_preseed_models(
-        &args.preseed_model,
-        std::env::var("ATLAS_PRESEED_MODELS").ok().as_deref(),
-    )?;
-    if !preseed_models.is_empty() {
-        tracing::info!(
-            "Preseed configured: {} model(s) — {:?} (lazy multi-model mode)",
-            preseed_models.len(),
-            preseed_models,
+    // Categorized preseed lists (Plan.md Phase K) — parsed FIRST so a
+    // malformed env var fails the boot before any GPU work starts. The
+    // flat ATLAS_PRESEED_MODELS is GONE (no fallback): every preseeded
+    // model now declares its serving category via the env var it is
+    // listed in, and is only accepted at that category's endpoint.
+    if std::env::var("ATLAS_PRESEED_MODELS").is_ok_and(|v| !v.trim().is_empty()) {
+        anyhow::bail!(
+            "ATLAS_PRESEED_MODELS has been removed — list each model under its category \
+             instead: ATLAS_PRESEED_GENERATIVE (/v1/chat/completions), ATLAS_PRESEED_EMBED \
+             (/v1/embeddings), ATLAS_PRESEED_RERANK (/v1/rerank), ATLAS_PRESEED_TRANSCRIBE \
+             (/v1/audio/transcriptions), ATLAS_PRESEED_TRANSLATE (/v1/translate); each is a \
+             JSON array of model ids"
         );
+    }
+    use crate::main_modules::hotswap::ModelCategory;
+    let mut preseed_by_category: Vec<(ModelCategory, Vec<String>)> = Vec::new();
+    for cat in [
+        ModelCategory::Generative,
+        ModelCategory::Embed,
+        ModelCategory::Rerank,
+        ModelCategory::Transcribe,
+        ModelCategory::Translate,
+    ] {
+        let flags: &[String] = if cat == ModelCategory::Generative {
+            &args.preseed_model
+        } else {
+            &[]
+        };
+        let ids = cli::resolve_category_models(
+            cat.env_var(),
+            std::env::var(cat.env_var()).ok().as_deref(),
+            flags,
+        )?;
+        preseed_by_category.push((cat, ids));
+    }
+    // A model id in two categories would make the endpoint check
+    // ambiguous — refuse the configuration outright.
+    {
+        let mut owner: std::collections::HashMap<String, ModelCategory> =
+            std::collections::HashMap::new();
+        for (cat, ids) in &preseed_by_category {
+            for id in ids {
+                if let Some(prev) = owner.insert(id.clone(), *cat) {
+                    anyhow::bail!(
+                        "model '{id}' is listed in both {} and {} — each model must have \
+                         exactly one category",
+                        prev.env_var(),
+                        cat.env_var(),
+                    );
+                }
+            }
+        }
+    }
+    for (cat, ids) in &preseed_by_category {
+        if !ids.is_empty() {
+            tracing::info!(
+                "Preseed [{}] ({}): {} model(s) — {:?}",
+                cat.as_str(),
+                cat.endpoint(),
+                ids.len(),
+                ids,
+            );
+        }
     }
 
     // 0. Resolve model directory from HF ID or path
@@ -523,40 +574,66 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if !hotswap_enabled && _hotswap_arena.is_some() {
         tracing::warn!("Hot-swap endpoints disabled: EP world_size > 1 or --dflash set");
     }
-    // Model registry (Task 6 Phase 2): boot model + preseed list, deduped.
-    // Lazy request-time swaps and the listing APIs only see these.
+    // Model registry (Task 6 Phase 2): boot model + categorized preseed
+    // lists, deduped. Lazy request-time swaps and the listing APIs only
+    // see these. TRANSCRIBE ids are deliberately NOT registered here —
+    // whisper is served by the resident sidecar, never by the arena — but
+    // are collected for the /v1/audio/transcriptions model check.
     let boot_revision = model_dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_else(|| "local".to_string());
+    // The boot model's category: its entry in a preseed list if present,
+    // else generative (the positional arg is a chat model by convention).
+    let boot_category = preseed_by_category
+        .iter()
+        .find(|(_, ids)| ids.iter().any(|id| *id == model_name))
+        .map(|(cat, _)| *cat)
+        .unwrap_or(ModelCategory::Generative);
     let mut model_registry = vec![crate::main_modules::hotswap::RegisteredModel {
         model_id: model_name.clone(),
         model_hash: spark_runtime::snapshot::model_version_hash(&model_name, &boot_revision),
+        category: boot_category,
     }];
+    #[allow(unused_mut)]
+    let mut transcribe_models: Vec<String> = Vec::new();
     #[cfg(feature = "cuda")]
-    for id in &preseed_models {
-        if model_registry.iter().any(|m| m.model_id == *id) {
-            continue;
-        }
-        // Servability-gated registration: a preseed entry whose model
-        // class Atlas cannot serve yet (no loader / no kernel target /
-        // quant mismatch / unparseable config) is SKIPPED with a warning
-        // instead of aborting boot — the full .env list stays in place
-        // and the server comes up with whatever is loadable. Skipped ids
-        // are not registered, so requests naming them get the regular
-        // 404 + available-models listing.
-        match serve_phases::registered_model_checked(&args, id) {
-            Ok(m) => model_registry.push(m),
-            Err(e) => tracing::warn!(
-                "Preseed: skipping '{id}': {e:#} — model NOT registered (boot continues)"
-            ),
+    for (cat, ids) in &preseed_by_category {
+        for id in ids {
+            if *cat == ModelCategory::Transcribe {
+                tracing::info!(
+                    "Preseed [transcribe]: '{id}' is served by the resident Whisper sidecar \
+                     ({} loads it on first request) — not part of the arena swap registry",
+                    cat.endpoint(),
+                );
+                transcribe_models.push(id.clone());
+                continue;
+            }
+            if model_registry.iter().any(|m| m.model_id == *id) {
+                continue;
+            }
+            // Servability-gated registration: a preseed entry whose model
+            // class Atlas cannot serve yet (no loader / no kernel target /
+            // quant mismatch / unparseable config) is SKIPPED with a
+            // warning instead of aborting boot — the full .env list stays
+            // in place and the server comes up with whatever is loadable.
+            // Skipped ids are not registered, so requests naming them get
+            // the regular 404 + available-models listing.
+            match serve_phases::registered_model_checked(&args, id, *cat) {
+                Ok(m) => model_registry.push(m),
+                Err(e) => tracing::warn!(
+                    "Preseed: skipping '{id}': {e:#} — model NOT registered (boot continues)"
+                ),
+            }
         }
     }
     #[cfg(not(feature = "cuda"))]
-    if !preseed_models.is_empty() {
-        anyhow::bail!("--preseed-model / ATLAS_PRESEED_MODELS requires the CUDA backend");
+    if preseed_by_category.iter().any(|(_, ids)| !ids.is_empty()) {
+        anyhow::bail!("--preseed-model / ATLAS_PRESEED_* requires the CUDA backend");
     }
-    let lazy_enabled = !preseed_models.is_empty();
+    let lazy_enabled = preseed_by_category.iter().any(|(cat, ids)| {
+        *cat != ModelCategory::Transcribe && !ids.is_empty()
+    });
     if lazy_enabled && !hotswap_enabled {
         anyhow::bail!(
             "preseed/lazy multi-model mode requires hot-swap (weights arena enabled, \
@@ -929,6 +1006,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         dump_writer,
         auth,
         hotswap: hotswap_ctx,
+        transcribe_models,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);

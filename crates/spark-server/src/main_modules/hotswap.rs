@@ -55,6 +55,56 @@ pub struct ActiveModel {
     pub model_hash: [u8; 32],
 }
 
+/// Serving category of a registered model (Plan.md Phase K). Assigned
+/// explicitly by the `ATLAS_PRESEED_<CATEGORY>` env var a model was listed
+/// in — never guessed from the model name or config. Each category maps to
+/// exactly one endpoint; requesting a model on a foreign endpoint is a 400.
+/// `Transcribe` never appears in the swap registry (whisper is served by
+/// the resident sidecar, outside the arena) but participates in endpoint
+/// checks and error messages.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ModelCategory {
+    Generative,
+    Embed,
+    Rerank,
+    Transcribe,
+    Translate,
+}
+
+impl ModelCategory {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelCategory::Generative => "generative",
+            ModelCategory::Embed => "embed",
+            ModelCategory::Rerank => "rerank",
+            ModelCategory::Transcribe => "transcribe",
+            ModelCategory::Translate => "translate",
+        }
+    }
+
+    /// The one endpoint this category is served on.
+    pub fn endpoint(self) -> &'static str {
+        match self {
+            ModelCategory::Generative => "/v1/chat/completions",
+            ModelCategory::Embed => "/v1/embeddings",
+            ModelCategory::Rerank => "/v1/rerank",
+            ModelCategory::Transcribe => "/v1/audio/transcriptions",
+            ModelCategory::Translate => "/v1/translate",
+        }
+    }
+
+    /// The env var whose JSON list assigns this category.
+    pub fn env_var(self) -> &'static str {
+        match self {
+            ModelCategory::Generative => "ATLAS_PRESEED_GENERATIVE",
+            ModelCategory::Embed => "ATLAS_PRESEED_EMBED",
+            ModelCategory::Rerank => "ATLAS_PRESEED_RERANK",
+            ModelCategory::Transcribe => "ATLAS_PRESEED_TRANSCRIBE",
+            ModelCategory::Translate => "ATLAS_PRESEED_TRANSLATE",
+        }
+    }
+}
+
 /// One entry of the boot-time model registry (Task 6 Phase 2): the boot
 /// model plus every preseeded model. Only registered models may be
 /// lazy-loaded at request time — an unregistered id is a 404, never an
@@ -63,6 +113,9 @@ pub struct ActiveModel {
 pub struct RegisteredModel {
     pub model_id: String,
     pub model_hash: [u8; 32],
+    /// Category from the env var this model was preseeded under (Phase K);
+    /// enforced at every endpoint via [`ModelCategory::endpoint`].
+    pub category: ModelCategory,
 }
 
 /// Request-time lazy-swap coordination (Task 6 Phase 3.2). Concurrency

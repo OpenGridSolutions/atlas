@@ -26,17 +26,19 @@ use axum::response::{IntoResponse, Response};
 
 use super::compact::openai_error_response;
 use crate::main_modules::AppState;
-use crate::main_modules::hotswap::{HotswapCtx, LazyPhase, SwapState};
+use crate::main_modules::hotswap::{HotswapCtx, LazyPhase, ModelCategory, SwapState};
 
 /// Response-header name carrying the swap latency a request paid.
 pub const SWAP_HEADER: &str = "x-atlas-model-swap";
 
-/// Ensure `requested` is the active model, swapping to it if needed.
-/// Returns `Ok(None)` (pass-through), `Ok(Some(ms))` (this request
-/// triggered a swap that took `ms`), or `Err(response)` to short-circuit.
+/// Ensure `requested` is the active model AND belongs to the endpoint's
+/// category (Plan.md Phase K), swapping to it if needed. Returns
+/// `Ok(None)` (pass-through), `Ok(Some(ms))` (this request triggered a
+/// swap that took `ms`), or `Err(response)` to short-circuit.
 pub async fn ensure_model_active(
     state: &Arc<AppState>,
     requested: &str,
+    required: ModelCategory,
 ) -> Result<Option<u64>, Response> {
     let Some(ctx) = state.hotswap.as_ref() else {
         return Ok(None);
@@ -44,11 +46,14 @@ pub async fn ensure_model_active(
     if !ctx.lazy_enabled || requested.is_empty() {
         return Ok(None);
     }
-    // Fast path: right model, ready to serve.
-    if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
-        return Ok(None);
-    }
-    if ctx.registered(requested).is_none() {
+    // Category gate BEFORE the active-model fast path — a mis-categorized
+    // request must 400 even when its model happens to be resident.
+    let Some(reg) = ctx.registered(requested) else {
+        // Transcribe models are configured but never in the swap registry;
+        // give them the categorized 400 rather than a generic 404.
+        if state.transcribe_models.iter().any(|m| m == requested) {
+            return Err(category_mismatch(requested, ModelCategory::Transcribe, required));
+        }
         let available: Vec<&str> = ctx.registry.iter().map(|m| m.model_id.as_str()).collect();
         let body = serde_json::json!({
             "error": {
@@ -63,6 +68,13 @@ pub async fn ensure_model_active(
             "available_models": available,
         });
         return Err((StatusCode::NOT_FOUND, axum::Json(body)).into_response());
+    };
+    if reg.category != required {
+        return Err(category_mismatch(requested, reg.category, required));
+    }
+    // Fast path: right model, ready to serve.
+    if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
+        return Ok(None);
     }
 
     // ── Swap state machine (Phase 3.2): Idle | Swapping{to} ──
@@ -203,6 +215,33 @@ async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
         Ok(Err(_)) => Err(swap_error("load reply channel dropped (scheduler died?)")),
         Err(_) => Err(swap_error(format!("load '{target}' timed out after 900 s"))),
     }
+}
+
+/// The Phase-K category 400: names the model's actual category, the
+/// endpoint that refused it, and the endpoint that serves it. Never a
+/// silent fallback.
+fn category_mismatch(
+    requested: &str,
+    actual: ModelCategory,
+    required: ModelCategory,
+) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "model '{requested}' is categorized as {} and not available on {}; \
+                 use {} instead",
+                actual.as_str(),
+                required.endpoint(),
+                actual.endpoint(),
+            ),
+            "type": "invalid_request_error",
+            "param": "model",
+            "code": "model_wrong_category",
+        },
+        "model_category": actual.as_str(),
+        "model_endpoint": actual.endpoint(),
+    });
+    (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
 }
 
 fn swap_error(msg: impl std::fmt::Display) -> Response {

@@ -195,11 +195,35 @@ pub async fn transcriptions(
     let Some(bytes) = file else {
         return openai_error_response(StatusCode::BAD_REQUEST, "missing 'file' field".into());
     };
-    // OpenAI clients habitually send "whisper-1"; accept the aliases.
-    if !matches!(model.as_str(), "" | "whisper-1" | "whisper-large-v3" | WHISPER_ID) {
+    // Category check (Plan.md Phase K): the REAL id of any model listed
+    // in ATLAS_PRESEED_TRANSCRIBE is accepted, plus the OpenAI-habitual
+    // "whisper-1" / short aliases (clients hardcode those).
+    let alias_ok = matches!(model.as_str(), "" | "whisper-1" | "whisper-large-v3" | WHISPER_ID);
+    let listed_ok = _state.transcribe_models.iter().any(|m| *m == model);
+    if !alias_ok && !listed_ok {
+        // A model registered for another endpoint gets the explaining 400.
+        if let Some(reg) = _state
+            .hotswap
+            .as_ref()
+            .and_then(|ctx| ctx.registered(&model).cloned())
+        {
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "model '{model}' is categorized as {} and not available on \
+                     /v1/audio/transcriptions; use {} instead",
+                    reg.category.as_str(),
+                    reg.category.endpoint(),
+                ),
+            );
+        }
         return openai_error_response(
             StatusCode::NOT_FOUND,
-            format!("model '{model}' is not a transcription model; use '{WHISPER_ID}'"),
+            format!(
+                "model '{model}' is not a transcription model; configured transcribe \
+                 models: {:?} (alias 'whisper-1' also accepted)",
+                _state.transcribe_models,
+            ),
         );
     }
     if !matches!(response_format.as_str(), "json" | "text" | "verbose_json") {

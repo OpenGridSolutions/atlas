@@ -30,6 +30,27 @@ echo "==> [3/3] serving ${MODEL} for testing ..."
 # Safety nets that remain: the per-shard OOM guard (unconditional per shard
 # since the Task 0b fix) and the per-tensor UVM-fallback allocation.
 export ATLAS_SKIP_OOM_PREFLIGHT=1
+# Phase K bridge for containers created before the categorized preseed
+# vars landed in .devpod/compose.yml: the removed flat var must not leak
+# into the server (it hard-fails on it), and the five category vars get
+# the compose.yml defaults when the stale container env lacks them.
+# After a container recreation the compose-provided values win.
+unset ATLAS_PRESEED_MODELS
+export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE:-[
+  \"nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4\",
+  \"vincentzed-hf/Qwen3-Coder-Next-NVFP4\",
+  \"ig1/Qwen3-VL-30B-A3B-Instruct-NVFP4\"
+]}"
+export ATLAS_PRESEED_EMBED="${ATLAS_PRESEED_EMBED:-[
+  \"Qwen/Qwen3-Embedding-8B\",
+  \"Qwen/Qwen3-VL-Embedding-8B\"
+]}"
+export ATLAS_PRESEED_RERANK="${ATLAS_PRESEED_RERANK:-[
+  \"Qwen/Qwen3-Reranker-8B\",
+  \"Qwen/Qwen3-VL-Reranker-8B\"
+]}"
+export ATLAS_PRESEED_TRANSCRIBE="${ATLAS_PRESEED_TRANSCRIBE:-[\"openai/whisper-large-v3\"]}"
+export ATLAS_PRESEED_TRANSLATE="${ATLAS_PRESEED_TRANSLATE:-[\"google/translategemma-12b-it\"]}"
 LOG="/workspace/logs/serve-$(date +%Y%m%d-%H%M%S).log"
 echo "==> logging to ${LOG}"
 
