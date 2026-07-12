@@ -66,8 +66,17 @@ moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
 # showed this MoE A3B variant finishes naturally with EOS on long-code
 # prompts. Only the dense Qwen 27B variants need the watchdog.
 enable_loop_watchdog = false
-# Thinking on by default for all Qwen reasoning-tier models (sweep 2026-05-20).
-thinking_default = true
+# 2026-07-12: false — this target serves the INSTRUCT variant (hf_id
+# above), which has NO thinking mode: its chat template contains no
+# <think> handling and the model never emits </think>. The 2026-05-20
+# sweep's `true` put every chat request into forced-thinking: the
+# scheduler starts inside_thinking, ALL output lands in
+# reasoning_content (content stays ""), the budget-exhaustion path
+# injects an out-of-distribution </think>, and the model drifts into
+# invented "Human:/Assistant:" turns. A genuine Thinking-VL checkpoint
+# on this target still gets thinking via the template-forced detection
+# (unclosed <think> in the prompt tail), same as qwen3-next-80b.
+thinking_default = false
 # 2026-05-23 sweep: project-wide default flipped to true.
 thinking_in_tools = true
 # 2026-05-23 sweep: explicit 2048 (was unset → 256 default).

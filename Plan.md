@@ -620,6 +620,28 @@ stay green.
 | kv_stats atomics drift from the real free list | single choke: every `free_blocks` mutation site sets the count from `free_blocks.len()` (not incremental deltas) |
 | stale stats after unload/swap | PagedKvCache::drop clears; arena bytes read live from HotswapCtx |
 
+## Phase V — ig1/Qwen3-VL-30B Instruct: forced-thinking misconfig (2026-07-12)
+
+Pre-existing UPSTREAM bug (commit 743f946 sweep, 2026-06-09), not a
+session regression — the session diff on the chat/template path is the
+Phase-K category parameter only. Symptoms (empty content, full
+reasoning_content, invented "Human:/Assistant:" turns, runaway past the
+turn end at temperature 0) were NOT template/EOS problems: the log shows
+the checkpoint's own ChatML template rendering correctly and EOS
+[151645, 151643] registered. Root cause: the qwen3-vl-30b-a3b target's
+MODEL.toml set `thinking_default = true` although its hf_id is the
+INSTRUCT variant with no thinking mode. With thinking enabled the
+scheduler starts `inside_thinking` (prefill_b_step), every token lands
+in reasoning_content, the never-emitted </think> runs the budget out,
+the injected </think> puts the model out of distribution and it drifts
+into base-model dialog hallucination. Fix: `thinking_default = false`
+(one line + comment); a genuine Thinking-VL checkpoint on this target
+still gets thinking via the template-forced detection (unclosed <think>
+in the prompt tail — the qwen3-next-80b pattern). Verified at temp 0:
+text-only → content 'OK' (2 tokens, reasoning empty); image (red field,
+white square) → correct one-sentence answer in content; 80B + Coder
+regression → 'pong' each.
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
