@@ -63,6 +63,16 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Response {
             "swap_free_gb": gb(m.swap_free),
             "hugepages": m.hugepages,
         })),
+        // What the LAST KV-budget computation actually used as its
+        // free-now input, and the budget it derived. The follow-up
+        // /proc/meminfo budget fix moves THIS pair; before/after
+        // comparison happens at the exact decision point.
+        "kv_budget_last": spark_runtime::kv_stats::budget_inputs().map(
+            |(free_now, budget)| serde_json::json!({
+                "free_now_seen_gb": gb(free_now),
+                "kv_budget_gb": gb(budget),
+            }),
+        ),
     });
 
     // ── Per-model residency ──

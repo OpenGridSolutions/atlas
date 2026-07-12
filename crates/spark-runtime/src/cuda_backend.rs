@@ -335,7 +335,8 @@ static STATS_CTX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::n
 pub fn cuda_mem_get_info_raw() -> Option<(usize, usize)> {
     let mut cur: u64 = 0;
     unsafe { cuCtxGetCurrent(&mut cur) };
-    if cur == 0 {
+    let bound_here = cur == 0;
+    if bound_here {
         let ctx = STATS_CTX.load(std::sync::atomic::Ordering::Relaxed);
         if ctx == 0 {
             return None;
@@ -346,7 +347,20 @@ pub fn cuda_mem_get_info_raw() -> Option<(usize, usize)> {
     }
     let mut free: usize = 0;
     let mut total: usize = 0;
-    if unsafe { cuMemGetInfo_v2(&mut free, &mut total) } != 0 {
+    let status = unsafe { cuMemGetInfo_v2(&mut free, &mut total) };
+    // CRITICAL: restore the thread's context-less state when WE bound it.
+    // Tokio worker threads are shared — leaving the context bound arms
+    // every other CUDA call that later runs on this thread. Concretely:
+    // the OOM watchdog's `cuda_free_memory_bytes` was inert on
+    // context-less workers by construction; a leaked binding made it
+    // live and it terminated the server on the (chronically low) GB10
+    // raw free reading during a whisper sidecar load (2026-07-12).
+    // No await point between bind and restore — no other task can
+    // observe the binding.
+    if bound_here {
+        unsafe { cuCtxSetCurrent(0) };
+    }
+    if status != 0 {
         return None;
     }
     Some((free, total))

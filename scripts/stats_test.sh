@@ -50,12 +50,34 @@ print(f"  cuda_free={m['cuda_mem_get_info_free_gb']} GB, "
 EOF
 
 echo "== S2: discrepancy documents the unfixed state (> 20 GB) =="
+# The discrepancy is exactly "reclaimable memory cudaMemGetInfo cannot
+# see". Depending on when this runs, the page cache may be empty (Atlas
+# reads snapshots O_DIRECT), which HIDES the bug. Reproduce the
+# documented state deterministically: warm the cache with existing
+# snapshot files (read-only) until ~40 GB of reclaimable cache exists —
+# MemAvailable counts it, cudaMemGetInfo does not.
+SNAPDIR="${SNAPDIR:-/workspace/snapshots}"
+warmed=0
+for f in "$SNAPDIR"/*.raw; do
+  [ -e "$f" ] || break
+  sz=$(stat -c%s "$f")
+  cat "$f" > /dev/null 2>&1 || true
+  warmed=$((warmed + sz))
+  [ "$warmed" -ge $((45 * 1024 * 1024 * 1024)) ] && break
+done
+echo "  (page cache warmed with $((warmed / 2**30)) GiB of snapshot reads)"
 stats
 python3 - <<'EOF' && ok "S2 discrepancy > 20 GB (bug visible)" || bad "S2 discrepancy"
 import os, json
 m = json.load(open(os.environ["RESP"]))["memory"]
-# Pre-fix expectation: cudaMemGetInfo misses ~40+ GB of reclaimable
-# DRAM. The follow-up budget fix flips this check to "small".
+# Pre-fix expectation: cudaMemGetInfo misses the reclaimable DRAM (the
+# warmed cache). The follow-up budget fix is verified against
+# memory.kv_budget_last.free_now_seen_gb approaching
+# proc_meminfo_available_gb — this raw-vs-meminfo discrepancy itself
+# documents the driver behaviour and stays visible.
+print(f"  cuda_free={m['cuda_mem_get_info_free_gb']} GB, "
+      f"proc_available={m['proc_meminfo_available_gb']} GB, "
+      f"discrepancy={m['discrepancy_gb']} GB")
 assert m["discrepancy_gb"] > 20, m["discrepancy_gb"]
 EOF
 

@@ -348,6 +348,10 @@ pub fn build_model(
             .saturating_sub(inference_reserve)
             .min(actual_free.saturating_sub(inference_reserve))
     };
+    // /v1/stats diagnosis (Plan.md Phase S): record the flawed free-now
+    // this budget was computed from — the follow-up /proc/meminfo fix is
+    // verified against exactly this pair.
+    spark_runtime::kv_stats::publish_budget_inputs(actual_free, kv_budget);
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink

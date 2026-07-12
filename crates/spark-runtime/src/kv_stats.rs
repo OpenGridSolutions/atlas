@@ -18,6 +18,13 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static TOTAL_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 static FREE_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 static POOL_BYTES: AtomicUsize = AtomicUsize::new(0);
+// What the LAST KV-budget computation saw (factory::build): the free-now
+// input and the resulting budget. THIS pair is what the follow-up
+// /proc/meminfo budget fix moves — /v1/stats exposes it so the fix has a
+// before/after metric at the exact decision point. Persists across
+// unload (deliberately: it documents the last decision, not residency).
+static BUDGET_FREE_NOW: AtomicUsize = AtomicUsize::new(0);
+static BUDGET_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// One live reading of the resident pool. `used_blocks` moves with
 /// active sequences.
@@ -46,6 +53,21 @@ pub fn clear() {
     TOTAL_BLOCKS.store(0, Ordering::Relaxed);
     FREE_BLOCKS.store(0, Ordering::Relaxed);
     POOL_BYTES.store(0, Ordering::Relaxed);
+}
+
+/// Called by `factory::build` each time the KV budget is computed.
+pub fn publish_budget_inputs(free_now_bytes: usize, kv_budget_bytes: usize) {
+    BUDGET_FREE_NOW.store(free_now_bytes, Ordering::Relaxed);
+    BUDGET_BYTES.store(kv_budget_bytes, Ordering::Relaxed);
+}
+
+/// `(free_now_bytes, kv_budget_bytes)` of the last budget computation;
+/// `None` before the first model load.
+pub fn budget_inputs() -> Option<(usize, usize)> {
+    match BUDGET_FREE_NOW.load(Ordering::Relaxed) {
+        0 => None,
+        f => Some((f, BUDGET_BYTES.load(Ordering::Relaxed))),
+    }
 }
 
 /// `None` when no pool is resident.
