@@ -450,12 +450,16 @@ check (case-insensitive, no WER obsession); A3 >30 s audio (fixture repeated
 + distinct second-half keyword) → late keyword present (chunking works); A4
 the 6 existing models still answer afterwards (S1 pattern).
 
-### W status (2026-07-12)
-*W.1 `9af625d` (frontend + 5 unit tests green) · W.2a `881d5a9` (kernel target
-22 + microtest — **on-box microtest run pending, the W-risk gate**) · W.2b
-`13043b4` (encoder/decoder module) · W.3 `b7d4894` (endpoint, sidecar) · W.4
-`scripts/whisper_test.sh` + checked-in JFK fixture. Awaiting on-box:
-whisper_kernel_microtest FIRST, then whisper_test.sh.*
+### W status — **ACCEPTED on the box 2026-07-12**
+*W.1 `9af625d` · W.2a `881d5a9` (kernel microtest PASS on box) · W.2b
+`13043b4` · W.3 `b7d4894` · W.4 `01eceea` · config-parser fix `e3da13c`
+(whisper arm — no top-level hidden_size; preseed now skips with the honest
+"sidecar-served" message instead of a parse error; decoder-only parses
+untouched, 7/7 scheduler models register).*
+*Acceptance run: `whisper_test.sh` 4/4 PASS — A1/A2 word-perfect JFK
+transcript ("And so my fellow Americans, ask not what your country can do for
+you…"), A3 both 30 s chunks transcribed (4× keyword), A4 chat unaffected.
+Sidecar init 3.7 s (fp32→BF16, store released), ~3.7 s per 30 s chunk.*
 
 ### W risks
 | Risk | Mitigation |
