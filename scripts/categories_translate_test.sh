@@ -36,7 +36,7 @@ EMBED_MODEL="${EMBED_MODEL:-Qwen/Qwen3-Embedding-8B}"
 RERANK_MODEL="${RERANK_MODEL:-Qwen/Qwen3-Reranker-8B}"
 WHISPER_MODEL="${WHISPER_MODEL:-openai/whisper-large-v3}"
 TRANSLATE_MODEL="${TRANSLATE_MODEL:-google/translategemma-12b-it}"
-JFK="${JFK:-/workspace/test_data/jfk.wav}"
+JFK="${JFK:-$(cd "$(dirname "$0")/.." && pwd)/test_data/whisper_jfk.wav}"
 PASS=0; FAIL=0
 ok()   { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad()  { echo "FAIL: $1"; FAIL=$((FAIL+1)); }

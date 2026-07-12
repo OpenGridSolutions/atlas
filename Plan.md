@@ -533,6 +533,18 @@ de→fr French keyword; T3 template enforcement evidence (translate refuses on
 R1 all existing classes still answer (S1/A4 pattern). Boot log must show
 per-category registration counts and the whisper sidecar note.
 
+### K/T status (2026-07-12)
+DONE end to end. Boot log: five per-category preseed lines, whisper
+sidecar note, translategemma snapshot written first-boot (22.70 GiB,
+1065 tensors, 7.5 s), 8 models registered, server idle.
+`categories_translate_test.sh`: **15 PASS, 0 FAIL** — C1a/b real names,
+C2a–d categorized 400s on all four wrong-endpoint combinations, C3 real
+whisper id, T1 "The cat is sitting on the table and drinking milk.",
+T2 "Le chien dort dans le jardin, sous le grand arbre.", T3a/b forced
+template, R1a–d all categories. ATLAS_PRESEED_MODELS gone from
+compose.yml (serve.sh bridges stale container envs with unset +
+category defaults until the container is recreated).
+
 ### K/T risks
 | Risk | Mitigation |
 |---|---|
