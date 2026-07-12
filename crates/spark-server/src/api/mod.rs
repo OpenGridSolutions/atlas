@@ -44,6 +44,7 @@ pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod multimodal_input;
 pub mod rerank;
+pub mod stats;
 pub mod translate;
 pub mod responses;
 pub mod responses_stream;

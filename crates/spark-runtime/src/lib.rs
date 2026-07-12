@@ -31,6 +31,8 @@ pub mod kernel_audit;
 pub mod kv_cache;
 pub mod kv_dequant;
 pub mod kv_spill;
+pub mod kv_stats;
+pub mod meminfo;
 #[cfg(feature = "metal")]
 pub mod metal_backend;
 pub mod prefix_cache;

@@ -439,6 +439,15 @@ pub struct PagedKvCache {
     config: KvCacheConfig,
 }
 
+/// Clear the /v1/stats residency counters when the pool is torn down
+/// (model unload / hot-swap) — a stale reading would report a phantom
+/// KV reservation for a model that no longer holds one.
+impl Drop for PagedKvCache {
+    fn drop(&mut self) {
+        crate::kv_stats::clear();
+    }
+}
+
 mod paged_impl;
 #[cfg(test)]
 mod tests;

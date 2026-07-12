@@ -36,6 +36,21 @@ struct Sidecar {
 
 static SIDECAR: tokio::sync::OnceCell<Arc<Sidecar>> = tokio::sync::OnceCell::const_new();
 
+/// Resident BF16 weight bytes of the sidecar, set once at load
+/// (Σ tensor elements × 2 — the FP32 store is converted 1:1 to BF16
+/// buffers). 0 = sidecar not loaded. Read by /v1/stats (Phase S).
+static SIDECAR_WEIGHTS_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// /v1/stats residency probe: `Some(weights_bytes)` when the whisper
+/// sidecar is resident, `None` before its first request.
+pub fn sidecar_stats() -> Option<usize> {
+    match SIDECAR_WEIGHTS_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => None,
+        b => Some(b),
+    }
+}
+
 /// Build the loader-compatible view of the whisper snapshot: the HF repo
 /// ships `model.safetensors` (F16 — unsupported dtype) plus FP32 shards
 /// under a NON-standard index name (`model.safetensors.index.fp32.json`).
@@ -87,6 +102,15 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
                 let store = spark_runtime::fast_weights::FastSafetensorsLoader::new()
                     .load(&shadow, gpu, 2 * 1024 * 1024 * 1024)?;
                 let whisper = Whisper::load(&store, Box::new(backend))?;
+                // Resident footprint for /v1/stats: every checkpoint tensor
+                // lives on as a BF16 buffer (2 bytes/element).
+                let bf16_bytes: usize = store
+                    .names()
+                    .filter_map(|n| store.get(n).ok())
+                    .map(|w| w.shape.iter().product::<usize>() * 2)
+                    .sum();
+                SIDECAR_WEIGHTS_BYTES
+                    .store(bf16_bytes, std::sync::atomic::Ordering::Relaxed);
                 // The FP32 store (~6.2 GiB device) is fully converted into
                 // the sidecar's BF16 buffers — release it.
                 let mut freed = 0usize;

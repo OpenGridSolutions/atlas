@@ -121,6 +121,9 @@ pub(crate) async fn build_and_serve(
         .route("/admin/models/load", post(api::admin::admin_load))
         .route("/tokenize", post(api::tokenize))
         .route("/detokenize", post(api::detokenize))
+        // Memory + residency diagnostics (Plan.md Phase S) — surfaces the
+        // cudaMemGetInfo vs /proc/meminfo discrepancy as a metric.
+        .route("/v1/stats", get(api::stats::stats))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))

@@ -241,6 +241,7 @@ impl AtlasCudaBackend {
         if status != 0 || cuda_ctx == 0 {
             bail!("cuCtxGetCurrent failed: status {status}, ctx {cuda_ctx:#x}");
         }
+        STATS_CTX.store(cuda_ctx, std::sync::atomic::Ordering::Relaxed);
 
         tracing::info!(
             "AtlasCudaBackend initialized on GPU {ordinal} with {} PTX modules",
@@ -317,6 +318,40 @@ impl AtlasCudaBackend {
 /// Query GPU free memory without requiring a GpuBackend reference.
 /// Safe to call from any thread that shares the CUDA context.
 ///
+/// Process-wide CUDA context handle for read-only diagnostics from
+/// non-CUDA threads (/v1/stats, Plan.md Phase S). Contexts may be
+/// current on any number of threads simultaneously; binding it on an
+/// HTTP worker never disturbs the scheduler thread's binding. Stored
+/// once at backend init (same global pattern as
+/// `gpu::baseline_free_bytes`).
+static STATS_CTX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// RAW `cuMemGetInfo` — deliberately WITHOUT the `/proc/meminfo`
+/// MemAvailable max that `free_memory()` applies. /v1/stats exposes
+/// this uncorrected number next to the meminfo reading so the
+/// discrepancy (the DGX Spark unified-memory known issue) is visible
+/// as a metric. Callable from any thread: binds the stored context on
+/// demand when the caller has none. Returns `(free, total)` bytes.
+pub fn cuda_mem_get_info_raw() -> Option<(usize, usize)> {
+    let mut cur: u64 = 0;
+    unsafe { cuCtxGetCurrent(&mut cur) };
+    if cur == 0 {
+        let ctx = STATS_CTX.load(std::sync::atomic::Ordering::Relaxed);
+        if ctx == 0 {
+            return None;
+        }
+        if unsafe { cuCtxSetCurrent(ctx) } != 0 {
+            return None;
+        }
+    }
+    let mut free: usize = 0;
+    let mut total: usize = 0;
+    if unsafe { cuMemGetInfo_v2(&mut free, &mut total) } != 0 {
+        return None;
+    }
+    Some((free, total))
+}
+
 /// On unified memory systems (GB10), `cuMemGetInfo` reports Linux's "free" memory
 /// which excludes reclaimable buff/cache. This under-reports available memory by
 /// 30-50%. We take the max of CUDA's report and `/proc/meminfo` MemAvailable

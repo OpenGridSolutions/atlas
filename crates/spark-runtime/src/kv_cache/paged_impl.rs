@@ -64,6 +64,10 @@ impl PagedKvCache {
             );
         }
 
+        // /v1/stats residency counters (Plan.md Phase S): exact device
+        // bytes this pool holds + block counts, cleared again on drop.
+        crate::kv_stats::publish_pool(num_blocks, total_bytes);
+
         Ok(Self {
             layers,
             num_blocks,
@@ -80,6 +84,7 @@ impl PagedKvCache {
             .pop()
             .ok_or_else(|| anyhow::anyhow!("KV cache exhausted: no free blocks"))?;
         self.block_ref_counts[idx as usize] = 1;
+        crate::kv_stats::set_free_blocks(self.free_blocks.len());
         Ok(idx)
     }
 
@@ -148,6 +153,7 @@ impl PagedKvCache {
     pub fn try_alloc_block(&mut self) -> Option<u32> {
         let idx = self.free_blocks.pop()?;
         self.block_ref_counts[idx as usize] = 1;
+        crate::kv_stats::set_free_blocks(self.free_blocks.len());
         Some(idx)
     }
 
@@ -168,6 +174,7 @@ impl PagedKvCache {
         self.block_ref_counts[idx] -= 1;
         if self.block_ref_counts[idx] == 0 {
             self.free_blocks.push(block_idx);
+            crate::kv_stats::set_free_blocks(self.free_blocks.len());
             true
         } else {
             false
@@ -192,6 +199,7 @@ impl PagedKvCache {
         debug_assert!((block_idx as usize) < self.num_blocks);
         self.block_ref_counts[block_idx as usize] = 0;
         self.free_blocks.push(block_idx);
+        crate::kv_stats::set_free_blocks(self.free_blocks.len());
     }
 
     /// Current reference count for a block.
