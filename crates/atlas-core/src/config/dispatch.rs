@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 
 use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
-    default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2,
+    default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma3_params, parse_gemma4_params, parse_minimax_m2,
     parse_mistral_params, parse_quantization_config, parse_qwen3_dense, parse_qwen3_vl_dense,
     parse_step3p7, parse_vision_config, parse_whisper, validate_config,
 };
@@ -186,6 +186,9 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         // Whisper encoder-decoder (Plan.md Phase W): no top-level
         // hidden_size — schema-specific arm, decoder-side view.
         "whisper" => parse_whisper(json, &raw),
+        // Gemma-3 (TranslateGemma): nested text_config, flat dual-theta
+        // rope + linear-scaled full-attention layers (Plan.md Phase T).
+        "gemma3" | "gemma3_text" => parse_gemma3_params(&raw),
         "gemma4" => parse_gemma4_params(&raw),
         "minimax_m2" => parse_minimax_m2(&raw),
         "step3p7" => parse_step3p7(&raw),

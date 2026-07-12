@@ -118,6 +118,38 @@ fn parse_whisper_large_v3() {
     assert!(cfg.quantization_config.is_none());
 }
 
+#[test]
+fn parse_translategemma_12b() {
+    // Gemma-3 nested schema (Plan.md Phase T): no top-level hidden_size,
+    // flat dual-theta rope (rope_theta 1M full / rope_local_base_freq 10k
+    // sliding), linear rope scaling factor 8 on full layers, periodic
+    // 5-sliding:1-full layer pattern carried as full_attention_interval.
+    let cfg = parse_config(&fixture("translategemma_12b_config.json")).unwrap();
+    assert_eq!(cfg.model_type, "gemma3");
+    assert_eq!(cfg.hidden_size, 3840);
+    assert_eq!(cfg.num_hidden_layers, 48);
+    assert_eq!(cfg.num_attention_heads, 16);
+    assert_eq!(cfg.num_key_value_heads, 8);
+    assert_eq!(cfg.head_dim, 256);
+    assert_eq!(cfg.intermediate_size, 15360);
+    assert_eq!(cfg.vocab_size, 262_208);
+    assert!(cfg.nested_config);
+    // KV pools cover every layer; sliding is a per-layer runtime override.
+    assert_eq!(cfg.num_attention_layers(), 48);
+    assert_eq!(cfg.full_attention_interval, 6);
+    assert_eq!(cfg.sliding_window, 1024);
+    assert_eq!(cfg.rope_theta, 1_000_000.0);
+    assert_eq!(cfg.rope_local_base_freq, 10_000.0);
+    assert_eq!(cfg.rope_linear_factor, 8.0);
+    // Gemma conventions: scaled embeddings, tied lm_head, NO softcap.
+    assert_eq!(cfg.embed_scale, (3840.0f32).sqrt());
+    assert!(cfg.tie_word_embeddings);
+    assert_eq!(cfg.final_logit_softcapping, 0.0);
+    assert_eq!(cfg.bos_token_id, 2);
+    // Stock BF16 checkpoint.
+    assert!(cfg.quantization_config.is_none());
+}
+
 /// Parse the LIVE config.json of every cached model (the full 6-model
 /// preseed list) straight from the HF cache. Skips models that are not
 /// cached (CI without the cache stays green); on the box this is the

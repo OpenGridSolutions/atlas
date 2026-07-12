@@ -57,6 +57,47 @@ pub fn rope(
         .launch(stream)
 }
 
+/// Linear-scaled RoPE (Gemma-3 full-attention layers): identical to
+/// [`rope`] with every position multiplied by `pos_scale` (= 1/factor)
+/// before the rotation — HF `rope_type: "linear"`.
+///
+/// Kernel: `rope_forward_linear`
+#[allow(clippy::too_many_arguments)]
+pub fn rope_linear(
+    gpu: &dyn GpuBackend,
+    kernel: KernelHandle,
+    q: DevicePtr,
+    k: DevicePtr,
+    positions: DevicePtr,
+    seq_len: u32,
+    num_q_heads: u32,
+    num_kv_heads: u32,
+    head_dim: u32,
+    rotary_dim: u32,
+    theta: f32,
+    pos_scale: f32,
+    stream: u64,
+) -> Result<()> {
+    assert!(rotary_dim > 0, "rope_linear: rotary_dim=0");
+    let half_rot = (rotary_dim / 2).max(1);
+    let pos_per_block = (128 / half_rot).max(1);
+    let seq_blocks = div_ceil(seq_len, pos_per_block);
+    KernelLaunch::new(gpu, kernel)
+        .grid([num_q_heads + num_kv_heads, seq_blocks, 1])
+        .block([128, 1, 1])
+        .arg_ptr(q)
+        .arg_ptr(k)
+        .arg_ptr(positions)
+        .arg_u32(seq_len)
+        .arg_u32(num_q_heads)
+        .arg_u32(num_kv_heads)
+        .arg_u32(head_dim)
+        .arg_u32(rotary_dim)
+        .arg_f32(theta)
+        .arg_f32(pos_scale)
+        .launch(stream)
+}
+
 /// Proportional RoPE (Gemma-4 full-attention layers).
 ///
 /// Rotation pairs are (i, i + head_dim/2) for i in [0, rope_angles).

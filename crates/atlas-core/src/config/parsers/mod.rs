@@ -4,6 +4,7 @@
 //! budget.
 
 mod deepseek_v4;
+mod gemma3;
 mod gemma4;
 mod minimax;
 mod mistral;
@@ -14,6 +15,7 @@ mod vision;
 mod whisper;
 
 pub(crate) use deepseek_v4::parse_deepseek_v4;
+pub(crate) use gemma3::parse_gemma3_params;
 pub(crate) use gemma4::parse_gemma4_params;
 pub(crate) use minimax::parse_minimax_m2;
 pub(crate) use qwen3_dense::{parse_qwen3_dense, parse_qwen3_vl_dense};

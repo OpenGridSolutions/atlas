@@ -108,6 +108,16 @@ pub struct ModelConfig {
     pub max_position_embeddings: usize,
     #[serde(default = "default_rope_theta")]
     pub rope_theta: f64,
+    /// Gemma-3 dual-theta RoPE: base frequency of the SLIDING-attention
+    /// layers (`rope_local_base_freq`, 10k), while `rope_theta` holds the
+    /// full-attention base (1M). 0 = single-theta model.
+    #[serde(default)]
+    pub rope_local_base_freq: f64,
+    /// HF `rope_type: "linear"` factor on FULL-attention layers (Gemma-3
+    /// context extension 32K→128K uses 8.0). Positions are divided by
+    /// this factor before rotation. 1.0 = no linear scaling.
+    #[serde(default = "default_one_f64")]
+    pub rope_linear_factor: f64,
 
     // ── Normalization ──
     #[serde(default = "default_rms_eps")]
@@ -485,7 +495,7 @@ mod tests;
 
 pub use dispatch::parse_config;
 pub(crate) use parsers::{
-    parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_qwen3_dense,
+    parse_deepseek_v4, parse_gemma3_params, parse_gemma4_params, parse_minimax_m2, parse_qwen3_dense,
     parse_qwen3_vl_dense, parse_step3p7, parse_vision_config, parse_whisper,
 };
 pub use parsers::{parse_mistral_params, parse_quantization_config};

@@ -314,6 +314,25 @@ impl Qwen3AttentionLayer {
         if self.mla.is_some() {
             // MLA: RoPE already applied inside the MLA block (to rope portions only).
             // Skip the shared RoPE to avoid double-rotation.
+        } else if let (Some(scale), true) = (self.rope_pos_scale, self.rope_linear_k.0 != 0) {
+            // Gemma-3 full-attention: linear-scaled RoPE (positions × 1/8).
+            ops::rope_linear(
+                ctx.gpu,
+                self.rope_linear_k,
+                q_out,
+                k_out,
+                meta.positions,
+                1,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                scale,
+                stream,
+            )?;
         } else if self.rope_proportional && self.rope_proportional_k.0 != 0 {
             // Gemma-4 full-attention: proportional RoPE with rotation pairs
             // (i, i + head_dim/2) for i < rope_angles. rotary_dim_override

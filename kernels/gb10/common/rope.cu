@@ -198,6 +198,84 @@ extern "C" __global__ void rope_forward_proportional(
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Linear-scaled RoPE variant (Gemma-3 full-attention layers).
+//
+// HF `rope_type: "linear"` divides EVERY position by `factor` before the
+// rotation (equivalently inv_freq /= factor): Gemma-3's global-attention
+// layers were context-extended 32K→128K with factor 8, so the released
+// weights expect scaled positions at ALL positions, not just long ones.
+// Identical to `rope_forward` otherwise (full rotation, rotate_half
+// pairs (i, i + rotary_dim/2), freq denominator rotary_dim).
+//
+// Grid/Block: same as rope_forward.
+// ═══════════════════════════════════════════════════════════════════
+extern "C" __global__ void rope_forward_linear(
+    __nv_bfloat16* __restrict__ Q,
+    __nv_bfloat16* __restrict__ K,
+    const unsigned int* __restrict__ positions,
+    const unsigned int seq_len,
+    const unsigned int num_q_heads,
+    const unsigned int num_kv_heads,
+    const unsigned int head_dim,
+    const unsigned int rotary_dim,
+    const float theta,
+    const float pos_scale              // 1/factor, e.g. 0.125 for factor 8
+) {
+    const unsigned int head_idx = blockIdx.x;
+    const unsigned int seq_block = blockIdx.y;
+    const unsigned int batch = blockIdx.z;
+    const unsigned int tid = threadIdx.x;
+
+    const bool is_q = (head_idx < num_q_heads);
+    const unsigned int head = is_q ? head_idx : (head_idx - num_q_heads);
+    const unsigned int num_heads = is_q ? num_q_heads : num_kv_heads;
+    (void)num_heads;
+
+    if (!is_q && head >= num_kv_heads) return;
+
+    const unsigned int pairs_per_pos = rotary_dim / 2;
+    const unsigned int pos_per_block = (128 / pairs_per_pos) > 0 ? (128 / pairs_per_pos) : 1;
+
+    const unsigned int local_pos = tid / pairs_per_pos;
+    const unsigned int pair_idx = tid % pairs_per_pos;
+
+    const unsigned int seq_pos = seq_block * pos_per_block + local_pos;
+    if (seq_pos >= seq_len) return;
+    if (local_pos >= pos_per_block) return;
+
+    const unsigned int abs_pos = positions[batch * seq_len + seq_pos];
+
+    const double freq_exp_d = (double)(2 * pair_idx) / (double)rotary_dim;
+    const float freq = (float)(1.0 / pow((double)theta, freq_exp_d));
+    const float angle = ((float)abs_pos * pos_scale) * freq;
+    const float cos_val = cosf(angle);
+    const float sin_val = sinf(angle);
+
+    __nv_bfloat16* ptr;
+    if (is_q) {
+        ptr = Q + batch * seq_len * (num_q_heads * head_dim)
+                + seq_pos * (num_q_heads * head_dim)
+                + head * head_dim;
+    } else {
+        ptr = K + batch * seq_len * (num_kv_heads * head_dim)
+                + seq_pos * (num_kv_heads * head_dim)
+                + head * head_dim;
+    }
+
+    const unsigned int half_rot = rotary_dim / 2;
+    const unsigned int d0 = pair_idx;
+    const unsigned int d1 = pair_idx + half_rot;
+    float x0 = (float)ptr[d0];
+    float x1 = (float)ptr[d1];
+
+    float y0 = x0 * cos_val - x1 * sin_val;
+    float y1 = x1 * cos_val + x0 * sin_val;
+
+    ptr[d0] = __float2bfloat16(y0);
+    ptr[d1] = __float2bfloat16(y1);
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // YaRN RoPE variant (added 2026-04-05): uses pre-computed inverse frequency table instead
 // of computing frequencies from theta. Required for models with
 // non-standard RoPE scaling (Mistral Small 4 llama_4_scaling, etc.)

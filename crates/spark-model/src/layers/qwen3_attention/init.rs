@@ -110,6 +110,7 @@ impl Qwen3AttentionLayer {
             rope_theta_override: None,
             rotary_dim_override: None,
             rope_proportional: false,
+            rope_pos_scale: None,
             attn_scale_override: None,
             k_eq_v: false,
             v_norm_weight: None,
@@ -208,6 +209,7 @@ impl Qwen3AttentionLayer {
                 "rope_forward_yarn_interleaved_inv",
             ),
             rope_proportional_k: super::super::try_kernel(gpu, "rope", "rope_forward_proportional"),
+            rope_linear_k: super::super::try_kernel(gpu, "rope", "rope_forward_linear"),
             reshape_cache_k: gpu.kernel(reshape_mod, reshape_fn)?,
             fused_k_norm_rope_cache_write_bf16_k: super::super::try_kernel(
                 gpu,

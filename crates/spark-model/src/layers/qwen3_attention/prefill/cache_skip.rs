@@ -367,6 +367,26 @@ impl Qwen3AttentionLayer {
                 stream,
             )
             .map_err(|e| anyhow::anyhow!("rope_mrope_interleaved_k_only failed: {e}"))?;
+        } else if let (Some(scale), true) = (self.rope_pos_scale, self.rope_linear_k.0 != 0) {
+            // Gemma-3 full-attention: linear-scaled RoPE (positions × 1/8).
+            ops::rope_linear(
+                ctx.gpu,
+                self.rope_linear_k,
+                q_contiguous,
+                k_contiguous,
+                positions,
+                n,
+                nq,
+                nkv,
+                hd,
+                self.rotary_dim_override
+                    .unwrap_or(ctx.config.rotary_dim() as u32),
+                self.rope_theta_override
+                    .unwrap_or(ctx.config.rope_theta as f32),
+                scale,
+                stream,
+            )
+            .map_err(|e| anyhow::anyhow!("rope_linear failed: {e}"))?;
         } else if self.rope_proportional && self.rope_proportional_k.0 != 0 {
             let rope_angles = self
                 .rotary_dim_override

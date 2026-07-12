@@ -43,6 +43,8 @@ impl ModelConfig {
             sliding_window: 0,
             max_position_embeddings: 262144,
             rope_theta: 10_000_000.0,
+            rope_local_base_freq: 0.0,
+            rope_linear_factor: 1.0,
             rms_norm_eps: 1e-6,
             bos_token_id: 151643,
             eos_token_id: 151645,

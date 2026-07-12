@@ -1,0 +1,23 @@
+# TranslateGemma-12B — bf16 quant variant (Plan.md Phase T).
+#
+# Three override .cu files on top of the common base set:
+# - w4a16_gemm.cu: verbatim copy of the standard variant (qwen3-dense-8b
+#   lesson: Qwen3AttentionLayer/DenseFfnLayer eagerly resolve
+#   w4a16_gemm_t_k64 / *_m128 symbols that exist only in model-dir
+#   overrides — a zero-override target dies with CUDA_ERROR_NOT_FOUND).
+# - gelu.cu / embed_scale.cu: copies of gemma-4-31b's (GeGLU mul +
+#   √hidden embedding scale; not part of common).
+#
+# Deliberately NOT copied from gemma-4: rms_norm.cu (gemma-4's kernel
+# uses the absolute `x*rms*w` convention; Gemma-3 stores zero-centered
+# norm weights, exactly common's `x*rms*(1+w)` kernel), logit_softcap.cu
+# (Gemma-3 has none), the _512 attention variants (uniform head_dim=256
+# = common default tile; no -DHDIM flag).
+
+[build]
+extra_nvcc_flags = ["--fmad=false"]
+
+[modules]
+gelu = "gelu"
+embed_scale = "embed_scale"
+w4a16_gemm = "w4a16"

@@ -1,0 +1,81 @@
+# google/translategemma-12b-it — text translation (multiclass Plan.md
+# Phase T).
+#
+# Gemma-3 TEXT backbone only: the checkpoint is multimodal on disk
+# (SigLIP vision tower + projector) but Atlas serves the text→text
+# translation path exclusively — the loader never references vision
+# tensors. Served BF16 end to end (stock BF16 checkpoint; NO NVFP4
+# runtime quantization on the compute path), via arena + lazy swap under
+# the TRANSLATE preseed category (/v1/translate only).
+#
+# Attention: uniform head_dim=256 (common kernels' default tile — no
+# -DHDIM flag, unlike gemma-4 whose full layers needed _512 variants).
+# 5-sliding : 1-full pattern; dual RoPE theta (10k sliding / 1M full)
+# with linear position scaling factor 8 on full layers
+# (rope_forward_linear, common/rope.cu).
+
+[model]
+name = "translategemma-12b"
+hf_id = "google/translategemma-12b-it"
+model_type = "gemma3"
+architecture = "dense_attention"
+parameters = "12B"
+active_parameters = "12B"
+
+layers_total = 48
+layers_sliding_attention = 40
+layers_full_attention = 8
+layer_pattern = "5:1 (sliding ×5, full)"
+
+hidden_dim = 3840
+head_dim = 256
+q_heads = 16
+kv_heads = 8
+
+intermediate_size = 15360
+vocab_size = 262208
+max_position_embeddings = 131072
+sliding_window = 1024
+
+# RoPE: dual theta + linear scaling on full-attention layers.
+rope_theta_sliding = 10000.0
+rope_theta_full = 1000000.0
+rope_linear_factor = 8.0
+
+rms_norm_eps = 1e-6
+hidden_activation = "gelu_pytorch_tanh"
+tie_word_embeddings = true
+
+# Gemma-3 has NO logit softcapping (that was Gemma-2/-4).
+final_logit_softcapping = 0.0
+
+# Text path only — vision tower deliberately unused.
+vision = false
+
+moe_experts = 0
+mtp_layers = 0
+
+# The TRANSLATION task is trained at ~2K tokens; /v1/translate rejects
+# longer prompts (documented in Plan.md Phase T).
+effective_context = 2048
+
+[behavior]
+# Translation class: single-turn forced-template use, no thinking, no
+# tool calls, no generation-quality watchdogs.
+enable_loop_watchdog = false
+thinking_default = false
+
+# Deterministic translation default (HF generation_config ships
+# do_sample with top_k=64/top_p=0.95, but /v1/translate wants
+# reproducible output; the endpoint forces temperature 0).
+[sampling.non_thinking_text]
+temperature = 0.0
+top_p = 1.0
+top_k = 0
+presence_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[[model_types]]
+model_type = "gemma3"
+hidden_size = 3840

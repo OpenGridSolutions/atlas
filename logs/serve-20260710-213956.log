@@ -1101,3 +1101,207 @@
 [2m2026-07-10T19:47:32.696546Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7744 end_block=484 snap_id=12 block_table_len=484 straddle=0
 [2m2026-07-10T19:47:33.874470Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 4179 tokens (stop) 57.6 tok/s, TTFT=4264.6ms
 [2m2026-07-10T19:47:33.874629Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 13 for 7807 tokens
+[2m2026-07-10T19:59:22.975977Z[0m [32m INFO[0m [2mspark::scheduler::hotswap_ctl[0m[2m:[0m Hot-swap: unload requested (0 active, 0 prefilling, 0 swapped)
+[2m2026-07-10T19:59:23.002093Z[0m [32m INFO[0m [2mspark::scheduler::hotswap_ctl[0m[2m:[0m Hot-swap: model unloaded (1480 device allocations freed, 0 failed, 26 ms); arena reset (base DevicePtr(0xf75f00000000) unchanged)
+[2m2026-07-10T19:59:23.002290Z[0m [32m INFO[0m [2mspark::model_resolver[0m[2m:[0m Model: vincentzed-hf/Qwen3-Coder-Next-NVFP4 (resolved to /root/.cache/huggingface/hub/models--vincentzed-hf--Qwen3-Coder-Next-NVFP4/snapshots/7e263dbddb0d59c6eea92b10c365958b914f59b6)
+[2m2026-07-10T19:59:23.002445Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m EOS tokens (from generation_config.json): [151645, 151643]
+[2m2026-07-10T19:59:23.002452Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Default sampling: temperature=0.6, top_k=40, top_p=0.95, top_n_sigma=1, min_p=0.08
+[2m2026-07-10T19:59:23.182794Z[0m [32m INFO[0m [2mspark::tokenizer::jinja_helpers[0m[2m:[0m Loaded standalone chat_template.jinja (6068 chars)
+[2m2026-07-10T19:59:23.182924Z[0m [32m INFO[0m [2mspark::tokenizer::chat_impl[0m[2m:[0m Loaded tokenizer from /root/.cache/huggingface/hub/models--vincentzed-hf--Qwen3-Coder-Next-NVFP4/snapshots/7e263dbddb0d59c6eea92b10c365958b914f59b6/tokenizer.json
+[2m2026-07-10T19:59:23.204616Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Capping vocab_size from 151936 (config) to 151669 (tokenizer incl. special tokens)
+[2m2026-07-10T19:59:23.205018Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Reasoning parser: qwen (auto-detected from model_type 'qwen3_next')
+[2m2026-07-10T19:59:23.205061Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Code-fence token: 73594 (``` — F2 fence guard active)
+[2m2026-07-10T19:59:23.272703Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Numeric-token mask: 10/151669 ids classified as digit-runs (digit-normalized content-loop path active)
+[2m2026-07-10T19:59:23.272713Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Fence-token mask: 3/151669 ids carry a ``` marker (code-fence watchdog exemption tracks all of them)
+[2m2026-07-10T19:59:23.340727Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Boundary-token mask: 2557/151669 ids end in a newline / sentence boundary (Phase-C rollback-to-boundary active)
+[2m2026-07-10T19:59:23.409109Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Mid-word token mask: 141368/151669 ids end in alphanumeric (mid-word </think> defer active during thinking)
+[2m2026-07-10T19:59:23.409119Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Thinking end token: 151668 (</think>)
+[2m2026-07-10T19:59:23.409121Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Thinking start token: 151667 (<think>)
+[2m2026-07-10T19:59:23.409137Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m ChatML role-boundary hard stop: <|im_start|> (id 151644) registered
+[2m2026-07-10T19:59:23.409141Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool-response hard stop: <tool_response> (id 151665) registered
+[2m2026-07-10T19:59:23.409171Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call start token: 151657 (<tool_call>)
+[2m2026-07-10T19:59:23.409174Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Tool call end token: 151658 (</tool_call>)
+[2m2026-07-10T19:59:23.525988Z[0m [32m INFO[0m [2mspark::grammar::engine[0m[2m:[0m Grammar: detected tokenizer vocab_type=byte_level, add_prefix_space=false
+[2m2026-07-10T19:59:23.624662Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::tokenizer_runtime[0m[2m:[0m Grammar engine initialized (vocab_size=151669, vocab_type=auto-detected from tokenizer)
+[2m2026-07-10T19:59:23.848304Z[0m [32m INFO[0m [2mspark::main_modules::kv_dtypes[0m[2m:[0m Selective boundary KV cache: 6/12 attention layers at bf16, rest at nvfp4
+[2m2026-07-10T19:59:23.848863Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: hermes (auto-detected from model_type 'qwen3_next')
+[2m2026-07-10T19:59:23.848870Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Tool call parser: 'hermes' has registered XGrammar grammar — constrained decoding ENABLED for tool requests
+[2m2026-07-10T19:59:23.848872Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: max_thinking_budget=4096, thinking_default=false
+[2m2026-07-10T19:59:23.848874Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: content-loop watchdog ENABLED (period-2…64 repetition detector)
+[2m2026-07-10T19:59:23.848877Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::runtime[0m[2m:[0m Model behavior: watchdog rollback+re-steer ENABLED (cap 2 per sequence)
+[2m2026-07-10T19:59:23.871059Z[0m [33m WARN[0m [2mspark_runtime::snapshot[0m[2m:[0m io_uring unavailable (Function not implemented (os error 38)); snapshot reload falling back to sequential O_DIRECT preads
+[2m2026-07-10T19:59:29.293947Z[0m [32m INFO[0m [2mspark_runtime::cuda_backend[0m[2m:[0m AtlasCudaBackend initialized on GPU 0 with 146 PTX modules
+[2m2026-07-10T19:59:29.293967Z[0m [32m INFO[0m [2mspark::main_modules::serve_phases::build[0m[2m:[0m Prefix caching: ENABLED (radix tree)
+[2m2026-07-10T19:59:29.293998Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Qwen3 weight variant: Standard, native_fp8: false
+[2m2026-07-10T19:59:29.294097Z[0m [33m WARN[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Skipping MoE weight transposition (40.5 GB needed, 20.5 GB available). Prefill will use fallback grouped GEMM.
+[2m2026-07-10T19:59:29.298855Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.0.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.298871Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.0.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.304067Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.1.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.304080Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.1.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.309462Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.2.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.309474Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.2.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.336697Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.4.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.336710Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.4.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.342018Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.5.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.342029Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.5.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.347384Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.6.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.347395Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.6.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.374805Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.8.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.374829Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.8.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.380467Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.9.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.380478Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.9.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.386198Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.10.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.386208Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.10.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.408684Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Loaded layers 0..12
+[2m2026-07-10T19:59:29.413200Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.12.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.413211Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.12.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.418597Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.13.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.418608Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.13.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.424125Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.14.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.424136Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.14.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.451883Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.16.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.451896Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.16.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.457540Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.17.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.457551Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.17.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.463147Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.18.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.463158Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.18.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.491109Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.20.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.491122Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.20.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.496839Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.21.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.496850Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.21.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.502477Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.22.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.502488Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.22.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.525077Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Loaded layers 0..24
+[2m2026-07-10T19:59:29.530166Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.24.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.530179Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.24.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.535782Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.25.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.535794Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.25.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.541469Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.26.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.541480Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.26.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.569004Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.28.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.569018Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.28.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.575016Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.29.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.575028Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.29.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.581286Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.30.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.581300Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.30.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.609146Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.32.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.609159Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.32.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.615039Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.33.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.615051Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.33.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.621098Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.34.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.621109Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.34.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.643787Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Loaded layers 0..36
+[2m2026-07-10T19:59:29.648777Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.36.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.648789Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.36.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.654530Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.37.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.654542Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.37.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.660287Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.38.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.660299Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.38.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.687735Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.40.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.687748Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.40.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.693500Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.41.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.693512Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.41.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.699200Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.42.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.699211Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.42.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.727140Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.44.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.727153Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.44.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.732868Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.45.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.732879Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.45.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.738600Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.46.linear_attn.A_log from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.738611Z[0m [32m INFO[0m [2mspark_model::weight_map::model_a[0m[2m:[0m dense_keep_f32: promoting model.layers.46.linear_attn.dt_bias from BF16 to FP32 ([32])
+[2m2026-07-10T19:59:29.761490Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Loaded layers 0..48
+[2m2026-07-10T19:59:29.761494Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m Weight loader: 48 layers (12 attention, 36 SSM)
+[2m2026-07-10T19:59:29.761498Z[0m [32m INFO[0m [2mspark_model::weight_loader::qwen3[0m[2m:[0m No MTP weights found — speculative decoding disabled
+[2m2026-07-10T19:59:29.769886Z[0m [32m INFO[0m [2mspark_model::factory::lm_head_setup[0m[2m:[0m LM head quantized to NVFP4 (vocab=151669)
+[2m2026-07-10T19:59:29.780169Z[0m [32m INFO[0m [2mspark_runtime::buffers[0m[2m:[0m Buffer arena: 8193 tokens × 2082.0 MB total (attn_out=64.0MB, ssm_deint=192.0MB, kv_lora_rank=0)
+[2m2026-07-10T19:59:29.780258Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV budget self-relative (auto): baseline-free 68.2 GB − free-now 20.4 GB = Atlas-own 47.8 GB; co-tenants 51.5 GB excluded (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)
+[2m2026-07-10T19:59:29.780262Z[0m [32m INFO[0m [2mspark_model::factory::build[0m[2m:[0m KV cache: 119.7 GB total × 85% util = 101.7 GB budget; 47.8 GB pre-KV + 2.6 GB reserve → 17.8 GB for KV → 75811 blocks × 16 tok/block = 1212976 max KV tokens
+[2m2026-07-10T19:59:29.862859Z[0m [32m INFO[0m [2mspark_runtime::kv_cache::paged_impl[0m[2m:[0m KV cache: 75811 blocks × 12 layers (6 high-precision) = 17.8 GB total (mixed dtype)
+[2m2026-07-10T19:59:29.862890Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m TransformerModel: 48 layers, vocab=151669, hidden=2048
+[2m2026-07-10T19:59:29.866165Z[0m [32m INFO[0m [2mspark_model::model::ssm_pool[0m[2m:[0m SSM state pool: 1 slots × 36 layers = 76 MB
+[2m2026-07-10T19:59:29.877662Z[0m [32m INFO[0m [2mspark_model::model::ssm_snapshot[0m[2m:[0m SSM snapshot pool: Marconi 16 slots (1224 MB), decode-rollback 8 slots × 1 seqs (612 MB), 36 layers
+[2m2026-07-10T19:59:29.877671Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Marconi intermediate checkpoints: every 256 blocks (4096 tokens at block_size=16)
+[2m2026-07-10T19:59:29.878633Z[0m [32m INFO[0m [2mspark_model::model::impl_a1[0m[2m:[0m Pinned metadata staging: 865 KB
+[2m2026-07-10T19:59:29.879996Z[0m [32m INFO[0m [2mspark_model::model::impl_a1_init[0m[2m:[0m GDN prefill buffers: 258 MB for 8193 tokens (chunked SSM prefill)
+[2m2026-07-10T19:59:29.903269Z[0m [32m INFO[0m [2mspark::main_modules::serve[0m[2m:[0m Hot-swap load 'vincentzed-hf/Qwen3-Coder-Next-NVFP4': 44.20 GiB payload in 5375 ms (8.22 GiB/s), model rebuilt in 6900 ms total (kernel target sm_121/qwen3-next-80b-a3b/nvfp4)
+[2m2026-07-10T19:59:29.924849Z[0m [32m INFO[0m [2mspark::api::lazy_swap[0m[2m:[0m Lazy swap: request for 'vincentzed-hf/Qwen3-Coder-Next-NVFP4' triggered a model swap (from 'nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4') — 6948 ms paid by this request
+[2m2026-07-10T19:59:29.926008Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Request: model=vincentzed-hf/Qwen3-Coder-Next-NVFP4, messages=6, tools=0, tools_active=false, tool_choice=None, stream=true, temp=Some(0.7), max_tokens=16384, freq_pen=None, rep_pen=None
+[2m2026-07-10T19:59:29.964885Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Hot-swap: scheduler reopened with reloaded model
+[2m2026-07-10T19:59:29.970514Z[0m [32m INFO[0m [2mspark::api::chat[0m[2m:[0m Session 0x43342a97e9d980f1: 6904 prompt tokens, tools=false (0 defined)
+[2m2026-07-10T19:59:29.971604Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 6904 prompt tokens, chunk_size=6904, max_tokens=16384
+[2m2026-07-10T19:59:29.991061Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:29.991535Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:30.157529Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:30.323227Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:30.592801Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:30.758870Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:30.926036Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:31.195960Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:31.363331Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:31.529222Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:31.798180Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:31.964299Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:32.129554Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:32.398420Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:32.566706Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:32.732830Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.002652Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.170369Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.336393Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.604987Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.771799Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:33.937654Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:34.207754Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:34.373805Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:34.540045Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:34.810124Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:34.976225Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:35.143483Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:35.413461Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:35.578855Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:35.744865Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.014076Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.181407Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.347580Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.616068Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.783361Z[0m [32m INFO[0m [2mspark_model::layers::qwen3_ssm::trait_prefill[0m[2m:[0m SSM prefill ENTRY: k=6904 h=2048
+[2m2026-07-10T19:59:36.950063Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_b::finalize_last[0m[2m:[0m Saved SSM snapshot 0 for 6904 tokens (432 blocks) [chunk]
+[2m2026-07-10T19:59:37.220557Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 74909
+[2m2026-07-10T19:59:37.220571Z[0m [32m INFO[0m [2mspark::scheduler::phase_start_prefills[0m[2m:[0m Prefilled (single chunk): seq_len=6904, remaining=16383
+[2m2026-07-10T19:59:37.220608Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph capture: starting for 48 layers
+[2m2026-07-10T19:59:37.222534Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_a[0m[2m:[0m CUDA graph captured successfully for slot=0 (handle=272092876514784)
+[2m2026-07-10T19:59:37.368797Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=6912 end_block=432 snap_id=1 block_table_len=432 straddle=0
+[2m2026-07-10T19:59:38.519282Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=6976 end_block=436 snap_id=2 block_table_len=436 straddle=0
+[2m2026-07-10T19:59:39.676719Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7040 end_block=440 snap_id=3 block_table_len=440 straddle=0
+[2m2026-07-10T19:59:40.838610Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7104 end_block=444 snap_id=4 block_table_len=444 straddle=0
+[2m2026-07-10T19:59:42.001203Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7168 end_block=448 snap_id=5 block_table_len=448 straddle=0
+[2m2026-07-10T19:59:43.168624Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7232 end_block=452 snap_id=6 block_table_len=452 straddle=0
+[2m2026-07-10T19:59:44.342078Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7296 end_block=456 snap_id=7 block_table_len=456 straddle=0
+[2m2026-07-10T19:59:45.518005Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7360 end_block=460 snap_id=8 block_table_len=460 straddle=0
+[2m2026-07-10T19:59:46.696110Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7424 end_block=464 snap_id=9 block_table_len=464 straddle=0
+[2m2026-07-10T19:59:47.872010Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7488 end_block=468 snap_id=10 block_table_len=468 straddle=0
+[2m2026-07-10T19:59:49.055139Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7552 end_block=472 snap_id=11 block_table_len=472 straddle=0
+[2m2026-07-10T19:59:50.240472Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7616 end_block=476 snap_id=12 block_table_len=476 straddle=0
+[2m2026-07-10T19:59:51.431166Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7680 end_block=480 snap_id=13 block_table_len=480 straddle=0
+[2m2026-07-10T19:59:52.625406Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7744 end_block=484 snap_id=14 block_table_len=484 straddle=0
+[2m2026-07-10T19:59:53.821461Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7808 end_block=488 snap_id=15 block_table_len=488 straddle=0
+[2m2026-07-10T19:59:55.017620Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7872 end_block=492 snap_id=0 block_table_len=492 straddle=0
+[2m2026-07-10T19:59:56.213460Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=7936 end_block=496 snap_id=1 block_table_len=496 straddle=0
+[2m2026-07-10T19:59:57.412625Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8000 end_block=500 snap_id=2 block_table_len=500 straddle=0
+[2m2026-07-10T19:59:58.609841Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8064 end_block=504 snap_id=3 block_table_len=504 straddle=0
+[2m2026-07-10T19:59:59.810687Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8128 end_block=508 snap_id=4 block_table_len=508 straddle=0
+[2m2026-07-10T20:00:01.019874Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8192 end_block=512 snap_id=5 block_table_len=512 straddle=0
+[2m2026-07-10T20:00:02.229932Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8256 end_block=516 snap_id=6 block_table_len=516 straddle=0
+[2m2026-07-10T20:00:03.443609Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8320 end_block=520 snap_id=7 block_table_len=520 straddle=0
+[2m2026-07-10T20:00:04.662790Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8384 end_block=524 snap_id=8 block_table_len=524 straddle=0
+[2m2026-07-10T20:00:05.882064Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8448 end_block=528 snap_id=9 block_table_len=528 straddle=0
+[2m2026-07-10T20:00:07.104112Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8512 end_block=532 snap_id=10 block_table_len=532 straddle=0
+[2m2026-07-10T20:00:08.324815Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8576 end_block=536 snap_id=11 block_table_len=536 straddle=0
+[2m2026-07-10T20:00:09.552015Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8640 end_block=540 snap_id=12 block_table_len=540 straddle=0
+[2m2026-07-10T20:00:10.782361Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8704 end_block=544 snap_id=13 block_table_len=544 straddle=0
+[2m2026-07-10T20:00:12.013549Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8768 end_block=548 snap_id=14 block_table_len=548 straddle=0
+[2m2026-07-10T20:00:13.243863Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8832 end_block=552 snap_id=15 block_table_len=552 straddle=0
+[2m2026-07-10T20:00:14.477694Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8896 end_block=556 snap_id=0 block_table_len=556 straddle=0
+[2m2026-07-10T20:00:15.712812Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m decode-ckpt SAVE: snap_tokens=8960 end_block=560 snap_id=1 block_table_len=560 straddle=0
+[2m2026-07-10T20:00:16.622899Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 2104 tokens (stop) 53.4 tok/s, TTFT=7249.0ms
+[2m2026-07-10T20:00:16.623096Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::decode_checkpoint[0m[2m:[0m Saved finish-leaf SSM snapshot 2 for 9007 tokens

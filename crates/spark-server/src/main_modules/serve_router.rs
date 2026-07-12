@@ -81,6 +81,9 @@ pub(crate) async fn build_and_serve(
         // Qwen3-Reranker scoring (multiclass Plan.md 1.4): Jina/Cohere-
         // compatible rerank API over the yes/no logit probe.
         .route("/v1/rerank", post(api::rerank::rerank))
+        // TranslateGemma text translation (multiclass Plan.md Phase T):
+        // structured request, server-side forced prompt frame.
+        .route("/v1/translate", post(api::translate::translate))
         .route("/rerank", post(api::rerank::rerank))
         // 501 stubs: return an OpenAI-shaped error body so auto-probe
         // clients (Helicone, LangChain, Vercel AI SDK) fall back instead

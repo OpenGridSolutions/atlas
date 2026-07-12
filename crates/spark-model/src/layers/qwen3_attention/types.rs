@@ -205,6 +205,9 @@ pub struct Qwen3AttentionLayer {
     pub(crate) rotary_dim_override: Option<u32>,
     /// Proportional RoPE (Gemma-4 full-attention).
     pub(crate) rope_proportional: bool,
+    /// Linear-scaled RoPE position factor (Gemma-3 full-attention:
+    /// positions × 1/8). None = unscaled.
+    pub(crate) rope_pos_scale: Option<f32>,
     /// Per-layer attention scale override (Gemma-4: 1.0 because QK-norm
     /// handles scaling). When None, uses the standard 1/sqrt(head_dim).
     pub(crate) attn_scale_override: Option<f32>,
@@ -305,6 +308,8 @@ pub struct Qwen3AttentionLayer {
     pub(super) rope_yarn_interleaved_inv_k: KernelHandle,
     /// Proportional RoPE kernel (Gemma-4 full-attention layers).
     pub(super) rope_proportional_k: KernelHandle,
+    /// Linear-scaled RoPE kernel (Gemma-3 full-attention layers).
+    pub(super) rope_linear_k: KernelHandle,
     pub(super) reshape_cache_k: KernelHandle,
     /// Fused k_norm + RoPE + paged BF16 cache write — eliminates two
     /// intermediate BF16 rounding steps that cause the documented L35-L39

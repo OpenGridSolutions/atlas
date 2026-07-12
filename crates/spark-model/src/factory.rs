@@ -12,7 +12,7 @@ use spark_runtime::weights::WeightStore;
 
 use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
-    DeepSeekV4WeightLoader, DflashConfig, Gemma4WeightLoader, MinimaxM2WeightLoader,
+    DeepSeekV4WeightLoader, DflashConfig, Gemma3WeightLoader, Gemma4WeightLoader, MinimaxM2WeightLoader,
     ModelWeightLoader, NemotronHWeightLoader, Qwen3DenseWeightLoader, Qwen3VLWeightLoader,
     Qwen3WeightLoader, Qwen35DenseWeightLoader, Qwen35WeightLoader, Step3p7WeightLoader,
 };
@@ -81,6 +81,8 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         // Nemotron-H family (Mamba-2 + MoE + Attention)
         "nemotron_h" => Ok(Box::new(NemotronHWeightLoader)),
         // Gemma-4 family (pure attention, GeGLU, sliding + full attention)
+        // Gemma-3 text backbone (TranslateGemma) — BF16, text tower only.
+        "gemma3" | "gemma3_text" => Ok(Box::new(Gemma3WeightLoader)),
         "gemma4" | "gemma_4" => Ok(Box::new(Gemma4WeightLoader)),
         // Mistral family (MLA + MoE, GQA fallback for initial bring-up)
         "mistral" => Ok(Box::new(MistralWeightLoader)),

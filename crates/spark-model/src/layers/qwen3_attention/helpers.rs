@@ -86,6 +86,14 @@ impl Qwen3AttentionLayer {
         self.rope_proportional = enable;
     }
 
+    /// Linear-scaled RoPE (Gemma-3 full-attention layers): every position
+    /// is multiplied by `pos_scale` (= 1/factor; HF `rope_type: "linear"`)
+    /// before the rotation. Uses the theta/rotary_dim from
+    /// `set_rope_overrides`.
+    pub fn set_rope_pos_scale(&mut self, pos_scale: f32) {
+        self.rope_pos_scale = Some(pos_scale);
+    }
+
     /// Set per-layer attention scale override. Gemma-4 uses QK-norm, so
     /// attention scale should be 1.0 (not 1/sqrt(head_dim)).
     pub fn set_attn_scale_override(&mut self, scale: f32) {
