@@ -15,8 +15,33 @@ use image::{DynamicImage, ImageFormat};
 const MEAN: [f32; 3] = [0.5, 0.5, 0.5];
 const STD: [f32; 3] = [0.5, 0.5, 0.5];
 
-/// Maximum allowed image dimension in pixels (longer side).
-const MAX_DIM: u32 = 1280;
+/// Hard bound on ViT patches per image — MUST match the vision
+/// encoder's scratch-buffer sizing (`enc_impl/init.rs` `p_max`, which
+/// allocates the [seq, seq] SDPA score matrix from it). The preprocessing
+/// pixel budget below derives from this so no admissible image can
+/// overflow the encoder buffers. 16384 patches = 4.19M px = 4096 vision
+/// tokens after the 2×2 merge (a 2500-px-wide document page passes
+/// through natively — the document-extraction use case).
+pub const VISION_MAX_PATCHES: usize = 16_384;
+
+/// Default/maximum pixel budget: `VISION_MAX_PATCHES × 16×16`. An
+/// explicit `max_pixels` request below this is honored; above it is
+/// clamped (buffer safety). Replaces the old 1280-px long-side cap,
+/// which silently starved wide document images (2500×1200 → 760 tokens
+/// instead of the 2964 the HF reference produces).
+const HARD_MAX_PIXELS: u32 = (VISION_MAX_PATCHES as u32) * 256;
+
+/// Minimum pixel budget (OCR floor). The checkpoint's
+/// preprocessor_config ships `size.shortest_edge: 65536` (the HF
+/// default MIN-pixels bound), but at that floor a small formula
+/// screenshot lands at ~75 vision tokens — measured too coarse for OCR
+/// (2026-07-12: 264×86 formula read as a single glyph at the HF floor).
+/// 262144 px = 256 vision tokens minimum, the Qwen OCR guidance band.
+const MIN_PIXELS: u32 = 262_144;
+
+/// Sanity guard on a single side (pathological aspect ratios / u32
+/// arithmetic). Multiple of every grid_unit in the family.
+const MAX_DIM: u32 = 16_384;
 
 /// Decode a base64 data URI or raw base64 string into a `DynamicImage`.
 fn decode_image(data_uri: &str) -> Result<DynamicImage> {
@@ -41,53 +66,51 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
     image::load_from_memory_with_format(&bytes, fmt).context("image decode failed")
 }
 
-/// Minimum pixel budget, matching the Qwen-VL family's
-/// `preprocessor_config.json` `size.shortest_edge` (Qwen2VL processor
-/// semantics: a MIN-PIXELS bound, not an edge length — 65536 = 256
-/// patches of 16×16). HF's `smart_resize` UPSCALES any smaller image to
-/// this budget before patching; without it, small text/formula
-/// screenshots rasterize to a handful of patches and OCR-scale detail
-/// never reaches the ViT (2026-07-12: small-formula images produced
-/// hallucinated readings while large images worked — the encoder was
-/// fine, the input was starved).
-const MIN_PIXELS: u32 = 65536;
-
-/// Compute the target (H, W) so that:
-/// - Neither side exceeds `MAX_DIM`.
-/// - The area is at least `MIN_PIXELS` (upscaled like HF smart_resize),
-///   unless the `MAX_DIM` side cap forbids it (extreme aspect ratios).
-/// - Both sides are multiples of `grid_unit = patch_size × spatial_merge_size`.
-/// - Aspect ratio is preserved (rounded to nearest grid_unit).
+/// Compute the target (H, W) following HF `smart_resize`
+/// (transformers `Qwen2VLImageProcessor`): round both sides to the
+/// `grid_unit`, then rescale once if the area violates the pixel
+/// budget — FLOOR-rounded when shrinking to `max_pixels`, CEIL-rounded
+/// when growing to the `MIN_PIXELS` OCR floor. Aspect ratio is
+/// preserved up to grid rounding.
 fn target_size_with_max_pixels(
     orig_h: u32,
     orig_w: u32,
     grid_unit: u32,
     max_pixels: Option<usize>,
 ) -> (u32, u32) {
-    let dim_scale = (MAX_DIM as f32) / (orig_h.max(orig_w) as f32);
-    let pixel_scale = max_pixels
+    let factor = grid_unit as f32;
+    let h = orig_h as f32;
+    let w = orig_w as f32;
+    // Effective max: explicit request wins below the hard buffer bound.
+    let max_px = max_pixels
         .filter(|&p| p > 0)
-        .map(|p| ((p as f32) / ((orig_h as f32) * (orig_w as f32))).sqrt())
-        .unwrap_or(1.0);
-    let mut scale = dim_scale.min(pixel_scale).min(1.0); // downscale caps
-    let area = (orig_h as f32) * (orig_w as f32);
-    if area * scale * scale < MIN_PIXELS as f32 {
-        // smart_resize min_pixels: upscale small images so patching
-        // keeps OCR-scale detail. Real caps still win: the long side
-        // never exceeds MAX_DIM (a 4000×10 banner stays dim-capped) and
-        // an EXPLICIT max_pixels request is honored — but the implicit
-        // 1.0 default of `pixel_scale` must not veto the upscale.
-        let s_up = ((MIN_PIXELS as f32) / area).sqrt();
-        let pixel_cap = if max_pixels.filter(|&p| p > 0).is_some() {
-            pixel_scale
-        } else {
-            f32::INFINITY
-        };
-        scale = s_up.min(dim_scale).min(pixel_cap).max(scale);
+        .map(|p| (p as u32).min(HARD_MAX_PIXELS))
+        .unwrap_or(HARD_MAX_PIXELS) as f32;
+    // An explicit max_pixels below the OCR floor wins over the floor.
+    let min_px = (MIN_PIXELS as f32).min(max_px);
+
+    let mut h_bar = (h / factor).round().max(1.0) * factor;
+    let mut w_bar = (w / factor).round().max(1.0) * factor;
+    if h_bar * w_bar > max_px {
+        let beta = ((h * w) / max_px).sqrt();
+        h_bar = (h / beta / factor).floor().max(1.0) * factor;
+        w_bar = (w / beta / factor).floor().max(1.0) * factor;
+    } else if h_bar * w_bar < min_px {
+        let beta = (min_px / (h * w)).sqrt();
+        h_bar = (h * beta / factor).ceil() * factor;
+        w_bar = (w * beta / factor).ceil() * factor;
     }
-    let target_h = ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
-    let target_w = ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
-    (target_h, target_w)
+    // Buffer-safety backstop: ceil-growth toward a max_pixels that sits
+    // below the OCR floor may overshoot by a grid row — shrink back.
+    if h_bar * w_bar > HARD_MAX_PIXELS as f32 {
+        let beta = ((h_bar * w_bar) / HARD_MAX_PIXELS as f32).sqrt();
+        h_bar = (h_bar / beta / factor).floor().max(1.0) * factor;
+        w_bar = (w_bar / beta / factor).floor().max(1.0) * factor;
+    }
+    (
+        (h_bar as u32).min(MAX_DIM),
+        (w_bar as u32).min(MAX_DIM),
+    )
 }
 
 /// Preprocess a single base64-encoded image for the Qwen3-VL encoder.
@@ -103,8 +126,8 @@ pub fn preprocess_image(data_uri: &str, vcfg: &VisionConfig) -> Result<(Vec<f32>
 }
 
 /// Preprocess an image with an optional max-pixels cap, matching vLLM-style
-/// multimodal processor controls. `None` preserves Atlas' historical 1280px
-/// long-side cap.
+/// multimodal processor controls. `None` uses the default budgets
+/// (`MIN_PIXELS` OCR floor .. `HARD_MAX_PIXELS` buffer bound).
 pub fn preprocess_image_with_max_pixels(
     data_uri: &str,
     vcfg: &VisionConfig,
@@ -172,43 +195,51 @@ mod tests {
 
     #[test]
     fn test_target_size_min_pixels_upscale() {
-        // smart_resize semantics: a small text/formula screenshot
-        // (250×80 = 20k px < 65536) is UPSCALED to the min-pixel budget
-        // so OCR-scale detail survives patching.
-        let (h, w) = target_size_with_max_pixels(80, 250, 32, None);
+        // OCR floor: a small formula screenshot (264×86 = 22.7k px) is
+        // upscaled to ≥ 262144 px → ~290 vision tokens (was 24 pre-fix,
+        // 70 at the HF 65536 floor — both read as a single glyph).
+        let (h, w) = target_size_with_max_pixels(86, 264, 32, None);
         assert!(
-            (h as u32) * (w as u32) >= MIN_PIXELS * 8 / 10,
-            "area {}×{} far below the min-pixel budget",
-            h,
-            w
+            h * w >= MIN_PIXELS,
+            "area {h}×{w} below the OCR floor"
         );
-        assert!(h <= 1280 && w <= 1280);
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
+        let tokens = (h / 32) * (w / 32);
+        assert!(
+            (250..=400).contains(&tokens),
+            "expected a few hundred vision tokens, got {tokens}"
+        );
         // Aspect ratio roughly preserved.
         let ar = (w as f32) / (h as f32);
-        assert!((ar - 250.0 / 80.0).abs() < 0.7, "aspect drifted: {ar}");
+        assert!((ar - 264.0 / 86.0).abs() < 0.7, "aspect drifted: {ar}");
     }
 
     #[test]
-    fn test_target_size_min_pixels_leaves_medium_images_alone() {
-        // 448×448 = 200k px ≥ 65536: no upscale, grid-snap only.
-        let (h, w) = target_size_with_max_pixels(448, 448, 32, None);
-        assert_eq!((h, w), (448, 448));
+    fn test_target_size_reference_800x1440() {
+        // Qwen3-VL reference diagram: 800×1440 → 1125 vision tokens
+        // (no rescale, 1 token per 32×32 px).
+        let (h, w) = target_size_with_max_pixels(800, 1440, 32, None);
+        assert_eq!((h, w), (800, 1440));
+        assert_eq!((h / 32) * (w / 32), 1125);
     }
 
     #[test]
-    fn test_target_size_extreme_aspect_stays_dim_capped() {
-        // 4000×10 banner: min-pixel upscale must not blow past MAX_DIM.
-        let (_h, w) = target_size_with_max_pixels(10, 4000, 32, None);
-        assert!(w <= 1280 + 32, "long side {w} exceeds cap");
+    fn test_target_size_wide_document_passes_natively() {
+        // The document-extraction case the old 1280-px long-side cap
+        // broke: a 2500×1200 page stays native → ~2964 tokens.
+        let (h, w) = target_size_with_max_pixels(1200, 2500, 32, None);
+        assert!(h * w >= 2_900_000, "page was shrunk: {h}×{w}");
+        assert!((h / 32) * (w / 32) > 1000);
     }
 
     #[test]
-    fn test_target_size_downscale() {
-        // Large image: should be downscaled.
+    fn test_target_size_downscale_to_hard_budget() {
+        // 2000×3000 = 6M px > 4.19M budget → floor-scaled under it, and
+        // the patch count never exceeds the ViT scratch bound.
         let (h, w) = target_size_with_max_pixels(2000, 3000, 32, None);
-        assert!(h.max(w) <= 1280);
+        assert!(h * w <= HARD_MAX_PIXELS);
+        assert!(((h / 16) * (w / 16)) as usize <= VISION_MAX_PATCHES);
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
     }
@@ -217,6 +248,15 @@ mod tests {
     fn test_target_size_max_pixels() {
         let (h, w) = target_size_with_max_pixels(1254, 1254, 32, Some(512 * 512));
         assert_eq!((h, w), (512, 512));
+    }
+
+    #[test]
+    fn test_target_size_extreme_banner_within_patch_budget() {
+        // 4000×10 banner: min-floor upscale + budget caps must keep the
+        // patch count inside the ViT scratch bound.
+        let (h, w) = target_size_with_max_pixels(10, 4000, 32, None);
+        assert!(((h / 16) * (w / 16)) as usize <= VISION_MAX_PATCHES);
+        assert!(w <= MAX_DIM);
     }
 
     #[test]

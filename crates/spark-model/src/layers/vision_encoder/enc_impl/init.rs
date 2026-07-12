@@ -25,7 +25,14 @@ impl VisionEncoder {
         gpu: &dyn GpuBackend,
     ) -> Result<Self> {
         let head_dim = hidden_size / num_heads;
-        let p_max = 6400usize; // 80×80 patches for 1280×1280 image
+        // Shared bound with the preprocessing pixel budget
+        // (vision_preprocess::HARD_MAX_PIXELS = VISION_MAX_PATCHES × 256):
+        // preprocessing guarantees no image exceeds this patch count, and
+        // every scratch buffer below (incl. the [seq, seq] SDPA score
+        // matrix, 16384²×4 ≈ 1.07 GB) is sized from it. Raised from 6400
+        // (1280×1280) on 2026-07-12 for the document-extraction use case
+        // (2500-px-wide pages pass through natively → ~3k vision tokens).
+        let p_max = crate::vision_preprocess::VISION_MAX_PATCHES;
         let merger_in_dim = spatial_merge_size * spatial_merge_size * hidden_size; // 4608
 
         // num_grid_per_side is the side length of the square pos_embed grid

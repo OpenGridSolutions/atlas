@@ -707,6 +707,22 @@ What does NOT load today (the actual work):
      description must name rectangle/ellipse/diagonal correctly.
    - Q4 regression: 80B, Coder, embed/rerank/whisper/translate suites.
 
+### Q.V2 — vision token budgets (follow-up 2026-07-12)
+Control calc against HF smart_resize proved the first min-pixels fix
+faithful to the HF floor (264×86 → 448×160 → 70 vision tokens + 28 text
+= 98, measured exactly) — but the HF 65536 floor itself is too coarse
+for OCR (formula read as one glyph), and the 1280-px long-side cap
+(rooted in the ViT's fixed p_max=6400 scratch) broke wide documents
+(2500×1200 → 760 tokens vs 2964 per HF reference). Fix: OCR floor
+raised to 262144 px (≥256 tokens; 264×86 → 290), long-side cap replaced
+by a pixel budget of 4.19M px = 16384 patches = 4096 tokens with the
+ViT scratch (p_max, incl. the [seq,seq] SDPA matrix → ~1.6 GB) sized
+from the same shared constant, HF-faithful rounding (ceil up / floor
+down), explicit --vision-max-pixels still wins below the hard bound.
+Expected: formula ~290+28 tokens and structurally readable; 2500-px
+document pages native ≈ 3k tokens; token counts for previously
+side-capped large images INCREASE by design.
+
 ### Q.2 Risks
 | Risk | Mitigation |
 |---|---|
