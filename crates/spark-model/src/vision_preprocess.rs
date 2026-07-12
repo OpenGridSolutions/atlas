@@ -41,8 +41,21 @@ fn decode_image(data_uri: &str) -> Result<DynamicImage> {
     image::load_from_memory_with_format(&bytes, fmt).context("image decode failed")
 }
 
+/// Minimum pixel budget, matching the Qwen-VL family's
+/// `preprocessor_config.json` `size.shortest_edge` (Qwen2VL processor
+/// semantics: a MIN-PIXELS bound, not an edge length — 65536 = 256
+/// patches of 16×16). HF's `smart_resize` UPSCALES any smaller image to
+/// this budget before patching; without it, small text/formula
+/// screenshots rasterize to a handful of patches and OCR-scale detail
+/// never reaches the ViT (2026-07-12: small-formula images produced
+/// hallucinated readings while large images worked — the encoder was
+/// fine, the input was starved).
+const MIN_PIXELS: u32 = 65536;
+
 /// Compute the target (H, W) so that:
 /// - Neither side exceeds `MAX_DIM`.
+/// - The area is at least `MIN_PIXELS` (upscaled like HF smart_resize),
+///   unless the `MAX_DIM` side cap forbids it (extreme aspect ratios).
 /// - Both sides are multiples of `grid_unit = patch_size × spatial_merge_size`.
 /// - Aspect ratio is preserved (rounded to nearest grid_unit).
 fn target_size_with_max_pixels(
@@ -56,7 +69,22 @@ fn target_size_with_max_pixels(
         .filter(|&p| p > 0)
         .map(|p| ((p as f32) / ((orig_h as f32) * (orig_w as f32))).sqrt())
         .unwrap_or(1.0);
-    let scale = dim_scale.min(pixel_scale).min(1.0); // never upscale
+    let mut scale = dim_scale.min(pixel_scale).min(1.0); // downscale caps
+    let area = (orig_h as f32) * (orig_w as f32);
+    if area * scale * scale < MIN_PIXELS as f32 {
+        // smart_resize min_pixels: upscale small images so patching
+        // keeps OCR-scale detail. Real caps still win: the long side
+        // never exceeds MAX_DIM (a 4000×10 banner stays dim-capped) and
+        // an EXPLICIT max_pixels request is honored — but the implicit
+        // 1.0 default of `pixel_scale` must not veto the upscale.
+        let s_up = ((MIN_PIXELS as f32) / area).sqrt();
+        let pixel_cap = if max_pixels.filter(|&p| p > 0).is_some() {
+            pixel_scale
+        } else {
+            f32::INFINITY
+        };
+        scale = s_up.min(dim_scale).min(pixel_cap).max(scale);
+    }
     let target_h = ((orig_h as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     let target_w = ((orig_w as f32 * scale / grid_unit as f32).round() as u32).max(1) * grid_unit;
     (target_h, target_w)
@@ -143,12 +171,37 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_target_size_no_upscale() {
-        // Small image: grid_unit=32, no upscale needed.
-        let (h, w) = target_size_with_max_pixels(100, 150, 32, None);
+    fn test_target_size_min_pixels_upscale() {
+        // smart_resize semantics: a small text/formula screenshot
+        // (250×80 = 20k px < 65536) is UPSCALED to the min-pixel budget
+        // so OCR-scale detail survives patching.
+        let (h, w) = target_size_with_max_pixels(80, 250, 32, None);
+        assert!(
+            (h as u32) * (w as u32) >= MIN_PIXELS * 8 / 10,
+            "area {}×{} far below the min-pixel budget",
+            h,
+            w
+        );
         assert!(h <= 1280 && w <= 1280);
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
+        // Aspect ratio roughly preserved.
+        let ar = (w as f32) / (h as f32);
+        assert!((ar - 250.0 / 80.0).abs() < 0.7, "aspect drifted: {ar}");
+    }
+
+    #[test]
+    fn test_target_size_min_pixels_leaves_medium_images_alone() {
+        // 448×448 = 200k px ≥ 65536: no upscale, grid-snap only.
+        let (h, w) = target_size_with_max_pixels(448, 448, 32, None);
+        assert_eq!((h, w), (448, 448));
+    }
+
+    #[test]
+    fn test_target_size_extreme_aspect_stays_dim_capped() {
+        // 4000×10 banner: min-pixel upscale must not blow past MAX_DIM.
+        let (_h, w) = target_size_with_max_pixels(10, 4000, 32, None);
+        assert!(w <= 1280 + 32, "long side {w} exceeds cap");
     }
 
     #[test]
