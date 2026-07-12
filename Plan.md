@@ -642,6 +642,79 @@ text-only → content 'OK' (2 tokens, reasoning empty); image (red field,
 white square) → correct one-sentence answer in content; 80B + Coder
 regression → 'pong' each.
 
+## Phase Q — Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 replaces ig1 (planned 2026-07-12)
+
+ig1's NVFP4 quant has a defective vision encoder; the official Qwen FP8
+release replaces it. Checkpoint is ALREADY CACHED (31 GB blobs).
+
+### Q.0 Feasibility findings (verified against the cached checkpoint)
+What carries over UNCHANGED:
+- config `model_type: qwen3_vl_moe`, text hidden 2048, 128 experts —
+  same config parser arm, same `Qwen3VLWeightLoader` dispatch, same
+  kernel target `qwen3-vl-30b-a3b` (`quant_pair_compatible(nvfp4, fp8)`
+  is true; `canonicalize_model_quant` maps `quant_method: "fp8"` →
+  "fp8"). NO new kernel target, NO parser change, NO endpoint change.
+- Vision tower ships BF16 (every `visual.*` module is in
+  `ignored_layers`; 351 vision tensors, 0 scale tensors) — the existing
+  ViT loader path reads it as-is. lm_head ignored → BF16 too.
+- Phase-V thinking fix lives on the TARGET (MODEL.toml), so it applies
+  to the new checkpoint automatically.
+- Arena/snapshot/lazy-swap/preseed: name-keyed, quant-agnostic.
+
+What does NOT load today (the actual work):
+1. **Fused-stacked FP8 experts** — the checkpoint uses transformers'
+   new fused serialization: `experts.gate_up_proj` [E=128, 2048, 1536]
+   FP8-E4M3 + `gate_up_proj_scale_inv` [128, 16, 12] F32 (128×128
+   blocks), `experts.down_proj` [128, 768, 2048] + [128, 6, 16].
+   Atlas main-layer MoE loading (`load_moe_no_shared`) reads ONLY the
+   per-expert split names (`experts.{e}.gate_proj.weight`, …); the
+   stacked branch exists solely in the MTP path (loaders_moe.rs (B))
+   and only for BF16 without scales. Axis orientation must be verified
+   against transformers' packed layout before slicing (the [E, 2048,
+   1536] vs MTP's assumed [E, 2*I, H] disagree — 2048 = H here, 1536 =
+   2×768 = 2I, i.e. stored transposed).
+2. **Block-scaled FP8 attention** — q/k/v/o are FP8-E4M3 +
+   `weight_scale_inv` F32 [32, 16] (DeepSeek-V3 convention). Building
+   blocks exist (`loaders_fp8.rs` handles `weight_scale_inv`,
+   `dequant_fp8_blockscaled_to_bf16` kernel, MiniMax expert path) but
+   the qwen3_vl attention load path currently assumes BF16/NVFP4.
+
+### Q.1 Implementation steps
+1. **Loader, experts**: add a fused-stacked FP8 branch to the VL MoE
+   path. Preferred route (memory): dequant each expert slice
+   FP8→BF16 (block scales) → runtime-quantize NVFP4 → free transients,
+   exactly the MiniMax M2 pattern (ssm_qwen35_more.rs `quant` closure)
+   — lands at ~17 GB experts, proven kernels. Native-FP8 fused-MoE
+   serving (qwen3.rs `native_fp8`) is the perf upgrade but needs the
+   per-expert-split names + kernel-scale-format repack — defer unless
+   the dequant route misbehaves. Gate/up split per verified axis
+   orientation; transpose into the [out, in] convention during dequant.
+2. **Loader, attention**: dequant q/k/v/o FP8→BF16 via the block-scaled
+   helper at load; keep the BF16 attention path (dense_gemv), matching
+   how gemma3/qwen3_dense serve attention. Small memory cost, uniform
+   precision behaviour.
+3. **Ops swap**: replace ig1 with Qwen/Qwen3-VL-30B-A3B-Instruct-FP8 in
+   ATLAS_PRESEED_GENERATIVE (compose.yml + serve.sh bridge defaults),
+   update the target MODEL.toml `hf_id` doc line. Boot preseed writes
+   the new snapshot; delete the stale ig1 snapshot file to reclaim
+   ~17 GB (optional; ig1 stays lazily loadable until removed).
+4. **Acceptance** (the vision fix is the point of the swap):
+   - Q1 text-only temp 0 → content "OK", no invented turns (Phase-V
+     check on the new checkpoint).
+   - Q2 image color/shape (red field, white square) → correct answer.
+   - Q3 VISION QUALITY vs the defective ig1 encoder: OCR-style read of
+     structured fixture images (scripts/gen_test_images.py shapes) —
+     description must name rectangle/ellipse/diagonal correctly.
+   - Q4 regression: 80B, Coder, embed/rerank/whisper/translate suites.
+
+### Q.2 Risks
+| Risk | Mitigation |
+|---|---|
+| fused-tensor axis orientation guessed wrong | verify against transformers Qwen3VLMoe packed layout + a one-expert dequant checksum vs HF before wiring the splitter |
+| 128×128 block-scale grid misapplied on non-multiple dims (1536/128=12 exact here — fine, but 768/128=6 too) | shape-assert scale grid == ceil(dim/128) per axis at load |
+| dequant transients spike arena/UMA during load | free FP8 source + BF16 transient per expert (MiniMax pattern), stream-serial |
+| ig1 snapshot/registry leftovers confuse ops | explicit compose/serve.sh swap + optional snapshot delete, boot log shows the new id under [generative] |
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
