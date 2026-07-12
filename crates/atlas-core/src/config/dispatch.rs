@@ -12,7 +12,7 @@ use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2,
     parse_mistral_params, parse_quantization_config, parse_qwen3_dense, parse_qwen3_vl_dense,
-    parse_step3p7, parse_vision_config, validate_config,
+    parse_step3p7, parse_vision_config, parse_whisper, validate_config,
 };
 
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
@@ -183,6 +183,9 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         // failed with "missing field hidden_size at line 65").
         "qwen3" => parse_qwen3_dense(json, &raw),
         "qwen3_vl" => parse_qwen3_vl_dense(&raw),
+        // Whisper encoder-decoder (Plan.md Phase W): no top-level
+        // hidden_size — schema-specific arm, decoder-side view.
+        "whisper" => parse_whisper(json, &raw),
         "gemma4" => parse_gemma4_params(&raw),
         "minimax_m2" => parse_minimax_m2(&raw),
         "step3p7" => parse_step3p7(&raw),

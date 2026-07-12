@@ -486,7 +486,7 @@ mod tests;
 pub use dispatch::parse_config;
 pub(crate) use parsers::{
     parse_deepseek_v4, parse_gemma4_params, parse_minimax_m2, parse_qwen3_dense,
-    parse_qwen3_vl_dense, parse_step3p7, parse_vision_config,
+    parse_qwen3_vl_dense, parse_step3p7, parse_vision_config, parse_whisper,
 };
 pub use parsers::{parse_mistral_params, parse_quantization_config};
 

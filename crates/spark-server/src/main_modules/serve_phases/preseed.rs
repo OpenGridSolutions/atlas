@@ -51,6 +51,17 @@ pub(crate) fn registered_model_checked(
         crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
     let (mut config, _json) = super::load_model_config(&model_dir)
         .with_context(|| format!("parsing config.json of preseed model '{model_id}'"))?;
+    // Sidecar-served classes (Plan.md W.0): whisper is deliberately NOT
+    // a scheduler/hot-swap model — registering it would make it
+    // lazy-swappable on the chat endpoints, where the swap would die at
+    // the (intentionally absent) Model-trait loader. The endpoint loads
+    // it independently; a preseed entry is harmless but redundant.
+    if config.model_type == "whisper" {
+        bail!(
+            "served by the resident Whisper sidecar (/v1/audio/transcriptions loads it \
+             on first request) — preseed registration is not applicable"
+        );
+    }
     super::apply_lm_head_dtype_override(args, &mut config)?;
     super::merge_sidecar_quant_config(&model_dir, &mut config);
     // Loader gate first — its message names the actionable gap.

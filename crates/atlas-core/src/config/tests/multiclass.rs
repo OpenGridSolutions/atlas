@@ -97,6 +97,27 @@ fn parse_qwen3_vl_reranker_8b() {
     assert_eq!(v.deepstack_visual_indexes, vec![8, 16, 24]);
 }
 
+#[test]
+fn parse_whisper_large_v3() {
+    // Encoder-decoder schema: NO top-level hidden_size (the generic flat
+    // arm died with "missing field hidden_size at line 50"); the whisper
+    // arm maps the decoder-side dims.
+    let cfg = parse_config(&fixture("whisper_large_v3_config.json")).unwrap();
+    assert_eq!(cfg.model_type, "whisper");
+    assert_eq!(cfg.hidden_size, 1280); // d_model
+    assert_eq!(cfg.num_hidden_layers, 32); // decoder_layers
+    assert_eq!(cfg.num_attention_heads, 20);
+    assert_eq!(cfg.head_dim, 64);
+    assert_eq!(cfg.intermediate_size, 5120);
+    assert_eq!(cfg.vocab_size, 51_866);
+    assert_eq!(cfg.max_position_embeddings, 448);
+    assert!(!cfg.attn_gated);
+    assert_eq!(cfg.layer_types.len(), 32);
+    assert_eq!(cfg.num_experts, 0);
+    // Stock FP32/F16 checkpoint — no quantization_config.
+    assert!(cfg.quantization_config.is_none());
+}
+
 /// Parse the LIVE config.json of every cached model (the full 6-model
 /// preseed list) straight from the HF cache. Skips models that are not
 /// cached (CI without the cache stays green); on the box this is the
