@@ -469,6 +469,77 @@ Sidecar init 3.7 s (fp32→BF16, store released), ~3.7 s per 30 s chunk.*
 | FP32 checkpoint is 6.2 GiB on disk | loads once, converts to ~3.2 GiB BF16 resident |
 | Sidecar memory vs KV budget | 3.2 GiB; boot order note — start Atlas after, or accept the self-relative KV measure absorbing it |
 
+## Phase K — categorized preseed (2026-07-12) + Phase T — TranslateGemma
+
+### T.0 GATE FINDING (checked FIRST) — Gemma-3 text backbone loadability
+
+**Verdict: ADDITIVE — proceeding autonomously.** Grounds, from the cached
+`google/translategemma-12b-it` checkpoint:
+1. Config is `model_type: gemma3` with NESTED `text_config` and **no top-level
+   `hidden_size`** — the exact whisper-class parser failure. Fix is the known
+   recipe: a small schema-specific `gemma3` dispatch arm (text_config: hidden
+   3840, 48 L, 16 Q/8 KV, head_dim 256, GeGLU, `_sliding_window_pattern: 6`
+   → 5 sliding : 1 full layer_types, dual rope theta via
+   `rope_local_base_freq` 10k / `rope_theta` 1M, vocab 262208). No fundamental
+   parser rebuild.
+2. Weight layout is EXACTLY the Gemma-4 loader's structure: prefix
+   `language_model.model.*` (auto_detect_weight_prefix's first branch), the
+   same 4 norms (input/post_attention/pre_feedforward/post_feedforward), q/k
+   norms, GeGLU mlp gate/up/down. Vision tower present on disk but ignored
+   (name-keyed loads; text-only per requirement). `Gemma4WeightLoader` is
+   reusable with three conditional divergences: (a) attention scale — gemma4
+   hardcodes 1.0, gemma3 needs the default 1/√head_dim (query_pre_attn_scalar
+   256 == head_dim); (b) no `v_norm` tensors (guard on presence); (c) no
+   logit softcapping (`final_logit_softcapping: null`).
+3. Kernel target: new thin `gb10/translategemma-12b/bf16` (model_type
+   gemma3/3840). head_dim 256 uniform = the common HDIM default — NO flag
+   variant needed. Overrides copied from gemma-4-31b where eagerly resolved
+   (w4a16_gemm, gelu, embed_scale; NOT rms_norm.cu — gemma3 stores
+   zero-centered norm weights, matching common's (1+w) kernel as-is).
+4. BF16 end to end (checkpoint is stock BF16); NO NVFP4 runtime quantization.
+   ~24 GiB in the arena — served via arena + lazy swap like the Qwen models,
+   under the TRANSLATE category.
+
+### K — five category ENVs replace ATLAS_PRESEED_MODELS (REMOVED, no fallback)
+`ATLAS_PRESEED_GENERATIVE|EMBED|RERANK|TRANSCRIBE|TRANSLATE`, each a JSON
+list (same syntax as before). `RegisteredModel` gains `category`;
+`ensure_model_active` + the embed/rerank/translate handlers enforce
+endpoint↔category with an explaining 400 ("model X is categorized as embed
+and not available on /v1/chat/completions") — no silent fallback, no
+role-guessing. GENERATIVE/EMBED/RERANK/TRANSLATE stay arena+lazy-swap;
+TRANSCRIBE stays the Whisper sidecar (never registered in the swap registry —
+the endpoint validates the id against the TRANSCRIBE list; real name AND the
+whisper-1 alias accepted). `.devpod/compose.yml` switches to the five vars.
+CLI `--preseed-model` maps to GENERATIVE.
+
+### T — /v1/translate (forced TranslateGemma template)
+Request `{source_lang_code, target_lang_code, text}` → server-side FORCED
+prompt frame extracted from the checkpoint's own chat_template.jinja
+(`<start_of_turn>user\nProduce only the {Target} translation, … Please
+translate the following {Source} text into {Target}:\n\n\n{text}
+<end_of_turn>\n<start_of_turn>model\n`, language NAMES resolved from the
+template's embedded code→name map, parsed at init — the generic chat
+template path is bypassed entirely, avoiding the known "content as an
+iterable with exactly one item" bug). Blocking request, temp 0, eos [1,106].
+**2K limit: REJECT with 400** when the rendered prompt exceeds 1800 tokens
+(chunked translation splices sentences and silently degrades quality; overlap
+chunking stays a later additive feature). Response `{"text": …}`.
+
+### K/T acceptance — scripts/categories_translate_test.sh
+C1 real names on the right endpoints; C2 wrong endpoint → explaining 400;
+C3 openai/whisper-large-v3 (real name) transcribes; T1 de→en keyword; T2
+de→fr French keyword; T3 template enforcement evidence (translate refuses on
+/v1/chat/completions per category AND the forced frame is logged/inspectable);
+R1 all existing classes still answer (S1/A4 pattern). Boot log must show
+per-category registration counts and the whisper sidecar note.
+
+### K/T risks
+| Risk | Mitigation |
+|---|---|
+| gemma4-loader divergences (scale/v_norm/softcap) subtly wrong for gemma3 | boot chat-smoke of translategemma (causal LM) before endpoint work; wrong scale ⇒ immediate gibberish |
+| eager kernel modules missing from thin target (w4a16 lesson) | copy gemma-4-31b overrides preemptively; boot smoke catches the rest |
+| category refactor breaks the 7 existing registrations | R1 regression + full test-script battery after restart |
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
