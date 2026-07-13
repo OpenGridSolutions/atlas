@@ -1080,12 +1080,16 @@ impl DenseFfnLayer {
         // comment promises there), then the scalar kernel. Decode (gemv, M=1)
         // is a separate path, so TPOT is unaffected.
         if let Some(ref bf16w) = self.bf16_weights {
+            let cublas = ops::cublas_gemm_enabled();
             let pipelined = self.dense_gemm_pipelined_k.0 != 0;
             let tc = self.dense_gemm_tc_k.0 != 0;
-            // helper: fastest loaded tensor-core GEMM, else scalar
+            // helper: cuBLASLt when enabled (H.2), else fastest loaded
+            // tensor-core GEMM, else scalar
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if pipelined {
+                    if cublas {
+                        ops::cublas_bf16_dense(ctx.gpu, $a, $b, $c, m, $n, $k, stream)?;
+                    } else if pipelined {
                         ops::dense_gemm_bf16_pipelined(
                             ctx.gpu,
                             self.dense_gemm_pipelined_k,

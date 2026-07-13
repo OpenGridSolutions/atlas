@@ -241,6 +241,26 @@ fn dequant_fp8_bf16_uncached(
     Ok(out)
 }
 
+/// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16
+/// for a NATIVE BF16 dense weight (Plan.md H.2) — no dequant step at all,
+/// the weight pointer feeds cuBLASLt directly. Same `ATLAS_CUBLAS_GEMM=1`
+/// gate as `cublas_bf16_proj`; used by the bf16 QKV/FFN/o_proj prefill
+/// dispatches where the hand-written pipelined kernel hits ~27% of the
+/// BF16 ceiling on GB10.
+#[allow(clippy::too_many_arguments)]
+pub fn cublas_bf16_dense(
+    _gpu: &dyn spark_runtime::gpu::GpuBackend,
+    act: spark_runtime::gpu::DevicePtr,
+    dense: &crate::weight_map::DenseWeight,
+    out: spark_runtime::gpu::DevicePtr,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+) -> anyhow::Result<()> {
+    spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, dense.weight.0, out.0, m, n, k, stream)
+}
+
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16.
 /// The FP8 weight is dequantized to BF16 once (cached); W16A16 here is strictly
 /// more accurate than the blockscaled W8A8 path it replaces.

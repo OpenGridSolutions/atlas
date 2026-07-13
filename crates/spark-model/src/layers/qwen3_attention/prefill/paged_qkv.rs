@@ -282,10 +282,13 @@ impl Qwen3AttentionLayer {
             // ATLAS_FP8_DEQUANT_ATTN_TO_BF16=1, `dense` (= attn.{q,k,v}_proj)
             // holds the FP8→BF16 dequanted weight; otherwise it is the
             // model's native dense weight.
-            // Prefer the tensor-core pipelined GEMM (~40× the scalar kernel on
+            // Prefer cuBLASLt when enabled (H.2, ATLAS_CUBLAS_GEMM=1), then
+            // the tensor-core pipelined GEMM (~40× the scalar kernel on
             // these large-M prefill projections; same math) — the scalar
             // `dense_gemm` dominated batched-prefill GPU time (nsys: 60%).
-            if self.dense_gemm_pipelined_k.0 != 0 {
+            if ops::cublas_gemm_enabled() {
+                ops::cublas_bf16_dense(ctx.gpu, normed, dense, out, n, out_dim, h, stream)?;
+            } else if self.dense_gemm_pipelined_k.0 != 0 {
                 ops::dense_gemm_bf16_pipelined(
                     ctx.gpu,
                     self.dense_gemm_pipelined_k,

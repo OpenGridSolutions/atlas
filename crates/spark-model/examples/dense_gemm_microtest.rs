@@ -198,6 +198,16 @@ fn launch(
     sync: bool,
 ) -> Result<()> {
     let [a, b, c] = ptrs;
+    // "cublas_bf16" pseudo-kernel: measure the cuBLASLt route (H.2) with the
+    // exact production wrapper instead of a PTX launch. Same layout contract
+    // (act[M,K] · weight[N,K]ᵀ → out[M,N], f32 accum, bf16 store).
+    if name == "cublas_bf16" {
+        spark_runtime::cublaslt::bf16_gemm_act_weight_t(a.0, b.0, c.0, m, n, k, stream)?;
+        if sync {
+            gpu.synchronize(stream)?;
+        }
+        return Ok(());
+    }
     // Module name is "gemm" for the dense_gemm_bf16.cu translation unit; the
     // function symbol is the kernel name.
     let handle = gpu.kernel(module_for(name), name)?;
