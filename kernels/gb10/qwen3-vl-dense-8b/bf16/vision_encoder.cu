@@ -405,6 +405,70 @@ void vit_scatter_head(
     O[(size_t)tok * dst_stride + d] = Oh[(size_t)tok * D + d];
 }
 
+// (B') Single-global-read row softmax (Plan.md H.3a). The 3-pass
+//     vit_softmax_rows above reads the f32 score row from GLOBAL memory three
+//     times (max / sumexp / normalize) — at 8856 patches that is ~3×313 MB per
+//     head-layer and ~1.9 s of the ViT pass. This variant stages the scaled
+//     row in DYNAMIC shared memory once (seq×4 B; caller gates on the 48 KB
+//     default smem limit → seq ≤ 12288, else falls back to the 3-pass kernel)
+//     and runs the remaining passes from smem. Same math, same reduction
+//     structure, identical outputs.
+//     grid = (seq,1,1), block = (256,1,1), dyn smem = seq*4 bytes
+extern "C" __global__
+void vit_softmax_rows_onepass(
+    const float* __restrict__ S,        // [seq, seq] f32 raw scores
+    __nv_bfloat16* __restrict__ P,      // [seq, seq] bf16 probs
+    unsigned int seq, unsigned int D)
+{
+    extern __shared__ float srow_smem[];  // [seq] scaled scores
+    unsigned int row = blockIdx.x;
+    if (row >= seq) return;
+    const float* srow = S + (size_t)row * seq;
+    __nv_bfloat16* prow = P + (size_t)row * seq;
+    float scale = rsqrtf((float)D);
+
+    __shared__ float red[256 / 32];
+    unsigned int tid  = threadIdx.x;
+    unsigned int lane = tid & 31u, warp = tid >> 5;
+
+    // pass 1: single global read → smem, tracking the running max
+    float m = -1e30f;
+    for (unsigned int j = tid; j < seq; j += blockDim.x) {
+        float v = srow[j] * scale;
+        srow_smem[j] = v;
+        m = fmaxf(m, v);
+    }
+    for (int o = 16; o > 0; o >>= 1) m = fmaxf(m, __shfl_down_sync(0xffffffff, m, o));
+    if (lane == 0) red[warp] = m;
+    __syncthreads();
+    if (tid == 0) {
+        float mm = -1e30f;
+        for (unsigned int w = 0; w < blockDim.x / 32; ++w) mm = fmaxf(mm, red[w]);
+        red[0] = mm;
+    }
+    __syncthreads();
+    float row_max = red[0];
+
+    // pass 2 (smem): sum exp
+    float s = 0.0f;
+    for (unsigned int j = tid; j < seq; j += blockDim.x)
+        s += expf(srow_smem[j] - row_max);
+    for (int o = 16; o > 0; o >>= 1) s += __shfl_down_sync(0xffffffff, s, o);
+    if (lane == 0) red[warp] = s;
+    __syncthreads();
+    if (tid == 0) {
+        float ss = 0.0f;
+        for (unsigned int w = 0; w < blockDim.x / 32; ++w) ss += red[w];
+        red[0] = (ss > 0.0f) ? (1.0f / ss) : 0.0f;
+    }
+    __syncthreads();
+    float inv_sum = red[0];
+
+    // pass 3 (smem): normalize + store bf16
+    for (unsigned int j = tid; j < seq; j += blockDim.x)
+        prow[j] = f32_to_bf16(expf(srow_smem[j] - row_max) * inv_sum);
+}
+
 // ── Spatial merge: reshape [P, D] → [P/S², S²*D] in-place ──
 // grid_h × grid_w = P patches; merge_size=2 → groups of 2×2.
 // Output shape: [P/(merge_size²), merge_size²*D].

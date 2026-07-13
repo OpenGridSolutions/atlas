@@ -129,6 +129,14 @@ impl VisionEncoder {
             // init with `vit_rope_deinterleave: named symbol not found`.
             k_rope_deint: crate::layers::try_kernel(gpu, "vision_encoder", "vit_rope_deinterleave"),
             k_softmax: crate::layers::try_kernel(gpu, "vision_encoder", "vit_softmax_rows"),
+            // H.3a smem-staged softmax: 1 global read instead of 3 — the
+            // 3-pass kernel was ~1.9 s of the ViT pass at 8856 patches.
+            // Dispatch gates on seq*4 ≤ 48 KB dynamic smem (seq ≤ 12288).
+            k_softmax_onepass: crate::layers::try_kernel(
+                gpu,
+                "vision_encoder",
+                "vit_softmax_rows_onepass",
+            ),
             k_scatter_head: crate::layers::try_kernel(gpu, "vision_encoder", "vit_scatter_head"),
             // f32-out dense GEMM for raw QKᵀ scores (GEMM-ViT path only). SOFT,
             // paired with the kernels above.

@@ -30,6 +30,11 @@ echo "==> [3/3] serving ${MODEL} for testing ..."
 # Safety nets that remain: the per-shard OOM guard (unconditional per shard
 # since the Task 0b fix) and the per-tensor UVM-fallback allocation.
 export ATLAS_SKIP_OOM_PREFLIGHT=1
+# Plan.md H.2: route the bf16 dense prefill GEMMs (QKV/FFN/o_proj on the
+# embedder/reranker/TranslateGemma targets) through cuBLASLt — measured
+# ~59 TFLOP/s vs 20-48 for the in-tree pipelined kernel at those shapes.
+# Unset to fall back to the hand-written kernels.
+export ATLAS_CUBLAS_GEMM=1
 # Phase K bridge for containers created before the categorized preseed
 # vars landed in .devpod/compose.yml: the removed flat var must not leak
 # into the server (it hard-fails on it), and the five category vars get

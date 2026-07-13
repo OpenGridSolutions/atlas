@@ -54,6 +54,7 @@ pub struct VisionEncoder {
     k_attn: KernelHandle, // vision_attention_rope (legacy SDPA — ATLAS_VISION_ATTN_LEGACY=1)
     k_rope_deint: KernelHandle, // vit_rope_deinterleave (rope + head-contig Qr/Kr + V transpose)
     k_softmax: KernelHandle, // vit_softmax_rows (parallel row softmax)
+    k_softmax_onepass: KernelHandle, // vit_softmax_rows_onepass (H.3a — smem-staged, 1 global read)
     k_scatter_head: KernelHandle, // vit_scatter_head (contig → interleaved O slot)
     k_gemm_f32: KernelHandle, // dense_gemm_bf16_f32out (raw QKᵀ scores, f32 out)
     k_gemm_f32_pipelined: KernelHandle, // dense_gemm_bf16_pipelined_f32out (H.1 — preferred GEMM1)

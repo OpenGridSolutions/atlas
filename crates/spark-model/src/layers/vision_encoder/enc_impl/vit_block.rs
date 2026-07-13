@@ -143,15 +143,31 @@ impl VisionEncoder {
                     .launch(stream)?;
             }
 
-            // (3) row softmax (scale folded) → buf_probs[seq,seq] bf16
-            KernelLaunch::new(gpu, self.k_softmax)
-                .grid([seq, 1, 1])
-                .block([256, 1, 1])
-                .arg_ptr(self.buf_scores)
-                .arg_ptr(self.buf_probs)
-                .arg_u32(seq)
-                .arg_u32(d)
-                .launch(stream)?;
+            // (3) row softmax (scale folded) → buf_probs[seq,seq] bf16.
+            //     Prefer the smem-staged single-global-read variant (H.3a);
+            //     it needs seq×4 B dynamic smem, so gate on the 48 KB default
+            //     limit (seq ≤ 12288) and fall back to the 3-pass kernel.
+            let smem_bytes = seq * 4;
+            if self.k_softmax_onepass.0 != 0 && smem_bytes <= 48 * 1024 {
+                KernelLaunch::new(gpu, self.k_softmax_onepass)
+                    .grid([seq, 1, 1])
+                    .block([256, 1, 1])
+                    .shared_mem(smem_bytes)
+                    .arg_ptr(self.buf_scores)
+                    .arg_ptr(self.buf_probs)
+                    .arg_u32(seq)
+                    .arg_u32(d)
+                    .launch(stream)?;
+            } else {
+                KernelLaunch::new(gpu, self.k_softmax)
+                    .grid([seq, 1, 1])
+                    .block([256, 1, 1])
+                    .arg_ptr(self.buf_scores)
+                    .arg_ptr(self.buf_probs)
+                    .arg_u32(seq)
+                    .arg_u32(d)
+                    .launch(stream)?;
+            }
 
             // (4) GEMM2: O_stage[seq,D] = P[seq,seq] @ Vt_h[D,seq]ᵀ = P·V.
             //     pipelined grid is (ceil(N/128),ceil(M/128)): N=d→1 tile, M=seq.
