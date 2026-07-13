@@ -812,6 +812,39 @@ p_max-sized since the 2026-06-29 fix; p_max = VISION_MAX_PATCHES =
   (same GEMM-SDPA semantics, proven on qwen3.6/Holo since Fix-E);
   `ATLAS_VISION_ATTN_LEGACY=1` remains as the A/B rollback switch.
 
+### G.1 Post-port measurements (2026-07-13, warm, swap excluded)
+| case | before port | after port |
+|---|---|---|
+| embed large img (2204 merged, 2207 tok, dense-8b) | 274 s | 22.7 s |
+| embed small img (290 merged, 293 tok) | ~7 s | 2.6 s |
+| 3-doc rerank (2 large + 1 small) | ~9 min | 49 s (= sum, serial) |
+| 30B chat large / small | — | 7.1 s / 0.65 s |
+| **text-only ~3550 tok (dense-8b, no image)** | — | **27.4 s ≈ 128 tok/s** |
+The text-only number re-attributes the bottleneck: ~17 s of the 22.7 s
+large-image embed is LM PREFILL, only ~5.6 s is ViT. Vision prefix
+cache: identical image re-sent → 22.8 s (no coverage); two same-size
+different images → cosine 0.943 (no hash collision), identical → 1.0.
+
+### G.2 — bf16 QKV prefill: cache-skip path missed the tensor-core
+dispatch (2026-07-13, user-approved step 1)
+Root cause of the 128 tok/s: with radix prefix caching ENABLED (our
+default), prefill runs `cache_skip_qkv::cache_skip_one_proj`, whose
+BF16-dense fallback launches only the scalar `dense_gemm_bf16`
+(16×16-thread naive kernel, ~2 TFLOPS eff.). The equivalent paged path
+(`paged_qkv::prefill_one_proj`) has preferred the tensor-core
+`dense_gemm_bf16_pipelined` here since the nsys-60% finding — the
+cache-skip variant simply never got the same dispatch. FFN (bf16w →
+dense_gemm_tc) and o_proj (paged_oproj → pipelined) were already fast;
+q/k/v were the last scalar GEMMs: 36 layers × 2n·4096·6144 ≈ n×1.81
+GFLOP ≈ 16-20 s at n=3533 — matches the measurement.
+Fix: mirror paged_qkv's fallback verbatim (pipelined if loaded, else
+scalar). Kernel is documented cosine=1.0 vs scalar (same f32-accum
+math, m16n8k16 MMA + cp.async).
+Acceptance: (a) text-embed ~3550 tok drops from 27.4 s to ≲ 2 s;
+(b) numeric equivalence on stored pre-fix responses — same text/image
+inputs re-run, cosine > 0.9999 (both 8B embedder + rerank scores);
+(c) rerank 3-doc end-to-end re-measured for the < 5 s target call.
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |

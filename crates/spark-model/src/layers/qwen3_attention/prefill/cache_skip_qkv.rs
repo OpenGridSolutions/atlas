@@ -326,17 +326,38 @@ impl Qwen3AttentionLayer {
                 anyhow::anyhow!("{label} w4a16_gemm failed: m={n} n={out_dim} k={h}: {e}")
             })?;
         } else {
-            ops::dense_gemm(
-                ctx.gpu,
-                self.dense_gemm_k,
-                normed,
-                dense,
-                out,
-                n,
-                out_dim,
-                h,
-                stream,
-            )?;
+            // BF16 dense fallback (Plan.md Phase G.2). Prefer the tensor-core
+            // pipelined GEMM — same math/cosine=1.0, ~40× the scalar kernel on
+            // these large-M prefill projections. The paged twin
+            // (`paged_qkv::prefill_one_proj`) has dispatched this way since the
+            // nsys-60% finding; this cache-skip variant staying scalar was the
+            // flat ~128 tok/s prefill bottleneck on the bf16 dense targets
+            // (Qwen3-Embedding/Reranker/VL-8B: q/k/v were the last scalar GEMMs).
+            if self.dense_gemm_pipelined_k.0 != 0 {
+                ops::dense_gemm_bf16_pipelined(
+                    ctx.gpu,
+                    self.dense_gemm_pipelined_k,
+                    normed,
+                    dense,
+                    out,
+                    n,
+                    out_dim,
+                    h,
+                    stream,
+                )?;
+            } else {
+                ops::dense_gemm(
+                    ctx.gpu,
+                    self.dense_gemm_k,
+                    normed,
+                    dense,
+                    out,
+                    n,
+                    out_dim,
+                    h,
+                    stream,
+                )?;
+            }
         }
         Ok(())
     }
