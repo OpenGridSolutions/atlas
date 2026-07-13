@@ -776,6 +776,42 @@ only; nothing about encoding, category enforcement, or scheduling changes.
   the user's laptop matrix (Qwen3-VL-Embedding/Reranker are not in the
   box's default preseed).
 
+## Phase G — GEMM-SDPA ViT on the qwen3-vl targets (2026-07-13)
+
+**Motivation.** Multipart VL rerank "hangs": one 2214-merged-patch image
+= 274 s TTFT on qwen3-vl-dense-8b (log 2026-07-13T13:42). Root cause:
+the qwen3-vl vision trees (30B, and the 8B which is a byte-identical
+copy) predate the GEMM-SDPA ViT kernels — `vit_rope_deinterleave`,
+`vit_softmax_rows`, `vit_scatter_head`, `vision_add_bias` exist only in
+the qwen3.6-35b-a3b tree. The shared Rust encoder (`vit_block.rs`)
+null-handle-gates on them, so BOTH slow paths run:
+- attention falls back to legacy warp-per-query `vision_attention_rope`
+  → O(seq²) at ~3.2 µs/patch-pair (measured 1160 raw → ~7 s, 8856 raw
+  → ~270 s);
+- `vit_gemm_bias` falls back to the scalar `vision_gemm_bias` because
+  `vision_add_bias` (the bias epilogue for the tensor-core
+  `dense_gemm_bf16_pipelined`) is missing — the pipelined GEMM itself
+  IS available everywhere via common's `dense_gemm_bf16 = "gemm"`.
+
+**Fix.** The qwen3.6 `vision_encoder.cu` is a strict superset of the
+qwen3-vl one (diff: 0 deletions, only the 4 kernels + comments added)
+and the legacy attention bodies are byte-identical, so the RoPE/softmax
+semantics are proven equal. Port = overwrite both qwen3-vl copies with
+the qwen3.6 file (keeps them byte-identical → nvcc build-cache dedup),
+update the 8B KERNEL.toml provenance comment. No Rust changes needed —
+the fast paths self-activate on non-null handles. Also fix the stale
+`debug_assert!(seq <= 1024)` in `vit_attention_gemm` (buffers have been
+p_max-sized since the 2026-06-29 fix; p_max = VISION_MAX_PATCHES =
+16384 since Q.V2).
+
+**Acceptance.**
+- PTX for targets qwen3-vl-30b-a3b + qwen3-vl-dense-8b contains all 4
+  new symbols; full workspace tests green.
+- User-side (they test): VL rerank with 3 image documents completes in
+  tens of seconds instead of ~9 min; 30B chat OCR output unchanged
+  (same GEMM-SDPA semantics, proven on qwen3.6/Holo since Fix-E);
+  `ATLAS_VISION_ATTN_LEGACY=1` remains as the A/B rollback switch.
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |

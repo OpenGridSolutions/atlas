@@ -70,8 +70,8 @@ impl VisionEncoder {
     /// `qkv/o/cos/sin` are per-image base pointers (caller already offset them).
     /// All launches share `stream`, so each head's GEMM1→softmax→GEMM2→scatter is
     /// ordered before head h+1 reuses buf_scores/buf_probs/buf_o_stage — do NOT
-    /// split heads across streams without per-head score buffers. seq ≤ 1024
-    /// (buf_scores/probs are [1024,1024]).
+    /// split heads across streams without per-head score buffers. seq ≤ p_max
+    /// (buf_scores/probs are [p_max, p_max] since the 2026-06-29 sizing fix).
     #[allow(clippy::too_many_arguments)]
     pub(super) fn vit_attention_gemm(
         &self,
@@ -84,8 +84,8 @@ impl VisionEncoder {
         stream: u64,
     ) -> Result<()> {
         debug_assert!(
-            seq <= 1024,
-            "ViT SDPA seq {seq} exceeds buf_scores cap (1024)"
+            seq as usize <= crate::vision_preprocess::VISION_MAX_PATCHES,
+            "ViT SDPA seq {seq} exceeds buf_scores cap (VISION_MAX_PATCHES)"
         );
         let h_n = self.num_heads as u32;
         let d = self.head_dim as u32; // 72

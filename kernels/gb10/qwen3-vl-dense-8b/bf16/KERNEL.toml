@@ -1,9 +1,15 @@
 # Qwen3-VL dense 8B — bf16 quant variant (multiclass Plan.md 2.1).
 #
 # Two override .cu files, both verbatim copies:
-# - vision_encoder.cu (from qwen3-vl-30b-a3b): the ViT module the
-#   serve/swap vision gate requires — without it config.vision is
-#   forced to None and the model serves text-only.
+# - vision_encoder.cu (from qwen3.6-35b-a3b, Plan.md Phase G — was the
+#   qwen3-vl-30b-a3b copy, whose tree predates the GEMM-SDPA ViT
+#   kernels): the ViT module the serve/swap vision gate requires —
+#   without it config.vision is forced to None and the model serves
+#   text-only. The qwen3.6 file is a strict superset adding
+#   vision_add_bias + vit_rope_deinterleave/vit_softmax_rows/
+#   vit_scatter_head, which activate the tensor-core GEMM + GEMM-SDPA
+#   paths in vit_block.rs (legacy warp-per-query attention took ~270 s
+#   for a 2214-merged-patch image).
 # - w4a16_gemm.cu (standard 14-target variant): eagerly resolved
 #   *_t_k64 / *_m128 symbols missing from common (see qwen3-dense-8b).
 # Everything else reuses the common base set; flags match the six
