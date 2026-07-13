@@ -845,6 +845,28 @@ Acceptance: (a) text-embed ~3550 tok drops from 27.4 s to ≲ 2 s;
 inputs re-run, cosine > 0.9999 (both 8B embedder + rerank scores);
 (c) rerank 3-doc end-to-end re-measured for the < 5 s target call.
 
+### G.3 — bf16 FFN prefill: dense_gemm_tc is not a fast kernel on GB10
+(2026-07-13, follow-up after G.2 verified ineffective end-to-end)
+G.2 alone did NOT move the needle (text-embed ~3550 tok: 27.4 s →
+21.5-24.8 s). Kernel-only A/B via `dense_gemm_microtest` (CUDA events,
+cosine gate 1.000000 PASS on every row) at the real FFN shapes:
+| kernel | gate/up 3584×12288×4096 | down 3584×4096×12288 |
+|---|---|---|
+| dense_gemm_bf16 (scalar) | 248.6 ms ≈ 1.45 TFLOP/s | — |
+| dense_gemm_tc | 204.6 ms ≈ 1.76 TFLOP/s | 231.8 ms ≈ 1.56 TFLOP/s |
+| dense_gemm_bf16_pipelined | 17.8 ms ≈ 20.3 TFLOP/s | 7.5 ms ≈ 48.0 TFLOP/s |
+The FFN's preferred "tensor-core" kernel `dense_gemm_tc` (m16n8k16, no
+cp.async pipeline) is ~1.1-1.2× scalar on GB10 — its "3-5×" comment
+does not hold here. FFN = 3 such GEMMs × 36 layers ≈ 640 ms × 36 ≈
+23 s — exactly the residual. (Microtest module mapping fixed:
+dense_gemm_tc lives in module `gemm_tc` per common KERNEL.toml.)
+Fix: DenseFfnLayer gains `dense_gemm_pipelined_k`; the bf16w prefill
+dispatch prefers pipelined > tc > scalar (same order as QKV/o_proj).
+Gemma-3/-4 dense (TranslateGemma) share this path and win too. The
+other dense_gemm_tc users (MLA/v4 paths — DeepSeek-class models,
+g_proj head gates N=32) are out of scope until measured.
+Acceptance: unchanged from G.2 (a/b/c).
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |

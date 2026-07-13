@@ -157,10 +157,12 @@ fn grid_block(name: &str, m: u32, n: u32) -> Result<([u32; 3], [u32; 3])> {
 }
 
 /// PTX module a kernel resolves in. Most share the `gemm` TU (dense_gemm_bf16.cu);
-/// dense_gemm_tc.cu is its own TU → module = file stem.
+/// dense_gemm_tc.cu is renamed to module `gemm_tc` (common KERNEL.toml) — the
+/// same name `DenseFfnLayer::new` resolves, so this harness exercises the
+/// production lookup path.
 fn module_for(name: &str) -> &'static str {
     match name {
-        "dense_gemm_tc" => "dense_gemm_tc",
+        "dense_gemm_tc" => "gemm_tc",
         _ => "gemm",
     }
 }

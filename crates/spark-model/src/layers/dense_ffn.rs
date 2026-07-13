@@ -191,6 +191,14 @@ pub struct DenseFfnLayer {
     // KernelHandle(0) on miss → forward_prefill falls back to the scalar path.
     // Decode (gemv, M=1) is untouched, so TPOT is unaffected.
     dense_gemm_tc_k: KernelHandle,
+    // Pipelined tensor-core BF16 GEMM (m16n8k16 + cp.async 2-stage, 128×128
+    // tile). Plan.md G.3: on GB10 `dense_gemm_tc` measures only ~1.1-1.2×
+    // the scalar kernel (1.6-1.8 vs 1.45 TFLOP/s at the FFN shapes) while
+    // this one hits 20-48 TFLOP/s — it was the flat ~150 tok/s bf16 prefill
+    // bottleneck (3 FFN GEMMs ≈ 640 ms × 36 layers ≈ 23 s at 3.5k tokens).
+    // Preferred over tc/scalar in the bf16w prefill dispatch, same order as
+    // the attention QKV/o_proj paths. KernelHandle(0) on miss → tc → scalar.
+    dense_gemm_pipelined_k: KernelHandle,
     /// Native FP8 dense MLP weights — when `Some`, decode/prefill dispatch the
     /// block-scaled FP8 kernels (`w8a16_gemv` / `w8a16_gemm`) instead of w4a16
     /// NVFP4. Set via `set_fp8_weights` for native FP8 checkpoints (Qwythos /
@@ -232,6 +240,7 @@ impl DenseFfnLayer {
         //   `dense_gemv_bf16 = "gemv"`, `dense_gemm_bf16 = "gemm"`.
         let dense_gemv_bf16_k = super::try_kernel(gpu, "gemv", "dense_gemv_bf16");
         let dense_gemm_bf16_k = super::try_kernel(gpu, "gemm", "dense_gemm_bf16");
+        let dense_gemm_pipelined_k = super::try_kernel(gpu, "gemm", "dense_gemm_bf16_pipelined");
         let dense_gemm_tc_k = super::try_kernel(gpu, "gemm_tc", "dense_gemm_tc");
 
         let layer = Self {
@@ -295,6 +304,7 @@ impl DenseFfnLayer {
             bf16_weights: None,
             dense_gemv_bf16_k,
             dense_gemm_bf16_k,
+            dense_gemm_pipelined_k,
             dense_gemm_tc_k,
             fp8_weights: None,
             w8a16_gemv_k: super::try_kernel(gpu, "w8a16_gemv", "w8a16_gemv"),
@@ -1062,18 +1072,32 @@ impl DenseFfnLayer {
             return Ok(());
         }
 
-        // BF16 prefill dispatch. Prefer the tensor-core m16n8k16 MMA kernel
-        // (`dense_gemm_tc`, 3-5x+ over scalar) — the scalar `dense_gemm_bf16`
-        // was the flat ~155 tok/s prefill bottleneck on Qwen3.6-27B dense
-        // NVFP4 (FFN = ~83% of prefill). Falls back to scalar if the TC
-        // kernel isn't loaded for this target. Decode (gemv, M=1) is a
-        // separate path, so TPOT is unaffected; BF16 MMA preserves coherence.
+        // BF16 prefill dispatch (Plan.md G.3). Preference order matches the
+        // attention QKV/o_proj paths: the cp.async-pipelined 128×128 kernel
+        // first (20-48 TFLOP/s measured at the FFN shapes on GB10, same math /
+        // cosine=1.0), then `dense_gemm_tc` (m16n8k16 without a pipeline —
+        // measured only ~1.1-1.2× scalar on GB10, i.e. NOT the "3-5×" its
+        // comment promises there), then the scalar kernel. Decode (gemv, M=1)
+        // is a separate path, so TPOT is unaffected.
         if let Some(ref bf16w) = self.bf16_weights {
+            let pipelined = self.dense_gemm_pipelined_k.0 != 0;
             let tc = self.dense_gemm_tc_k.0 != 0;
-            // helper: tensor-core GEMM when available, else scalar
+            // helper: fastest loaded tensor-core GEMM, else scalar
             macro_rules! ffn_gemm {
                 ($a:expr, $b:expr, $c:expr, $n:expr, $k:expr) => {
-                    if tc {
+                    if pipelined {
+                        ops::dense_gemm_bf16_pipelined(
+                            ctx.gpu,
+                            self.dense_gemm_pipelined_k,
+                            $a,
+                            $b,
+                            $c,
+                            m,
+                            $n,
+                            $k,
+                            stream,
+                        )?;
+                    } else if tc {
                         ops::dense_gemm_tc(
                             ctx.gpu,
                             self.dense_gemm_tc_k,
