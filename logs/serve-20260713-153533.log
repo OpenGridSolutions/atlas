@@ -991,3 +991,11 @@
 [2m2026-07-13T13:42:46.170232Z[0m [32m INFO[0m [2mspark::scheduler[0m[2m:[0m Hot-swap: scheduler reopened with reloaded model
 [2m2026-07-13T13:42:46.243916Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 2295 prompt tokens, chunk_size=2295, max_tokens=1
 [2m2026-07-13T13:42:46.252517Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_a::vision[0m[2m:[0m Vision encoder (batched): 1 images, 2214 merged patches encoded
+[2m2026-07-13T13:47:20.392715Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 2152
+[2m2026-07-13T13:47:20.392865Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 1 tokens (length) 102627.3 tok/s, TTFT=274148.9ms
+[2m2026-07-13T13:47:20.396612Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 371 prompt tokens, chunk_size=371, max_tokens=1
+[2m2026-07-13T13:47:20.398055Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_a::vision[0m[2m:[0m Vision encoder (batched): 1 images, 290 merged patches encoded
+[2m2026-07-13T13:47:27.649027Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Prefill first token: 2152
+[2m2026-07-13T13:47:27.649147Z[0m [32m INFO[0m [2mspark::scheduler::lifecycle[0m[2m:[0m Done: 1 tokens (length) 443262.4 tok/s, TTFT=7252.5ms
+[2m2026-07-13T13:47:27.649162Z[0m [32m INFO[0m [2mspark::scheduler::prefill_a_step[0m[2m:[0m Chunked prefill start: 2285 prompt tokens, chunk_size=2285, max_tokens=1
+[2m2026-07-13T13:47:27.655043Z[0m [32m INFO[0m [2mspark_model::model::trait_impl::prefill_a::vision[0m[2m:[0m Vision encoder (batched): 1 images, 2204 merged patches encoded
