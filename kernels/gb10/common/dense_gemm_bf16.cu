@@ -468,6 +468,126 @@ extern "C" __global__ void dense_gemm_bf16_pipelined(
     }
 }
 
+// FP32-output twin of dense_gemm_bf16_pipelined (Plan.md H.1): identical
+// tiles/pipeline/MMA math, but the epilogue stores the FP32 accumulators
+// directly instead of narrowing to BF16. Consumer: the ViT attention score
+// GEMM (S = Q·Kᵀ raw, softmax wants f32) — previously served by the naive
+// dense_gemm_bf16_f32out (~1.5 TFLOP/s), which dominated image prefill
+// (~3.3 s of a 5.6 s ViT pass at 8856 patches). Same explicit-twin file
+// style as dense_gemm_bf16_f32out; the BF16 original stays untouched.
+// K=head_dim (72 for Qwen3-VL) is a multiple of 8 → cp.async fast path.
+//
+// Grid: (ceil(N/DM_N_TILE), ceil(M/DM_M_TILE), 1), Block: (256,1,1).
+extern "C" __global__ void dense_gemm_bf16_pipelined_f32out(
+    const __nv_bfloat16* __restrict__ A,   // [M, K] BF16
+    const __nv_bfloat16* __restrict__ B,   // [N, K] BF16 (read transposed)
+    float* __restrict__ C,                  // [M, N] FP32 output
+    unsigned int M,
+    unsigned int N,
+    unsigned int K
+) {
+    const unsigned int cta_m = blockIdx.y * DM_M_TILE;
+    const unsigned int cta_n = blockIdx.x * DM_N_TILE;
+    const unsigned int warp_id = threadIdx.x / 32;
+    const unsigned int lane_id = threadIdx.x % 32;
+    const unsigned int warp_m_offset = warp_id * 16;
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid = lane_id & 3;
+
+    __shared__ __align__(16) __nv_bfloat16 smem_A[DM_STAGES][DM_M_TILE][DM_A_STRIDE];
+    __shared__ __align__(16) __nv_bfloat16 smem_B[DM_STAGES][DM_N_TILE][DM_B_STRIDE];
+
+    float acc[DM_N_TILES_PER_WARP][4];
+    #pragma unroll
+    for (int i = 0; i < DM_N_TILES_PER_WARP; i++) {
+        acc[i][0] = 0.0f; acc[i][1] = 0.0f; acc[i][2] = 0.0f; acc[i][3] = 0.0f;
+    }
+
+    const unsigned int n_steps = (K + DM_K_STEP - 1) / DM_K_STEP;
+    const unsigned int a_chunks = (DM_M_TILE * DM_K_STEP) / 8;
+    const unsigned int b_chunks = (DM_N_TILE * DM_K_STEP) / 8;
+    const bool k_vec_aligned = (K & 7u) == 0u;
+
+    auto prefetch = [&](unsigned int step, unsigned int stage) {
+        unsigned int k_base = step * DM_K_STEP;
+        #pragma unroll
+        for (unsigned int c = threadIdx.x; c < a_chunks; c += DM_THREADS) {
+            unsigned int row = (c * 8) / DM_K_STEP;
+            unsigned int col = (c * 8) % DM_K_STEP;
+            unsigned int gr = cta_m + row;
+            unsigned int gc = k_base + col;
+            __nv_bfloat16* dst = &smem_A[stage][row][col];
+            if (gr < M && gc + 8 <= K && k_vec_aligned) {
+                dm_cp_async_cg_16(dst, &A[(unsigned long long)gr * K + gc]);
+            } else {
+                #pragma unroll
+                for (unsigned int e = 0; e < 8; e++) {
+                    unsigned int gcol = gc + e;
+                    dst[e] = (gr < M && gcol < K) ? A[(unsigned long long)gr * K + gcol]
+                                                  : __float2bfloat16(0.0f);
+                }
+            }
+        }
+        #pragma unroll
+        for (unsigned int c = threadIdx.x; c < b_chunks; c += DM_THREADS) {
+            unsigned int nrow = (c * 8) / DM_K_STEP;
+            unsigned int kcol = (c * 8) % DM_K_STEP;
+            unsigned int gn = cta_n + nrow;
+            unsigned int gk = k_base + kcol;
+            __nv_bfloat16* dst = &smem_B[stage][nrow][kcol];
+            if (gn < N && gk + 8 <= K && k_vec_aligned) {
+                dm_cp_async_cg_16(dst, &B[(unsigned long long)gn * K + gk]);
+            } else {
+                #pragma unroll
+                for (unsigned int e = 0; e < 8; e++) {
+                    unsigned int gke = gk + e;
+                    dst[e] = (gn < N && gke < K) ? B[(unsigned long long)gn * K + gke]
+                                                 : __float2bfloat16(0.0f);
+                }
+            }
+        }
+        dm_cp_async_commit();
+    };
+
+    #pragma unroll
+    for (unsigned int p = 0; p < DM_STAGES - 1; p++) {
+        if (p < n_steps) {
+            prefetch(p, p % DM_STAGES);
+        }
+    }
+
+    for (unsigned int step = 0; step < n_steps; step++) {
+        unsigned int cur = step % DM_STAGES;
+        unsigned int ahead = step + (DM_STAGES - 1);
+        if (ahead < n_steps) {
+            prefetch(ahead, ahead % DM_STAGES);
+        }
+        unsigned int committed = min(n_steps, DM_STAGES + step);
+        unsigned int target = committed - (step + 1);
+        dm_cp_async_wait_le(target);
+        __syncthreads();
+
+        dm_mma_kstep(&smem_A[cur][0][0], &smem_B[cur][0][0],
+                     acc, warp_m_offset, group_id, tid);
+        __syncthreads();
+    }
+
+    // ── Store C tile: f32 accumulators UNROUNDED ──
+    #pragma unroll
+    for (int n_tile = 0; n_tile < DM_N_TILES_PER_WARP; n_tile++) {
+        unsigned int base_n = cta_n + n_tile * 8;
+        unsigned int col0 = base_n + (tid * 2);
+        unsigned int col1 = col0 + 1;
+        unsigned int row0 = cta_m + warp_m_offset + group_id;
+        unsigned int row1 = row0 + 8;
+
+        if (row0 < M && col0 < N) C[(unsigned long long)row0 * N + col0] = acc[n_tile][0];
+        if (row0 < M && col1 < N) C[(unsigned long long)row0 * N + col1] = acc[n_tile][1];
+        if (row1 < M && col0 < N) C[(unsigned long long)row1 * N + col0] = acc[n_tile][2];
+        if (row1 < M && col1 < N) C[(unsigned long long)row1 * N + col1] = acc[n_tile][3];
+    }
+}
+
 // Fused SiLU(gate) * up activation — vectorized 2-wide BF16 loads/stores.
 // Input: [N, inter_size*2] where first half is gate, second half is up.
 // Output: [N, inter_size]

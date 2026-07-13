@@ -56,6 +56,7 @@ pub struct VisionEncoder {
     k_softmax: KernelHandle, // vit_softmax_rows (parallel row softmax)
     k_scatter_head: KernelHandle, // vit_scatter_head (contig → interleaved O slot)
     k_gemm_f32: KernelHandle, // dense_gemm_bf16_f32out (raw QKᵀ scores, f32 out)
+    k_gemm_f32_pipelined: KernelHandle, // dense_gemm_bf16_pipelined_f32out (H.1 — preferred GEMM1)
     k_merge: KernelHandle, // vision_spatial_merge (2×2)
     k_f32_bf16: KernelHandle, // vision_f32_to_bf16
     k_copy: KernelHandle, // vision_bf16_copy

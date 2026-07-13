@@ -115,17 +115,33 @@ impl VisionEncoder {
             let o_h = o.offset(head * self.head_dim * 2); // O[seq,H*D] head slot
 
             // (2) GEMM1: S[seq,seq] = Qr_h[seq,D] @ Kr_h[seq,D]ᵀ (raw, f32 out).
-            //     f32out is TILE=16: block (16,16), grid (ceil(N/16),ceil(M/16)).
-            KernelLaunch::new(gpu, self.k_gemm_f32)
-                .grid([div_ceil(seq, 16), div_ceil(seq, 16), 1])
-                .block([16, 16, 1])
-                .arg_ptr(qr_h)
-                .arg_ptr(kr_h)
-                .arg_ptr(self.buf_scores)
-                .arg_u32(seq) // M
-                .arg_u32(seq) // N
-                .arg_u32(d) // K = 72
-                .launch(stream)?;
+            //     Prefer the pipelined tensor-core twin (Plan.md H.1, grid
+            //     ceil/128 × ceil/128, block 256) — the naive TILE=16 kernel
+            //     (~1.5 TFLOP/s) was ~3.3 s of a 5.6 s ViT pass at 8856
+            //     patches. K = head_dim = 72 is 8-aligned → cp.async path.
+            if self.k_gemm_f32_pipelined.0 != 0 {
+                KernelLaunch::new(gpu, self.k_gemm_f32_pipelined)
+                    .grid([div_ceil(seq, 128), div_ceil(seq, 128), 1])
+                    .block([256, 1, 1])
+                    .arg_ptr(qr_h)
+                    .arg_ptr(kr_h)
+                    .arg_ptr(self.buf_scores)
+                    .arg_u32(seq) // M
+                    .arg_u32(seq) // N
+                    .arg_u32(d) // K = 72
+                    .launch(stream)?;
+            } else {
+                KernelLaunch::new(gpu, self.k_gemm_f32)
+                    .grid([div_ceil(seq, 16), div_ceil(seq, 16), 1])
+                    .block([16, 16, 1])
+                    .arg_ptr(qr_h)
+                    .arg_ptr(kr_h)
+                    .arg_ptr(self.buf_scores)
+                    .arg_u32(seq) // M
+                    .arg_u32(seq) // N
+                    .arg_u32(d) // K = 72
+                    .launch(stream)?;
+            }
 
             // (3) row softmax (scale folded) → buf_probs[seq,seq] bf16
             KernelLaunch::new(gpu, self.k_softmax)

@@ -133,6 +133,14 @@ impl VisionEncoder {
             // f32-out dense GEMM for raw QKᵀ scores (GEMM-ViT path only). SOFT,
             // paired with the kernels above.
             k_gemm_f32: crate::layers::try_kernel(gpu, "gemm", "dense_gemm_bf16_f32out"),
+            // Pipelined tensor-core twin (Plan.md H.1) — preferred for GEMM1
+            // when present. The naive f32out (~1.5 TFLOP/s) was ~3.3 s of the
+            // 5.6 s ViT pass on an 8856-patch image.
+            k_gemm_f32_pipelined: crate::layers::try_kernel(
+                gpu,
+                "gemm",
+                "dense_gemm_bf16_pipelined_f32out",
+            ),
             k_merge: gpu.kernel("vision_encoder", "vision_spatial_merge")?,
             k_f32_bf16: gpu.kernel("vision_encoder", "vision_f32_to_bf16")?,
             k_copy: gpu.kernel("vision_encoder", "vision_bf16_copy")?,

@@ -96,15 +96,24 @@ fn u16s_to_le(v: &[u16]) -> Vec<u8> {
     v.iter().flat_map(|x| x.to_le_bytes()).collect()
 }
 
-/// CPU reference mirroring the kernel math: C[m,n] = bf16(Σ_k A[m,k]·B[n,k])
-/// with FP32 accumulation. A is [M,K] row-major, B is [N,K] row-major (read
+/// CPU reference mirroring the kernel math: C[m,n] = Σ_k A[m,k]·B[n,k] with
+/// FP32 accumulation. A is [M,K] row-major, B is [N,K] row-major (read
 /// transposed). No scale, no dequant — both operands raw BF16.
-fn cpu_reference(a_bf16: &[u16], b_bf16: &[u16], m: usize, n: usize, k: usize) -> Vec<u16> {
+/// `narrow_bf16` mirrors the kernel's store: bf16-rounded f32 for the BF16
+/// kernels, the raw accumulator for the f32out twins.
+fn cpu_reference(
+    a_bf16: &[u16],
+    b_bf16: &[u16],
+    m: usize,
+    n: usize,
+    k: usize,
+    narrow_bf16: bool,
+) -> Vec<f32> {
     // Multi-threaded over row blocks (std::thread; explicit thread count — PCND).
     let nthreads = std::thread::available_parallelism()
         .map(|p| p.get())
         .unwrap_or(8);
-    let mut out = vec![0u16; m * n];
+    let mut out = vec![0f32; m * n];
     let rows_per = m.div_ceil(nthreads);
     std::thread::scope(|sc| {
         for (t, chunk) in out.chunks_mut(rows_per * n).enumerate() {
@@ -120,7 +129,11 @@ fn cpu_reference(a_bf16: &[u16], b_bf16: &[u16], m: usize, n: usize, k: usize) -
                             let b = bf16_bits_to_f32(b_bf16[col * k + kk]);
                             acc += a * b;
                         }
-                        chunk[rr * n + col] = f32_to_bf16_bits(acc);
+                        chunk[rr * n + col] = if narrow_bf16 {
+                            bf16_bits_to_f32(f32_to_bf16_bits(acc))
+                        } else {
+                            acc
+                        };
                     }
                 }
             });
@@ -136,7 +149,14 @@ fn cpu_reference(a_bf16: &[u16], b_bf16: &[u16], m: usize, n: usize, k: usize) -
 fn grid_block(name: &str, m: u32, n: u32) -> Result<([u32; 3], [u32; 3])> {
     Ok(match name {
         // Production scalar kernel: 16×16 tile, one thread per output element.
-        "dense_gemm_bf16" => ([n.div_ceil(16), m.div_ceil(16), 1], [16u32, 16, 1]),
+        // The f32out twin shares its geometry (identical body, f32 store).
+        "dense_gemm_bf16" | "dense_gemm_bf16_f32out" => {
+            ([n.div_ceil(16), m.div_ceil(16), 1], [16u32, 16, 1])
+        }
+        // H.1 pipelined f32out twin: identical geometry to the pipelined BF16.
+        "dense_gemm_bf16_pipelined_f32out" => {
+            ([n.div_ceil(128), m.div_ceil(128), 1], [256u32, 1, 1])
+        }
         // Fix-E pipelined rewrite: 128×N_TILE tile (M×N), 256-thread block (8
         // warps). N_TILE defaults to 128 (the shipped geometry); a sweep can
         // override it via DM_N_TILE_SWEEP to match a `-DDM_N_TILE=` rebuild
@@ -227,29 +247,41 @@ fn main() -> Result<()> {
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
 
+    // f32out twins store the raw FP32 accumulator (4 B/elem) — the CPU
+    // reference then compares WITHOUT the final bf16 narrowing.
+    let f32out = kernel.ends_with("f32out");
+    let elem_bytes = if f32out { 4 } else { 2 };
+
     let a_ptr = upload_bytes(gpu, &u16s_to_le(&a_bf16))?;
     let b_ptr = upload_bytes(gpu, &u16s_to_le(&b_bf16))?;
-    let c_ptr = gpu.alloc(m * n * 2)?;
+    let c_ptr = gpu.alloc(m * n * elem_bytes)?;
     let ptrs = [a_ptr, b_ptr, c_ptr];
 
     launch(
         gpu, &kernel, ptrs, m as u32, n as u32, k as u32, stream, true,
     )?;
-    let mut c_raw = vec![0u8; m * n * 2];
+    let mut c_raw = vec![0u8; m * n * elem_bytes];
     gpu.copy_d2h(c_ptr, &mut c_raw)?;
-    let c_gpu: Vec<u16> = c_raw
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
+    let c_gpu_f32: Vec<f32> = if f32out {
+        c_raw
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    } else {
+        c_raw
+            .chunks_exact(2)
+            .map(|c| bf16_bits_to_f32(u16::from_le_bytes([c[0], c[1]])))
+            .collect()
+    };
 
     // ── CPU reference ──
-    let c_cpu = cpu_reference(&a_bf16, &b_bf16, m, n, k);
+    let c_cpu = cpu_reference(&a_bf16, &b_bf16, m, n, k, !f32out);
 
     // ── compare (cosine + relative error in f32 space) ──
     let (mut dot, mut ng, mut nc, mut max_rel, mut sum_rel) = (0f64, 0f64, 0f64, 0f64, 0f64);
     for i in 0..m * n {
-        let g = bf16_bits_to_f32(c_gpu[i]) as f64;
-        let c = bf16_bits_to_f32(c_cpu[i]) as f64;
+        let g = c_gpu_f32[i] as f64;
+        let c = c_cpu[i] as f64;
         dot += g * c;
         ng += g * g;
         nc += c * c;

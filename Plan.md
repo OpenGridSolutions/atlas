@@ -867,6 +867,53 @@ other dense_gemm_tc users (MLA/v4 paths — DeepSeek-class models,
 g_proj head gates N=32) are out of scope until measured.
 Acceptance: unchanged from G.2 (a/b/c).
 
+## Phase H — target-mark round: <2 s large image, <5 s 3-doc rerank
+(2026-07-13, user approved all named levers)
+
+Post-G.3 budget for the large image (2204 merged / 8856 raw patches):
+embed 6.9 s ≈ ViT 5.6 s (score-GEMM ~3.3 s naive f32out family +
+softmax ~0.8 s memory traffic + GEMM2 ~0.4 s underutilized + linear
+~0.5 s) + LM ~1.3 s. Rerank 14 s = serial sum of 3 encodes.
+
+### H.1 — pipelined f32out score GEMM (ViT GEMM1)
+`dense_gemm_bf16_pipelined_f32out`: twin of the pipelined kernel with a
+float* C epilogue (the ViT softmax wants f32 raw scores; file style is
+explicit twins, cf. dense_gemm_bf16_f32out). K=head_dim=72 is 8-aligned
+→ cp.async fast path valid; grid seq/128 × seq/128 utilizes the GPU
+(vs 70 CTAs for GEMM2). Wire: vision encoder prefers it for GEMM1,
+naive f32out stays fallback. Expected: GEMM1 3.3 s → ~0.2 s.
+Acceptance: microtest arm (f32 readback) cosine vs CPU-f32 reference.
+
+### H.2 — cuBLASLt for BF16 dense prefill GEMMs
+`ops::cublas_bf16_proj` exists ("3× the hand-written mma.sync on GB10")
+but is only plumbed for FP8-weight structs. Investigate + extend to
+DenseWeight (QKV cache-skip fallback, FFN bf16w, o_proj); keep behind
+the existing `cublas_gemm_enabled()` gate semantics. Expected: LM
+~1.3 s → ~0.5 s on the 2207-token doc. Only if the plumbing stays
+contained — the pipelined kernel is already within 2-3× of it.
+
+### H.3 — fused ViT SDPA (option 3): online-softmax, no [seq,seq]
+materialization. New kernel `vit_sdpa_fused` (non-causal, head_dim 72,
+bf16 in / bf16 out, f32 online max/sum accumulators, K-tiling): one CTA
+per (query-tile, head), loops key tiles, rescales output accumulator —
+flash-attention structure. Replaces GEMM1+softmax+GEMM2+scatter per
+head; kills the 0.8 s softmax bandwidth + 0.4 s GEMM2 underutilization.
+Dispatch order: fused > GEMM-SDPA > legacy, each gated on handle
+presence + env overrides (ATLAS_VISION_ATTN_GEMM=1 forces GEMM path,
+ATLAS_VISION_ATTN_LEGACY=1 forces legacy). Expected ViT → ~1 s.
+Acceptance: dedicated microtest vs the legacy warp-per-query kernel on
+random QKV at several seq (incl. odd sizes + seq>1024): cosine >
+0.9999, max-abs-diff at bf16 rounding level; then end-to-end embedding
+equivalence as in G.2(b).
+
+### H.4 — 2a doc batching: DEFERRED until H.1-H.3 are measured. If
+serial 3-doc lands <5 s (plausible: 2×(ViT~1+LM~0.5)+small ≈ 3.5 s),
+skip; else scheduler co-prefill (--max-batch-size>1) or handler-level
+multi-image vision pass, with the mixed-order index test.
+
+### H.5 — 2c category pixel budget: RESERVE only (quality gate:
+formula query still ranks test3.png #1), if H.1-H.4 miss the marks.
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |
