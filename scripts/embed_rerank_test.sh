@@ -12,8 +12,12 @@
 #   E1  embedding is 4096-dim, unit-norm
 #   E2  self-similarity == 1 (deterministic), related > unrelated
 #   E3  dimensions=64 Matryoshka truncation, unit-norm
+#   E4  multipart form field embeds identically to the JSON path (Phase U)
 #   R1  rerank orders an obvious (query, docs) set correctly, scores in [0,1]
+#   R2  multipart `documents` fields rank identically to R1 (Phase U)
 #   S1  chat model still answers after the swaps (lazy multi-model intact)
+# Image-file multipart (the actual Phase U point) needs the VL embed/rerank
+# models resident — covered by the laptop endpoint-matrix test instead.
 #
 # NOTE: server responses are written to a temp FILE and read by python via
 # json.load(open(path)). We deliberately do NOT pass the body as argv (multi-
@@ -76,6 +80,22 @@ n = math.sqrt(sum(x*x for x in v))
 assert abs(n - 1.0) < 1e-3, f"norm {n}"
 EOF
 
+echo "== E4: multipart == JSON (Phase U) =="
+embed '"the multipart bridge test sentence"' ''
+cp "$RESP" "${RESP}.json"
+curl -sS "$BASE/v1/embeddings" \
+  -F "model=$EMBED_MODEL" \
+  -F "input=the multipart bridge test sentence" > "$RESP"
+python3 - <<'EOF' && ok "E4 multipart == JSON" || bad "E4"
+import os, json
+a = json.load(open(os.environ["RESP"] + ".json"))["data"][0]["embedding"]
+b = json.load(open(os.environ["RESP"]))["data"][0]["embedding"]
+sim = sum(x*y for x, y in zip(a, b))
+print(f"  cosine(json, multipart) = {sim:.6f}")
+assert sim > 0.9999, "multipart field must take the identical encode path"
+EOF
+rm -f "${RESP}.json"
+
 echo "== R1: rerank ordering =="
 curl -sS "$BASE/v1/rerank" -H 'Content-Type: application/json' -d "{
   \"model\":\"$RERANK_MODEL\",
@@ -93,6 +113,21 @@ print("  " + ", ".join(f"idx{r['index']}={r['relevance_score']:.4f}" for r in rs
 assert all(0.0 <= r["relevance_score"] <= 1.0 for r in rs), "scores out of [0,1]"
 assert rs[0]["index"] == 1, "Paris document must rank first"
 assert rs[0]["relevance_score"] > rs[-1]["relevance_score"], "no separation"
+EOF
+
+echo "== R2: multipart rerank == R1 (Phase U) =="
+curl -sS "$BASE/v1/rerank" \
+  -F "model=$RERANK_MODEL" \
+  -F "query=What is the capital of France?" \
+  -F "documents=Sourdough bread needs a mature starter and long fermentation." \
+  -F "documents=Paris is the capital and largest city of France." \
+  -F "documents=Berlin is the capital of Germany." > "$RESP"
+python3 - <<'EOF' && ok "R2 multipart rerank" || bad "R2"
+import os, json
+d = json.load(open(os.environ["RESP"]))
+rs = d["results"]
+print("  " + ", ".join(f"idx{r['index']}={r['relevance_score']:.4f}" for r in rs))
+assert rs[0]["index"] == 1, "Paris document must rank first via multipart too"
 EOF
 
 echo "== S1: chat model still serves after swaps =="

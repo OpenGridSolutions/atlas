@@ -2314,6 +2314,7 @@ dependencies = [
  "atlas-core",
  "atlas-kernels",
  "axum",
+ "base64 0.22.1",
  "clap",
  "futures",
  "lazy_static",

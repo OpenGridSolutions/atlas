@@ -731,6 +731,51 @@ side-capped large images INCREASE by design.
 | dequant transients spike arena/UMA during load | free FP8 source + BF16 transient per expert (MiniMax pattern), stream-serial |
 | ig1 snapshot/registry leftovers confuse ops | explicit compose/serve.sh swap + optional snapshot delete, boot log shows the new id under [generative] |
 
+## Phase U — multipart file upload on /v1/embeddings + /v1/rerank (2026-07-13)
+
+**Motivation.** The user's laptop smoke test posts images the same way it
+posts audio to whisper — `curl -F file=@img.png` — and gets 415: both
+handlers use axum's `Json` extractor, which rejects `multipart/form-data`
+before the handler runs. The image capability itself already exists
+(multiclass 2.3): JSON items carry `image` as a base64 data URI through
+`multimodal_input::encode_item`. Phase U adds the multipart CONTAINER
+only; nothing about encoding, category enforcement, or scheduling changes.
+
+### U.1 Design
+- **Content-Type dispatch, same route.** `embeddings()` / `rerank()`
+  take `axum::extract::Request`; `multipart/form-data` → new multipart
+  parser, everything else → `Json` parse as before (same error texts).
+  Both paths produce the SAME request struct and feed one shared core —
+  behavior of existing JSON clients is untouched.
+- **Field mapping (matches the whisper convention + the user's test):**
+  - `/v1/embeddings`: `model`; `file` (repeatable, one image item per
+    file); `input`/`text` (repeatable, one text item per field);
+    `instruction`; `dimensions`; `encoding_format`.
+  - `/v1/rerank`: `model`; `query`; `documents` (repeatable — a FILE
+    part (has filename) becomes an image document, a plain text part a
+    text document; order preserved, mixing allowed); `instruction`;
+    `top_n`; `return_documents`.
+- **File bytes → data URI** (`data:image/*;base64,` + STANDARD base64)
+  and then the EXISTING pipeline (`MultimodalItem::Object{image}` →
+  `encode_item` → magic-byte format sniff). No second decode path.
+- **"Only for VL models" guard is already in place**: `encode_item`
+  400s with "image input requires a vision-language model" when the
+  active model has no vision_config; multipart adds no bypass. Text-only
+  multipart on text models works too (harmless bonus).
+- Body limit: the router-wide `DefaultBodyLimit` (32 MB default,
+  `ATLAS_MAX_BODY_BYTES`) already covers multipart bodies.
+
+### U.2 Tests
+- Unit (synthetic multipart bodies): embeddings model+2 files+text →
+  3 items in order; missing `model` → 400; bad `dimensions` → 400;
+  rerank mixed text/file documents keep positions; `top_n`/
+  `return_documents` parsed; JSON path still parses (dispatch check).
+- On-box (`scripts/embed_rerank_test.sh` extended): E4 multipart text
+  embedding == JSON embedding for the same string (cosine ≈ 1); R2
+  multipart text rerank same ordering as R1. VL image cases run from
+  the user's laptop matrix (Qwen3-VL-Embedding/Reranker are not in the
+  box's default preseed).
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |

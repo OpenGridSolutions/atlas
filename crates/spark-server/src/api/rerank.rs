@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Json, State};
+use axum::extract::{FromRequest, Json, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use axum::response::IntoResponse;
@@ -58,10 +58,38 @@ fn single_token_id(rt: &crate::main_modules::app_state::ModelRuntime, word: &str
     }
 }
 
+/// Content-Type dispatch (Plan.md Phase U): JSON body as before, or
+/// `multipart/form-data` where each `documents` file part is an image
+/// document and each plain `documents` part a text document. Both
+/// paths build the same [`RerankRequest`] and share one core.
 pub async fn rerank(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<RerankRequest>,
+    request: axum::extract::Request,
 ) -> Response {
+    let req = if super::multimodal_input::is_multipart(&request) {
+        let multipart = match axum::extract::Multipart::from_request(request, &()).await {
+            Ok(mp) => mp,
+            Err(e) => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("multipart parse error: {e}"),
+                );
+            }
+        };
+        match super::multimodal_input::rerank_from_multipart(multipart).await {
+            Ok(r) => r,
+            Err((status, msg)) => return openai_error_response(status, msg),
+        }
+    } else {
+        match Json::<RerankRequest>::from_request(request, &()).await {
+            Ok(Json(r)) => r,
+            Err(e) => return openai_error_response(e.status(), e.body_text()),
+        }
+    };
+    rerank_core(state, req).await
+}
+
+async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
     if req.documents.is_empty() {
         return openai_error_response(StatusCode::BAD_REQUEST, "documents must not be empty".into());
     }

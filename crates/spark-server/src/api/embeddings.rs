@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Json, State};
+use axum::extract::{FromRequest, Json, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use axum::response::Response;
@@ -49,10 +49,38 @@ pub(crate) fn normalize(mut v: Vec<f32>, dimensions: Option<usize>) -> Option<Ve
     Some(v)
 }
 
+/// Content-Type dispatch (Plan.md Phase U): JSON body as before, or
+/// `multipart/form-data` with `file` fields carrying image inputs the
+/// same way audio goes to /v1/audio/transcriptions. Both paths build
+/// the same [`EmbeddingsRequest`] and share one core.
 pub async fn embeddings(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<EmbeddingsRequest>,
+    request: axum::extract::Request,
 ) -> Response {
+    let req = if super::multimodal_input::is_multipart(&request) {
+        let multipart = match axum::extract::Multipart::from_request(request, &()).await {
+            Ok(mp) => mp,
+            Err(e) => {
+                return openai_error_response(
+                    StatusCode::BAD_REQUEST,
+                    format!("multipart parse error: {e}"),
+                );
+            }
+        };
+        match super::multimodal_input::embeddings_from_multipart(multipart).await {
+            Ok(r) => r,
+            Err((status, msg)) => return openai_error_response(status, msg),
+        }
+    } else {
+        match Json::<EmbeddingsRequest>::from_request(request, &()).await {
+            Ok(Json(r)) => r,
+            Err(e) => return openai_error_response(e.status(), e.body_text()),
+        }
+    };
+    embeddings_core(state, req).await
+}
+
+async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Response {
     if let Some(fmt) = req.encoding_format.as_deref()
         && fmt != "float"
     {
