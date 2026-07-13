@@ -914,6 +914,52 @@ multi-image vision pass, with the mixed-order index test.
 ### H.5 — 2c category pixel budget: RESERVE only (quality gate:
 formula query still ranks test3.png #1), if H.1-H.4 miss the marks.
 
+## Phase M — KV-budget meminfo fix (2026-07-13, the Phase-S follow-up)
+
+**Bug (diagnosed 2026-07-13 10:51, user log).** `free_memory()` maxes
+cudaMemGetInfo with MemAvailable but NOT SwapFree, so after uptime/churn
+the auto-baseline books ~70 GB of reclaimable memory as "Atlas-own"
+(95.9 GB vs real ~27 GB) → KV budget 9.2 GB → TranslateGemma at
+--max-seq-len 104416 needs 14.6 GB → "KV cache can hold at most 0
+concurrent sequences", hot-swap load fails. H.2/H.3 story repeated at
+the measurement layer: the correct reader (meminfo.rs, Phase S rule
+MemAvailable+SwapFree with the HugePages case) exists but is display-
+only.
+
+**Fix.**
+1. `cuda_backend::system_available_memory_bytes()` → `meminfo::read()
+   .available_for_alloc`. One choke point: fixes `free_memory()`
+   (budget baseline + free-now + physical clamp all flow through it)
+   AND the OOM watchdog's `cuda_free_memory_bytes` consistently.
+2. Budget arithmetic extracted from `factory/build.rs` into a PURE
+   `factory::kv_budget::compute()` (no GPU) so the failure is unit-
+   replayable; build.rs keeps identical log lines from the result.
+3. Overcommit guard unchanged: total×util ceiling stays the primary
+   bound, `ATLAS_KV_EXTERNAL_RESERVE_GB` stays the manual co-tenant
+   reserve, `--kv-pool-gb` still pins.
+
+**Validation (user-requested test-case design, incl. KV-cache dtypes):**
+- Layer 1a (unit, kv_budget.rs): failure replay with the EXACT log
+  numbers (total 119.7 / baseline 116.5 / free-now 20.6 / util 0.90 /
+  reserve 2.6 → 9.2 GB) and fix replay (free-now 91 → Atlas-own 25.5,
+  budget ~79.6 GB ≥ 14.6 GB needed); implausible-baseline fallback;
+  manual-reserve precedence; --kv-pool-gb clamp.
+- Layer 1b (unit, kv_cache dtype matrix): `compute_num_blocks` against
+  KvCacheConfig for uniform Bf16 / Fp8 / Nvfp4, the production
+  selective-boundary mix (6×bf16 + rest nvfp4, the TranslateGemma /
+  qwen3 pattern), an asym K/V dtype (Bf16KTurbo3V), and per-layer dims
+  (Gemma sliding-vs-full): blocks = budget / block_bytes_kv_all_layers
+  exactly, no dtype overcommits (blocks×bytes ≤ budget < blocks+1),
+  mixed = Σ per-layer identity, ordering nvfp4 > fp8 > bf16.
+- Layer 2 (on-box, scripts/kv_budget_fix_test.sh): K1 stats-scale proof
+  (kv_budget_last.free_now_seen_gb ≥ proc_meminfo_available_gb − ε);
+  K2 induced-pressure repro (page-cache flood + translate hot-swap at
+  max-seq-len 104416 → 200, Atlas-own < 40 GB); K3 5-category churn
+  then K2 again (no drift); K4 overcommit guard (weights + KV ≤
+  total×util) + endpoint regressions.
+- Layer 3 (user, long-run): "KV budget self-relative" log line stays
+  ~weight-sized across days of uptime.
+
 ## 6. Risk register
 
 | Risk | Phase | Mitigation |

@@ -386,17 +386,20 @@ pub fn cuda_free_memory_bytes() -> Option<usize> {
     Some(free)
 }
 
-/// Read MemAvailable from /proc/meminfo (Linux only).
-/// Returns None on non-Linux or if parsing fails.
+/// System-allocatable memory under the Phase-S rule (Plan.md Phase M):
+/// `MemAvailable + SwapFree`, or `HugePages_Free × Hugepagesize` when
+/// HugePages are configured. Returns None on non-Linux or parse failure.
+///
+/// Single choke point for the meminfo correction: both `free_memory()`
+/// (KV-budget baseline, free-now AND the physical clamp) and the OOM
+/// watchdog's `cuda_free_memory_bytes` flow through it. MemAvailable
+/// alone still under-reports on DGX Spark after uptime — swap-backed
+/// pages are reclaimable for new allocations but counted nowhere else;
+/// missing them inflated the auto-baseline "Atlas-own" to ~96 GB
+/// (real: ~27 GB) and starved the KV pool to 9.2 GB ("KV cache can
+/// hold at most 0 concurrent sequences", user log 2026-07-13 10:51).
 fn system_available_memory_bytes() -> Option<usize> {
-    let contents = std::fs::read_to_string("/proc/meminfo").ok()?;
-    for line in contents.lines() {
-        if line.starts_with("MemAvailable:") {
-            let kb: usize = line.split_whitespace().nth(1)?.parse().ok()?;
-            return Some(kb * 1024);
-        }
-    }
-    None
+    Some(crate::meminfo::read()?.available_for_alloc)
 }
 
 /// Start a background OOM watchdog that polls GPU memory every `interval`.

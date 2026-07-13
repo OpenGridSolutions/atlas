@@ -413,3 +413,114 @@ fn alloc_after_free_round_trip_returns_same_block_lifo() {
     cache.free_block(b3);
     cache.free_block(recycled);
 }
+
+// ── Phase M (Plan.md): KV-budget → block-count derivation per cache dtype ──
+// The meminfo fix changes the BUDGET input; these tests pin down that the
+// budget→blocks step stays exact for every cache type in use: uniform
+// bf16/fp8/nvfp4, the production selective-boundary mix (6×bf16 + rest
+// nvfp4 — the TranslateGemma/qwen3 pattern), asymmetric K/V dtypes, and
+// heterogeneous per-layer dims (Gemma sliding vs full).
+
+fn phase_m_config(dtype: KvCacheDtype, layer_dtypes: Vec<KvCacheDtype>) -> KvCacheConfig {
+    KvCacheConfig {
+        block_size: 16,
+        num_kv_heads: 8,
+        head_dim: 128,
+        num_layers: 48,
+        dtype,
+        layer_dtypes,
+        layer_dims: vec![],
+        cache_blocks_per_seq: None,
+    }
+}
+
+#[test]
+fn phase_m_blocks_are_exact_and_never_overcommit_per_dtype() {
+    let budget = 8usize * 1024 * 1024 * 1024; // 8 GiB
+    let mut counts = std::collections::HashMap::new();
+    for dtype in [KvCacheDtype::Bf16, KvCacheDtype::Fp8, KvCacheDtype::Nvfp4] {
+        let cfg = phase_m_config(dtype, vec![]);
+        let bytes = cfg.block_bytes_kv_all_layers();
+        let n = PagedKvCache::compute_num_blocks(&cfg, budget).unwrap();
+        assert_eq!(n, budget / bytes, "{dtype:?}: floor division exactly");
+        assert!(n * bytes <= budget, "{dtype:?}: pool must fit the budget");
+        assert!((n + 1) * bytes > budget, "{dtype:?}: pool must be maximal");
+        counts.insert(format!("{dtype:?}"), n);
+    }
+    // Cheaper dtypes buy strictly more blocks from the same budget.
+    assert!(counts["Nvfp4"] > counts["Fp8"], "{counts:?}");
+    assert!(counts["Fp8"] > counts["Bf16"], "{counts:?}");
+    // Exact BYTE ratios (block counts floor-divide, so assert on bytes):
+    // fp8 = bf16/2; nvfp4 = 0.5 data + 1/16 scale bytes/elem = 9/32 of bf16.
+    let bf16_bytes = phase_m_config(KvCacheDtype::Bf16, vec![]).block_bytes_kv_all_layers();
+    let fp8_bytes = phase_m_config(KvCacheDtype::Fp8, vec![]).block_bytes_kv_all_layers();
+    let nvfp4_bytes = phase_m_config(KvCacheDtype::Nvfp4, vec![]).block_bytes_kv_all_layers();
+    assert_eq!(fp8_bytes * 2, bf16_bytes);
+    assert_eq!(nvfp4_bytes * 32, bf16_bytes * 9, "nvfp4 = 9/32 of bf16 (0.5625/2)");
+}
+
+#[test]
+fn phase_m_selective_boundary_mix_is_layer_sum() {
+    // Production pattern from the failing TranslateGemma load: 6 boundary
+    // layers at bf16, the remaining 42 at nvfp4 ("Selective boundary KV
+    // cache: 6/48 attention layers at bf16, rest at nvfp4").
+    let mut layer_dtypes = vec![KvCacheDtype::Nvfp4; 48];
+    for slot in layer_dtypes.iter_mut().take(3) {
+        *slot = KvCacheDtype::Bf16;
+    }
+    for slot in layer_dtypes.iter_mut().skip(45) {
+        *slot = KvCacheDtype::Bf16;
+    }
+    let mixed = phase_m_config(KvCacheDtype::Nvfp4, layer_dtypes);
+    let uniform_bf16 = phase_m_config(KvCacheDtype::Bf16, vec![]);
+    let uniform_nvfp4 = phase_m_config(KvCacheDtype::Nvfp4, vec![]);
+
+    // Identity: mixed total == Σ per-layer (K+V) bytes.
+    let per_layer_sum: usize = (0..48)
+        .map(|i| mixed.k_block_bytes_for_layer(i) + mixed.v_block_bytes_for_layer(i))
+        .sum();
+    assert_eq!(mixed.block_bytes_kv_all_layers(), per_layer_sum);
+    // And equals 6 bf16-layers + 42 nvfp4-layers exactly.
+    let bf16_layer = uniform_bf16.block_bytes_kv_all_layers() / 48;
+    let nvfp4_layer = uniform_nvfp4.block_bytes_kv_all_layers() / 48;
+    assert_eq!(mixed.block_bytes_kv_all_layers(), 6 * bf16_layer + 42 * nvfp4_layer);
+
+    // Same budget buys a block count strictly between the uniform extremes.
+    let budget = 8usize * 1024 * 1024 * 1024;
+    let n_mixed = PagedKvCache::compute_num_blocks(&mixed, budget).unwrap();
+    let n_bf16 = PagedKvCache::compute_num_blocks(&uniform_bf16, budget).unwrap();
+    let n_nvfp4 = PagedKvCache::compute_num_blocks(&uniform_nvfp4, budget).unwrap();
+    assert!(n_bf16 < n_mixed && n_mixed < n_nvfp4, "{n_bf16} {n_mixed} {n_nvfp4}");
+    assert!(n_mixed * mixed.block_bytes_kv_all_layers() <= budget);
+}
+
+#[test]
+fn phase_m_asymmetric_kv_dtype_sums_both_sides() {
+    // Bf16KTurbo3V: K at 2 B/elem, V at 3-bit + per-group scale.
+    let cfg = phase_m_config(KvCacheDtype::Bf16KTurbo3V, vec![]);
+    let k = cfg.k_block_bytes_for_layer(0);
+    let v = cfg.v_block_bytes_for_layer(0);
+    assert!(k != v, "asym dtype must produce different K/V sizes");
+    assert_eq!(cfg.block_bytes_kv_all_layers(), 48 * (k + v));
+    let budget = 4usize * 1024 * 1024 * 1024;
+    let n = PagedKvCache::compute_num_blocks(&cfg, budget).unwrap();
+    assert!(n * cfg.block_bytes_kv_all_layers() <= budget);
+    assert!((n + 1) * cfg.block_bytes_kv_all_layers() > budget);
+}
+
+#[test]
+fn phase_m_heterogeneous_layer_dims_use_per_layer_geometry() {
+    // Gemma-4 pattern: sliding layers 16×256, full layers 4×512 — the
+    // budget derivation must price each layer at ITS geometry.
+    let mut cfg = phase_m_config(KvCacheDtype::Bf16, vec![]);
+    cfg.num_layers = 4;
+    cfg.layer_dims = vec![(16, 256), (4, 512), (16, 256), (4, 512)];
+    // (child test module: private `block_bytes_dims` is accessible)
+    let sliding = cfg.block_bytes_dims(KvCacheDtype::Bf16, 16, 256);
+    let full = cfg.block_bytes_dims(KvCacheDtype::Bf16, 4, 512);
+    assert_eq!(
+        cfg.block_bytes_kv_all_layers(),
+        2 * (2 * sliding) + 2 * (2 * full),
+        "2 sliding + 2 full layers, K+V each"
+    );
+}

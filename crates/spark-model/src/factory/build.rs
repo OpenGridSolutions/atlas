@@ -293,61 +293,64 @@ pub fn build_model(
         .ok()
         .and_then(|v| v.parse::<f64>().ok())
         .filter(|&gb| gb > 0.0);
-    if let Some(gb) = manual_reserve_gb {
-        let ext = (gb * 1024.0 * 1024.0 * 1024.0) as usize;
-        let discounted = used_so_far.saturating_sub(ext);
-        tracing::info!(
-            "ATLAS_KV_EXTERNAL_RESERVE_GB={gb} (manual override): discounting \
-             external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
-             Atlas-own {:.1} GB",
-            gib(used_so_far),
-            gib(discounted),
-        );
-        used_so_far = discounted;
-    } else if let Some(baseline) = spark_runtime::gpu::baseline_free_bytes() {
-        // AUTO: bytes this process consumed since context init.
-        let atlas_own = baseline.saturating_sub(actual_free);
-        // Sanity-gate: baseline must be ≥ free-now, atlas_own positive and no
-        // larger than total used (co-tenants can't be negative). If a co-tenant
-        // *freed* memory during our load, baseline > free-now still holds and
-        // atlas_own just slightly overcounts (conservative — fine). If the
-        // numbers are implausible, fall back to raw used_so_far.
-        if atlas_own > 0 && atlas_own <= used_so_far {
+    // Phase M: the arithmetic lives in the PURE `kv_budget::compute` so the
+    // 2026-07-13 TranslateGemma failure is unit-replayable; this block only
+    // gathers inputs and logs from the result. Semantics unchanged.
+    let budget_inputs = super::kv_budget::BudgetInputs {
+        total_mem,
+        actual_free,
+        baseline_free: spark_runtime::gpu::baseline_free_bytes(),
+        manual_external_reserve: manual_reserve_gb
+            .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as usize),
+        gpu_memory_utilization,
+        inference_reserve,
+        kv_pool_override: kv_pool_bytes_override,
+    };
+    let budget = super::kv_budget::compute(&budget_inputs);
+    match budget.source {
+        super::kv_budget::UsedSource::Manual => {
+            tracing::info!(
+                "ATLAS_KV_EXTERNAL_RESERVE_GB={} (manual override): discounting \
+                 external/co-tenant memory from KV budget — used_so_far {:.1} GB → \
+                 Atlas-own {:.1} GB",
+                manual_reserve_gb.unwrap_or(0.0),
+                gib(used_so_far),
+                gib(budget.used_so_far),
+            );
+        }
+        super::kv_budget::UsedSource::AutoBaseline => {
             tracing::info!(
                 "KV budget self-relative (auto): baseline-free {:.1} GB − free-now \
                  {:.1} GB = Atlas-own {:.1} GB; co-tenants {:.1} GB excluded \
                  (set ATLAS_KV_EXTERNAL_RESERVE_GB to override)",
-                gib(baseline),
+                gib(budget_inputs.baseline_free.unwrap_or(0)),
                 gib(actual_free),
-                gib(atlas_own),
-                gib(used_so_far - atlas_own),
+                gib(budget.used_so_far),
+                gib(budget.cotenants),
             );
-            used_so_far = atlas_own;
-        } else {
+        }
+        super::kv_budget::UsedSource::AutoImplausible => {
             tracing::warn!(
                 "KV budget auto-measure implausible (baseline {:.1} GB, free-now \
                  {:.1} GB, used {:.1} GB) — using raw used_so_far",
-                gib(baseline),
+                gib(budget_inputs.baseline_free.unwrap_or(0)),
                 gib(actual_free),
-                gib(used_so_far),
+                gib(budget.used_so_far),
             );
         }
+        super::kv_budget::UsedSource::Raw => {}
     }
-    let total_budget = (total_mem as f64 * gpu_memory_utilization) as usize;
-    let kv_budget = if let Some(pinned) = kv_pool_bytes_override {
+    if let Some(pinned) = kv_pool_bytes_override {
         // --kv-pool-gb: deterministic KV sizing for hot-swap reloads, where
         // the free-memory measurement's boot-time baseline is stale.
         tracing::info!(
             "KV budget pinned to {:.2} GB (--kv-pool-gb; free-memory measurement skipped)",
             gib(pinned)
         );
-        pinned.min(actual_free.saturating_sub(inference_reserve))
-    } else {
-        total_budget
-            .saturating_sub(used_so_far)
-            .saturating_sub(inference_reserve)
-            .min(actual_free.saturating_sub(inference_reserve))
-    };
+    }
+    used_so_far = budget.used_so_far;
+    let total_budget = budget.total_budget;
+    let kv_budget = budget.kv_budget;
     // /v1/stats diagnosis (Plan.md Phase S): record the flawed free-now
     // this budget was computed from — the follow-up /proc/meminfo fix is
     // verified against exactly this pair.
