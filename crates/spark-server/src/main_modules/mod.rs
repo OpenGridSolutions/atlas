@@ -3,6 +3,7 @@
 //! Sub-modules of `main.rs`, factored out to keep the binary entry-point file ≤500 LoC.
 
 pub(crate) mod app_state;
+pub(crate) mod heartbeat;
 pub(crate) mod hotswap;
 pub(crate) mod kv_dtypes;
 pub(crate) mod middleware;

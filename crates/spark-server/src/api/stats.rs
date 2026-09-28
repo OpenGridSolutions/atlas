@@ -73,6 +73,20 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Response {
                 "kv_budget_gb": gb(budget),
             }),
         ),
+        // Todo.md 0.5: the gate decision behind that budget — which
+        // used_so_far source won (raw/manual/auto_baseline/
+        // auto_implausible), the baseline it compared against, and the
+        // co-tenant share it excluded. The test bench asserts the
+        // 0.1–0.4 memory fixes against these fields.
+        "kv_budget_decision": spark_runtime::kv_stats::budget_decision().map(
+            |d| serde_json::json!({
+                "source": d.source,
+                "used_so_far_gb": gb(d.used_so_far),
+                "total_budget_gb": gb(d.total_budget),
+                "baseline_free_gb": (d.baseline_free > 0).then(|| gb(d.baseline_free)),
+                "cotenants_gb": gb(d.cotenants),
+            }),
+        ),
     });
 
     // ── Per-model residency ──

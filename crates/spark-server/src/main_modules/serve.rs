@@ -680,6 +680,11 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ))
     });
 
+    // Memory heartbeat (Todo.md 1.3): one INFO line per minute on target
+    // `mem`; threshold breaches WARN into critical.log (A1/A2/A8 early
+    // warning).
+    let _mem_heartbeat = crate::main_modules::heartbeat::spawn(hotswap_ctx.clone());
+
     // Model reloader for hot-swap load: runs on the scheduler thread while
     // parked (state NoModel, CUDA context bound). `None` reloads the model
     // that occupied the arena; `Some(id)` swaps to a DIFFERENT model (Task 6

@@ -355,6 +355,20 @@ pub fn build_model(
     // this budget was computed from — the follow-up /proc/meminfo fix is
     // verified against exactly this pair.
     spark_runtime::kv_stats::publish_budget_inputs(actual_free, kv_budget);
+    // Todo.md 0.5: expose the gate decision itself on /v1/stats so the
+    // test bench can assert the 0.1–0.4 fixes from outside.
+    spark_runtime::kv_stats::publish_budget_decision(
+        used_so_far,
+        total_budget,
+        budget_inputs.baseline_free,
+        budget.cotenants,
+        match budget.source {
+            super::kv_budget::UsedSource::Raw => 1,
+            super::kv_budget::UsedSource::Manual => 2,
+            super::kv_budget::UsedSource::AutoBaseline => 3,
+            super::kv_budget::UsedSource::AutoImplausible => 4,
+        },
+    );
     // Phase 6.1.f: when HBM-shrink is active, size the production cache to
     // `max_batch_size × cache_blocks_per_seq` rather than the unbounded
     // budget-driven sum. This is the *whole point* of the HBM-shrink

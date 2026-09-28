@@ -469,6 +469,13 @@ pub fn spawn_oom_watchdog(
                             "OOM watchdog: 3 consecutive readings below threshold. \
                              Terminating to prevent system freeze."
                         );
+                        // Crash forensics (Todo.md 1.6): leave the last
+                        // memory state in logs/crash-<ts>.log — after
+                        // exit(1) this file is the only diagnosis trail.
+                        crate::crash::write_crash_snapshot(
+                            "oom_watchdog",
+                            &format!("free {} MB < threshold {} MB (3x)", free_mb, threshold_mb),
+                        );
                         // Flush logs before exit
                         std::process::exit(1);
                     }

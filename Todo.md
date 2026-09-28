@@ -55,9 +55,12 @@ NVMe-/zram-Swap vergrößert den Reclaim-Puffer, den die Budget-Formel mitzählt
       geschriebenen Payloads) und loggt `load_fail_cleanup` (Target `hotswap`).
       Empirische Bestätigung auf dem Spark: R5-Drift-Check in
       `scripts/hotswap_release_test.sh`.
-- [ ] **0.5 `/v1/stats` um die Gate-Entscheidung erweitern:** `UsedSource`
-      (Raw/Manual/AutoBaseline/AutoImplausible), Baseline, atlas_own, cotenants als
-      Felder exportieren, damit 0.1–0.4 von außen (Test-Bench, Phase 2) prüfbar sind.
+- [x] **0.5 `/v1/stats` um die Gate-Entscheidung erweitert.** *(umgesetzt 2026-09-28)*
+      Neues Feld `memory.kv_budget_decision`: `source` (raw/manual/auto_baseline/
+      auto_implausible), `used_so_far_gb`, `total_budget_gb`, `baseline_free_gb`,
+      `cotenants_gb` — publiziert aus `factory::build` über
+      `kv_stats::publish_budget_decision`. Damit sind 0.1–0.4 von außen prüfbar
+      (Test-Bench-Assertion: `source == "auto_baseline"` nach einem Hot-Swap).
 - [x] **0.6 Decode-Zeit-Guard gegen Pool-Erschöpfung (Fall A6).** *(umgesetzt +
       live getestet 2026-09-28)*
       Vor jedem Decode-Schritt gilt jetzt die Invariante `free_blocks ≥ active`
@@ -178,12 +181,13 @@ Vorhanden: `tracing` mit `RUST_LOG` (main.rs, nur stdout), `/v1/stats`, `/metric
 `memdebug.rs` (deckt Kategorie C bereits ab). Ziel: wenn etwas schiefgeht, steht die
 Ursache in einer Datei — kein Dashboard, kein externer Stack.
 
-- [ ] **1.1 Datei-Appender neben stdout:** `tracing-appender` mit täglicher Rotation
-      nach `logs/` (ersetzt das ad-hoc `logs/serve-<ts>.log`-Tee). Zwei Sinks:
-      `logs/atlas.log` (alles ab INFO, JSON-Lines) und `logs/critical.log`
-      (nur WARN+ERROR der Targets `mem`, `kv_budget`, `hotswap`, `cuda_err`,
-      `memdebug`, `proc` — unabhängig vom globalen `RUST_LOG`-Filter).
-      Retention per Rotation begrenzen (z. B. 14 Tage).
+- [x] **1.1 Datei-Sinks neben stdout.** *(umgesetzt 2026-09-28, ohne neue
+      Dependencies)* Zwei per-Prozess-Dateien unter `ATLAS_LOG_DIR` (Default
+      `logs/`): `atlas-<ts>.log` (RUST_LOG-Filter, Default INFO+) und
+      `critical-<ts>.log` (**alle** WARN+ERROR jedes Targets — die eine Datei,
+      in die man schaut, wenn etwas schiefging). `ATLAS_FILE_LOG=0` schaltet ab.
+      Rotation = pro Serverstart (wie das bisherige `logs/serve-<ts>.log`-Muster);
+      Retention/Pruning noch offen (Cron o. ä.).
 - [ ] **1.2 Katalog-Abdeckung herstellen:** jedes Ereignis aus dem Katalog bekommt ein
       strukturiertes Event auf seinem Target mit den Zahlen, die man zur Diagnose
       braucht (A: meminfo+cuda-Snapshot; B: freed/failed/Bytes/Dauer; D: Kernel-Name,
@@ -192,11 +196,13 @@ Ursache in einer Datei — kein Dashboard, kein externer Stack.
       `hotswap`): freed/failed, KV-Pool-Belegung vor Teardown, Arena-Payload,
       meminfo+cuda vor/nach, `reclaimed_gib` — zusätzlich als `released`-Block in
       der `/admin/models/unload`-Antwort für externe Assertions.
-- [ ] **1.3 Speicher-Heartbeat statt Dashboard:** 1×/min eine kompakte INFO-Zeile auf
-      `mem` (MemAvailable, SwapFree, cudaFree, KV-Pool used/total, Arena used, RSS).
-      Ein greppbares Zeitprofil ersetzt Grafana: `grep '"target":"mem"'
-      logs/atlas.log`. WARN-Schwellen (z. B. SwapFree < 2 GiB, MemAvailable < 8 GiB)
-      landen zusätzlich in `critical.log` — als Frühwarnung vor A1/A2/A8.
+- [x] **1.3 Speicher-Heartbeat statt Dashboard.** *(umgesetzt 2026-09-28)*
+      `main_modules/heartbeat.rs`: 1×/min eine INFO-Zeile auf Target `mem`
+      (MemAvailable, SwapFree, cudaFree, KV-Pool used/total, Arena used/cap, RSS);
+      greppbar via `grep " mem:" logs/atlas-*.log`. Unterschreitet MemAvailable
+      8 GB oder SwapFree 2 GB (via `ATLAS_MEM_WARN_{AVAIL,SWAP}_GB` einstellbar),
+      wird WARN geloggt → landet automatisch in critical.log (A1/A2/A8-
+      Frühwarnung). Intervall `ATLAS_MEM_HEARTBEAT_SECS` (0 = aus).
 - [ ] **1.4 Zentraler CUDA-Error-Wrapper (`cuda_err`):** heute verstreut über
       `buffers.rs`, `fast_weights`, `load_fns.rs`. Jeder Launch-/Sync-Fehler loggt
       Kernel-Name, Modell, Shapes, letzte Allokation; sticky-Error-Erkennung markiert
@@ -204,9 +210,11 @@ Ursache in einer Datei — kein Dashboard, kein externer Stack.
       produzieren (D1).
 - [ ] **1.5 memdebug auf den Build-/Swap-Pfad ausweiten:** Events build_start/
       build_fail/build_ok mit meminfo-Snapshot vorher/nachher (deckt A4/0.4 ab).
-- [ ] **1.6 Crash-Forensik:** Panic-Hook, der vor dem Abort einen letzten
-      meminfo+cudaMemGetInfo+Arena+Pool-Snapshot nach `logs/crash-<ts>.log` schreibt
-      (E1); OOM-Watchdog schreibt dasselbe vor `exit(1)` (A2).
+- [x] **1.6 Crash-Forensik.** *(umgesetzt 2026-09-28)*
+      `spark_runtime::crash::write_crash_snapshot`: meminfo + raw-CUDA + KV-Pool +
+      letzte Budget-Entscheidung + RSS nach `logs/crash-<ts>.log`, zusätzlich als
+      ERROR auf Target `proc` (→ critical.log). Angeschlossen an den Panic-Hook
+      in main.rs (E1) und den OOM-Watchdog vor `exit(1)` (A2).
 
 ## Phase 2 — Automatisierte Test-Bench auf dem DGX Spark
 
@@ -325,12 +333,38 @@ nicht kompetitiv zur Datalab-API einsetzbar) — vor Produktivnutzung klären.
       OCR-Endpoint) — exakt die gewünschte Ein-Modell-Semantik, analog
       Translate. Request-Schema: Datei (PDF/Bild, multipart oder base64) +
       `prompt_type` (`ocr_layout`/…) + `output` (`markdown`/`html`/`json`).
-- [ ] **3.3c Chandra-Preprocessing in Rust nachbauen** (Verhalten identisch
-      zur Python-Library `chandra-ocr`): PDF → Seitenbilder (pdfium-render
-      o. ä., gleiche Render-DPI), Bild-Skalierung passend zum
-      Qwen3-VL-Pixel-Budget (`vision_max_pixels`-Pfad existiert), die
-      Prompt-Templates je `prompt_type`, und das Output-Parsing
-      (`parse_markdown`, Layout-JSON, Bild-/Diagramm-Extraktion).
+- [ ] **3.3c Chandra-Pipeline nativ in Rust nachbauen** — Modul-für-Modul-Port
+      von https://github.com/datalab-to/chandra (Python fliegt komplett raus;
+      der `/v1/ocr`-Handler fährt die ganze Pipeline in-process). Mapping
+      (Python-Quelle → Rust in einem neuen Modul `spark-server/src/ocr/`):
+      - `chandra/input.py` → `ocr/input.rs`: PDF-Rendering via **pdfium**
+        (Python nutzt pypdfium2; Rust-Crate `pdfium-render` bindet dieselbe
+        libpdfium → identisches Rendering erreichbar). Verhalten exakt
+        übernehmen: `FPDFPage_Flatten` (Formulare/Annotationen plätten),
+        Render-DPI = max(IMAGE_DPI, min_pdf_image_dim/min_page_dim × 72),
+        RGB-Konvertierung; Bilder: Min-Dimension-Upscale mit **Lanczos**
+        (image-Crate `Lanczos3`). Settings-Konstanten (IMAGE_DPI,
+        MIN_IMAGE_DIM, MIN_PDF_IMAGE_DIM) aus `chandra/settings.py`
+        übernehmen. libpdfium muss ins gb10-Image (Dockerfile).
+      - `chandra/prompts.py` → `ocr/prompts.rs`: die Prompt-Templates je
+        `prompt_type` (ocr_layout/…) 1:1 als Konstanten, inkl.
+        ALLOWED_TAGS/ALLOWED_ATTRIBUTES-Listen (HTML-Subset mit
+        `data-bbox`/`data-label`, Mathe als KaTeX in `<math>`).
+      - `chandra/model/vllm.py` + `schema.py` → entfällt als HTTP-Client:
+        der Handler ruft direkt die interne Generative-Pipeline auf
+        (gleicher Pfad wie /v1/chat mit Bild-Input; Sampling-Settings aus
+        deren vLLM-Aufruf ins MODEL.toml-`[sampling]` übernehmen).
+      - `chandra/output.py` → `ocr/output.rs`: Modell-HTML parsen
+        (Top-Level-`<div data-label=…>` = Layout-Chunks; `Blank-Page`
+        überspringen, Header/Footer optional), `data-bbox`-Crops der
+        Image/Figure-Chunks als WebP extrahieren, HTML→Markdown-Konverter
+        (markdownify-Äquivalent für das erlaubte Tag-Subset — Tabellen,
+        Checkboxen, `<math>` erhalten). HTML-Parsing z. B. mit `scraper`.
+      - Response-Format von `/v1/ocr`: `{markdown, html, chunks[{label,
+        bbox, content}], images{name→base64-webp}, usage}` — deckungsgleich
+        mit dem, was die Python-Lib pro Seite liefert; PDFs mit mehreren
+        Seiten als Array + `page_range`-Parameter (Syntax aus
+        `input.py::parse_range_str`).
 - [ ] **3.3d Verhaltens-Parität testen:** Golden-Tests gegen die
       Python-Referenz — dieselben PDFs durch `chandra` (Python, HF-Methode)
       und durch `/v1/ocr` schicken, Markdown/JSON diffen; Beispiel-Dokumente

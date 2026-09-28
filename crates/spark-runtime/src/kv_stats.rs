@@ -55,10 +55,67 @@ pub fn clear() {
     POOL_BYTES.store(0, Ordering::Relaxed);
 }
 
+// Todo.md 0.5: the FULL gate decision of the last budget computation, so
+// the test bench can assert 0.1–0.4 from outside via /v1/stats.
+static BUDGET_USED_SO_FAR: AtomicUsize = AtomicUsize::new(0);
+static BUDGET_TOTAL: AtomicUsize = AtomicUsize::new(0);
+static BUDGET_BASELINE: AtomicUsize = AtomicUsize::new(0);
+static BUDGET_COTENANTS: AtomicUsize = AtomicUsize::new(0);
+// 1-based so 0 = "no decision published yet" (matches BUDGET_FREE_NOW).
+static BUDGET_SOURCE: AtomicUsize = AtomicUsize::new(0);
+
+/// How the last budget's `used_so_far` was derived (mirror of
+/// `spark_model::factory::kv_budget::UsedSource`, passed as a code so the
+/// crates stay decoupled).
+#[derive(Debug, Clone, Copy)]
+pub struct BudgetDecision {
+    pub used_so_far: usize,
+    pub total_budget: usize,
+    /// 0 = no baseline was available.
+    pub baseline_free: usize,
+    pub cotenants: usize,
+    /// "raw" | "manual" | "auto_baseline" | "auto_implausible".
+    pub source: &'static str,
+}
+
 /// Called by `factory::build` each time the KV budget is computed.
 pub fn publish_budget_inputs(free_now_bytes: usize, kv_budget_bytes: usize) {
     BUDGET_FREE_NOW.store(free_now_bytes, Ordering::Relaxed);
     BUDGET_BYTES.store(kv_budget_bytes, Ordering::Relaxed);
+}
+
+/// Companion to `publish_budget_inputs`: the gate decision itself.
+/// `source_code`: 1=raw, 2=manual, 3=auto_baseline, 4=auto_implausible.
+pub fn publish_budget_decision(
+    used_so_far: usize,
+    total_budget: usize,
+    baseline_free: Option<usize>,
+    cotenants: usize,
+    source_code: u8,
+) {
+    BUDGET_USED_SO_FAR.store(used_so_far, Ordering::Relaxed);
+    BUDGET_TOTAL.store(total_budget, Ordering::Relaxed);
+    BUDGET_BASELINE.store(baseline_free.unwrap_or(0), Ordering::Relaxed);
+    BUDGET_COTENANTS.store(cotenants, Ordering::Relaxed);
+    BUDGET_SOURCE.store(source_code as usize, Ordering::Relaxed);
+}
+
+/// The last gate decision; `None` before the first budget computation.
+pub fn budget_decision() -> Option<BudgetDecision> {
+    let source = match BUDGET_SOURCE.load(Ordering::Relaxed) {
+        1 => "raw",
+        2 => "manual",
+        3 => "auto_baseline",
+        4 => "auto_implausible",
+        _ => return None,
+    };
+    Some(BudgetDecision {
+        used_so_far: BUDGET_USED_SO_FAR.load(Ordering::Relaxed),
+        total_budget: BUDGET_TOTAL.load(Ordering::Relaxed),
+        baseline_free: BUDGET_BASELINE.load(Ordering::Relaxed),
+        cotenants: BUDGET_COTENANTS.load(Ordering::Relaxed),
+        source,
+    })
 }
 
 /// `(free_now_bytes, kv_budget_bytes)` of the last budget computation;
