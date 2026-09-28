@@ -145,6 +145,11 @@ pub struct ModelBehavior {
     /// When non-empty, overrides the CLI default for models that need
     /// higher precision. User can still override with explicit --kv-cache-dtype.
     pub default_kv_dtype: &'static str,
+    /// Default MTP head precision from MODEL.toml ("bf16"/"fp8"/"nvfp4").
+    /// Empty = use the built-in default (bf16 — highest acceptance rate).
+    /// Explicit --mtp-quantization still wins, same contract as
+    /// `default_kv_dtype`.
+    pub default_mtp_quantization: &'static str,
     /// Default num_drafts for speculative decoding (0 = use CLI default).
     /// K = num_drafts + 1 (num_drafts=1 → K=2 verifies 2 tokens per step).
     /// Optimal K varies per model; benchmarks sometimes show K=2 beats K=3.
@@ -284,6 +289,7 @@ impl Default for ModelBehavior {
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: "",
+            default_mtp_quantization: "",
             default_num_drafts: 0,
             disable_tool_steering: false,
             tool_call_parser: "",

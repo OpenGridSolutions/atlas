@@ -5,7 +5,10 @@
 set -euo pipefail
 
 BIN="${ATLAS_BIN:-/build/target/release/spark}"
-MODEL="${ATLAS_MODEL:-nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4}"
+# No positional MODEL by default: the server boots the first
+# ATLAS_PRESEED_GENERATIVE entry (arena + lazy-load serve the rest).
+# Set ATLAS_MODEL to pin a specific boot model.
+MODEL="${ATLAS_MODEL:-}"
 
 echo "==> [1/3] cleanup: stopping any running spark & freeing GPU memory ..."
 # Terminate a previous server so it releases its VRAM before we rebuild/rerun.
@@ -64,15 +67,15 @@ export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE//ig1\/Qwen3-VL-30B-A
 LOG="/workspace/logs/serve-$(date +%Y%m%d-%H%M%S).log"
 echo "==> logging to ${LOG}"
 
-exec "${BIN}" serve "${MODEL}" \
+MODEL_ARG=()
+[[ -n "${MODEL}" ]] && MODEL_ARG=("${MODEL}")
+exec "${BIN}" serve "${MODEL_ARG[@]}" \
     --bind 0.0.0.0 \
     --port 11434 \
     --max-seq-len 104416 \
     --max-batch-size 1 \
-    --kv-cache-dtype nvfp4 \
     --gpu-memory-utilization 0.90 \
     --kv-high-precision-layers 3 \
     --scheduling-policy slai \
-    --mtp-quantization nvfp4 \
     --enable-prefix-caching \
     2>&1 | tee "${LOG}"

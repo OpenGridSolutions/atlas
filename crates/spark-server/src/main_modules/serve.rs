@@ -91,6 +91,30 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         }
     }
 
+    // Boot-model fallback: with categorized preseed lists the arena serves
+    // many models and requests lazy-load (Task 6 Phase 3), so naming one id
+    // on the command line is redundant — default to the first
+    // ATLAS_PRESEED_GENERATIVE entry. The boot preseed unloads it again
+    // right after snapshotting, leaving the server idle either way.
+    if args.model.is_none() && args.model_from_path.is_none() {
+        let first_generative = preseed_by_category
+            .iter()
+            .find(|(cat, _)| *cat == ModelCategory::Generative)
+            .and_then(|(_, ids)| ids.first().cloned());
+        match first_generative {
+            Some(id) => {
+                tracing::info!(
+                    "No MODEL argument — booting first ATLAS_PRESEED_GENERATIVE entry '{id}'"
+                );
+                args.model = Some(id);
+            }
+            None => anyhow::bail!(
+                "no model to serve: pass MODEL, --model-from-path, or list at least one \
+                 model in ATLAS_PRESEED_GENERATIVE"
+            ),
+        }
+    }
+
     // 0. Resolve model directory from HF ID or path
     let model_dir = serve_phases::resolve_model_dir(&args)?;
 
@@ -420,6 +444,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         prefix_cache,
         comm,
         dflash_args,
+        ptx_set.behavior.default_mtp_quantization,
     )?;
     // Stop recording: serving-time allocations come from pre-allocated
     // pools (runtime invariant); anything allocated after this line is not
@@ -587,7 +612,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // else generative (the positional arg is a chat model by convention).
     let boot_category = preseed_by_category
         .iter()
-        .find(|(_, ids)| ids.iter().any(|id| *id == model_name))
+        .find(|(_, ids)| ids.contains(&model_name))
         .map(|(cat, _)| *cat)
         .unwrap_or(ModelCategory::Generative);
     let mut model_registry = vec![crate::main_modules::hotswap::RegisteredModel {
@@ -751,7 +776,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             // unload (same window as the boot build).
             gpu.set_alloc_tracking(true);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
-            let model = serve_phases::build_model(
+            let model = match serve_phases::build_model(
                 &reload_args,
                 &config,
                 &store,
@@ -764,7 +789,30 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 prefix_cache,
                 reload_comm.clone(),
                 None, // dflash out of hot-swap scope
-            )?;
+                prep.default_mtp_quantization,
+            ) {
+                Ok(m) => m,
+                Err(e) => {
+                    // Todo.md 0.4: an aborted rebuild must not strand its
+                    // device allocations — the 2026-09-11 retry loop leaked
+                    // memory on every failed load until nothing fit anymore.
+                    // build_model consumed the backend Box, so drain the
+                    // process-global tracker handle-less, and DONTNEED the
+                    // half-written arena payload right away instead of at
+                    // the next attempt's reset.
+                    let (freed, failed) =
+                        spark_runtime::cuda_backend::drain_and_free_tracked_allocs();
+                    ctx.arena.reset();
+                    tracing::warn!(
+                        target: "hotswap",
+                        event = "load_fail_cleanup",
+                        freed,
+                        failed,
+                        "freed device allocations from aborted model build"
+                    );
+                    return Err(e);
+                }
+            };
             if let Some(g) = model.gpu_backend() {
                 g.set_alloc_tracking(false);
             }

@@ -40,6 +40,8 @@ pub(crate) struct PreparedSwap {
     pub kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
     pub layer_dtypes: Vec<spark_runtime::kv_cache::KvCacheDtype>,
     pub hss_cache_blocks_per_seq: Option<u32>,
+    /// MODEL.toml `default_mtp_quantization` of the target (may be "").
+    pub default_mtp_quantization: &'static str,
 }
 
 /// Stable registry key for a kernel target.
@@ -194,5 +196,6 @@ pub(crate) fn prepare_swap_target(
         kv_dtype: kv.kv_dtype,
         layer_dtypes: kv.layer_dtypes,
         hss_cache_blocks_per_seq: kv.hss_cache_blocks_per_seq,
+        default_mtp_quantization: ptx_set.behavior.default_mtp_quantization,
     })
 }

@@ -174,36 +174,44 @@ pub(crate) fn resolve_kv_cache_config(
     config: &ModelConfig,
     behavior_default_kv_dtype: &str,
 ) -> Result<KvCacheConfig> {
-    // Resolution rules:
-    //   1. No MODEL.toml override        → use args.kv_cache_dtype as-is.
-    //   2. User matches MODEL.toml       → silent (correct config).
-    //   3. User at CLI default ("fp8")   → apply MODEL.toml override + info log.
-    //   4. User explicitly mismatches    → respect user, warn loudly.
-    // Rule 4 catches the gemma/mistral collapse (NVFP4 KV → `<unused>` /
-    // `后汉书` token loop) and the FP8 KV mismatch on bf16-required attention
-    // paths. We respect the user's choice so experimentation isn't blocked,
-    // but the warning makes the cause traceable when decode goes degenerate.
-    let effective_kv_dtype_str: String = if behavior_default_kv_dtype.is_empty()
-        || args.kv_cache_dtype == behavior_default_kv_dtype
-    {
-        args.kv_cache_dtype.clone()
-    } else if args.kv_cache_dtype == "fp8" {
-        tracing::info!(
-            "KV cache dtype: {} (from MODEL.toml default_kv_dtype, override with --kv-cache-dtype)",
-            behavior_default_kv_dtype,
-        );
-        behavior_default_kv_dtype.to_string()
-    } else {
-        tracing::warn!(
-            "KV cache dtype: {} (user override). MODEL.toml recommends '{}' for this \
-             model — mismatched KV dtype is a known cause of decode-path corruption \
-             (e.g. gemma `<unused>` collapse, mistral character-token loops on NVFP4 KV). \
-             Pass --kv-cache-dtype {} to use the recommended value.",
-            args.kv_cache_dtype,
-            behavior_default_kv_dtype,
-            behavior_default_kv_dtype,
-        );
-        args.kv_cache_dtype.clone()
+    // Resolution rules (Todo.md 0.7 — MODEL.toml is the source of truth):
+    //   1. Flag unset (the normal case) → MODEL.toml default_kv_dtype,
+    //      falling back to "fp8" when the target declares none.
+    //   2. Flag set, matches MODEL.toml → silent (correct config).
+    //   3. Flag set, mismatches         → respect user, warn loudly.
+    // `Option<String>` makes "explicitly set" unambiguous — the old String
+    // default doubled as the sentinel, so any script passing a blanket
+    // value (serve.sh passed nvfp4 until 2026-09-28) silently overrode
+    // every model's calibrated default. Rule 3 catches the gemma/mistral
+    // collapse (NVFP4 KV → `<unused>` / `后汉书` token loop); we respect
+    // the choice so experimentation isn't blocked, but the warning makes
+    // the cause traceable when decode goes degenerate.
+    let effective_kv_dtype_str: String = match &args.kv_cache_dtype {
+        None => {
+            if behavior_default_kv_dtype.is_empty() {
+                "fp8".to_string()
+            } else {
+                tracing::info!(
+                    "KV cache dtype: {} (from MODEL.toml default_kv_dtype, override with \
+                     --kv-cache-dtype)",
+                    behavior_default_kv_dtype,
+                );
+                behavior_default_kv_dtype.to_string()
+            }
+        }
+        Some(user) => {
+            if !behavior_default_kv_dtype.is_empty() && user != behavior_default_kv_dtype {
+                tracing::warn!(
+                    "KV cache dtype: {} (user override). MODEL.toml recommends '{}' for this \
+                     model — mismatched KV dtype is a known cause of decode-path corruption \
+                     (e.g. gemma `<unused>` collapse, mistral character-token loops on NVFP4 \
+                     KV). Drop --kv-cache-dtype to use the recommended value.",
+                    user,
+                    behavior_default_kv_dtype,
+                );
+            }
+            user.clone()
+        }
     };
     let kv_dtype: spark_runtime::kv_cache::KvCacheDtype = effective_kv_dtype_str.parse()?;
     if kv_dtype == spark_runtime::kv_cache::KvCacheDtype::Fp8 {

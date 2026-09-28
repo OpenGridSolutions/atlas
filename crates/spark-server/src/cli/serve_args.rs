@@ -10,8 +10,11 @@ use std::path::PathBuf;
 #[derive(Parser, Debug, Clone)]
 pub struct ServeArgs {
     /// HuggingFace model ID (e.g. "nvidia/Qwen3-Next-80B-A3B-Instruct-NVFP4")
-    /// or a local directory path containing config.json.
-    #[arg(value_name = "MODEL", required_unless_present = "model_from_path")]
+    /// or a local directory path containing config.json. OPTIONAL when the
+    /// categorized preseed lists are set: the arena serves many models and
+    /// requests lazy-load, so the boot model defaults to the first
+    /// ATLAS_PRESEED_GENERATIVE entry.
+    #[arg(value_name = "MODEL")]
     pub model: Option<String>,
 
     /// Load model directly from this filesystem path (skips HF cache resolution).
@@ -44,11 +47,15 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 16)]
     pub block_size: usize,
 
-    /// KV cache dtype (fp8, bf16, or nvfp4).
-    /// Default: fp8. NVFP4 uses less memory but may lose coherence at long context
-    /// without --kv-high-precision-layers. FP8 is the safe default.
-    #[arg(long, default_value = "fp8")]
-    pub kv_cache_dtype: String,
+    /// KV cache dtype (fp8, bf16, or nvfp4). UNSET (recommended) = use the
+    /// model's calibrated `default_kv_dtype` from its kernel-target
+    /// MODEL.toml, falling back to fp8 when the target declares none.
+    /// Setting this is an EXPLICIT per-run override that beats every
+    /// MODEL.toml value — mismatched KV dtype is a known cause of decode
+    /// corruption (gemma `<unused>` collapse, mistral token loops on
+    /// NVFP4 KV), so prefer fixing the MODEL.toml over passing this flag.
+    #[arg(long)]
+    pub kv_cache_dtype: Option<String>,
 
     /// LM-head precision: `default` (model-config-driven), `bf16` (final vocab projection
     /// in BF16 — the SAFE DEFAULT, matches vLLM checkpoint precision), `nvfp4` (force the
@@ -181,14 +188,16 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 8)]
     pub max_batch_size: usize,
 
-    /// MTP head weight precision: bf16 (default, highest acceptance rate
-    /// = highest end-to-end throughput; the MTP head is small so the memory
-    /// cost is modest), fp8 (1 byte/weight, balanced; slower draft due to
-    /// a D2H sync in MoE dispatch), nvfp4 (0.5 byte/weight, fastest draft
+    /// MTP head weight precision: bf16 (highest acceptance rate = highest
+    /// end-to-end throughput; the MTP head is small so the memory cost is
+    /// modest), fp8 (1 byte/weight, balanced; slower draft due to a D2H
+    /// sync in MoE dispatch), nvfp4 (0.5 byte/weight, fastest draft
     /// forward but lossier projections → lower acceptance rate, so end-to-
-    /// end throughput is usually worse than bf16).
-    #[arg(long, default_value = "bf16")]
-    pub mtp_quantization: String,
+    /// end throughput is usually worse than bf16). UNSET (recommended) =
+    /// the model's `default_mtp_quantization` from its kernel-target
+    /// MODEL.toml, falling back to bf16.
+    #[arg(long)]
+    pub mtp_quantization: Option<String>,
 
     /// MTP draft vocabulary size. Limits the LM head GEMV to the first N
     /// token IDs, reducing propose latency. BPE tokenizers place frequent

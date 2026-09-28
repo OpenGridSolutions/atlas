@@ -41,9 +41,34 @@ pub(crate) fn build_model(
     prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
     comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     dflash_args: Option<spark_model::factory::DflashBuildArgs<'_>>,
+    default_mtp_quantization: &str,
 ) -> Result<Box<dyn spark_model::traits::Model>> {
-    let mtp_quant: spark_model::layers::MtpQuantization = args
-        .mtp_quantization
+    // Same MODEL.toml-first contract as resolve_kv_cache_config (Todo.md
+    // 0.7): explicit --mtp-quantization wins, else the kernel target's
+    // default_mtp_quantization, else bf16 (highest acceptance rate).
+    let mtp_quant_str: &str = match &args.mtp_quantization {
+        Some(user) => {
+            if !default_mtp_quantization.is_empty() && user != default_mtp_quantization {
+                tracing::warn!(
+                    "MTP quantization: {} (user override). MODEL.toml recommends '{}' \
+                     for this model — drop --mtp-quantization to use it.",
+                    user,
+                    default_mtp_quantization,
+                );
+            }
+            user
+        }
+        None if !default_mtp_quantization.is_empty() => {
+            tracing::info!(
+                "MTP quantization: {} (from MODEL.toml default_mtp_quantization, \
+                 override with --mtp-quantization)",
+                default_mtp_quantization,
+            );
+            default_mtp_quantization
+        }
+        None => "bf16",
+    };
+    let mtp_quant: spark_model::layers::MtpQuantization = mtp_quant_str
         .parse()
         .context("Invalid --mtp-quantization value")?;
     spark_model::factory::build_model(

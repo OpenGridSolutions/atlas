@@ -129,6 +129,7 @@ pub(super) struct ParsedBehavior {
     pub thinking_default: bool,
     pub fp8_kv_calibration_tokens: usize,
     pub default_kv_dtype: String,
+    pub default_mtp_quantization: String,
     pub default_num_drafts: u32,
     pub disable_tool_steering: bool,
     pub tool_call_parser: String,
@@ -157,6 +158,7 @@ impl Default for ParsedBehavior {
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
             default_kv_dtype: String::new(),
+            default_mtp_quantization: String::new(),
             default_num_drafts: 0,
             disable_tool_steering: false,
             tool_call_parser: String::new(),
@@ -212,6 +214,11 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .unwrap_or(0);
     let default_kv_dtype = b
         .and_then(|v| v.get("default_kv_dtype"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let default_mtp_quantization = b
+        .and_then(|v| v.get("default_mtp_quantization"))
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
@@ -304,6 +311,7 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         thinking_default,
         fp8_kv_calibration_tokens,
         default_kv_dtype,
+        default_mtp_quantization,
         default_num_drafts,
         disable_tool_steering,
         tool_call_parser,
