@@ -159,10 +159,42 @@ impl WeightsArena {
         Ok(offset as u64)
     }
 
-    /// Mark the whole arena reusable. Never unmaps — `base` and the mapping
-    /// survive for the process lifetime (plan §2 invariant).
+    /// Mark the whole arena reusable and hand its physical pages back to
+    /// the kernel (`MADV_DONTNEED`). Never unmaps — `base` and the mapping
+    /// survive for the process lifetime (plan §2 invariant); the range
+    /// refaults as zero pages on the next write.
+    ///
+    /// The page release is load-bearing on unified memory (GB10): without
+    /// it an unloaded model's weights stay resident as dirty anonymous
+    /// pages (~47 GiB for the 80B model), depress `MemAvailable`, and
+    /// starve the next load's KV budget (Memory_errors.log 2026-09-11).
+    ///
+    /// Skipped when host-registered: the CUDA driver holds DMA references
+    /// on the pinned pages, and refaulting fresh zero pages under a live
+    /// registration would silently split the host and device views.
     pub fn reset(&self) {
         self.used.store(0, Ordering::Relaxed);
+        if self.host_registered {
+            tracing::debug!("weights arena: reset keeps pages resident (host-registered mapping)");
+            return;
+        }
+        // Safety: the mapping is live and never moved; MADV_DONTNEED keeps
+        // the VMA (and its MADV_HUGEPAGE advice) intact.
+        let ret = unsafe {
+            libc::madvise(
+                self.base as *mut libc::c_void,
+                self.capacity,
+                libc::MADV_DONTNEED,
+            )
+        };
+        if ret != 0 {
+            tracing::warn!(
+                "weights arena: MADV_DONTNEED({:.1} GiB) failed: {} — stale weight pages \
+                 stay resident and count against the next KV budget",
+                self.capacity as f64 / (1024.0 * 1024.0 * 1024.0),
+                std::io::Error::last_os_error()
+            );
+        }
     }
 
     /// Restore the bump cursor after a snapshot reload: the payload was
@@ -487,6 +519,19 @@ mod tests {
         a.reset();
         assert_eq!(a.used(), 0);
         assert!(a.alloc(4096, 256).is_ok());
+    }
+
+    #[test]
+    fn reset_releases_physical_pages() {
+        let a = small_arena();
+        a.alloc(4096, 256).unwrap();
+        unsafe { std::slice::from_raw_parts_mut(a.base().0 as *mut u8, 4096) }.fill(0xCD);
+        a.reset();
+        assert_eq!(a.used(), 0);
+        // MADV_DONTNEED dropped the dirty pages: the range refaults as
+        // zero-fill, proving the physical memory went back to the kernel.
+        let after = unsafe { std::slice::from_raw_parts(a.base().0 as *const u8, 4096) };
+        assert!(after.iter().all(|&b| b == 0), "dirty pages survived reset()");
     }
 
     #[test]

@@ -30,7 +30,8 @@ pub(crate) struct BudgetInputs {
     /// `gpu.total_memory()`.
     pub total_mem: usize,
     /// `gpu.free_memory()` right now — since Phase M this is
-    /// `max(cudaMemGetInfo, MemAvailable + SwapFree)`.
+    /// `max(cudaMemGetInfo, MemAvailable + SwapFree)`. May exceed
+    /// `total_mem` (swap); `compute` clamps it to `total_mem`.
     pub actual_free: usize,
     /// `gpu::baseline_free_bytes()` captured at context init.
     pub baseline_free: Option<usize>,
@@ -54,14 +55,23 @@ pub(crate) struct BudgetResult {
 }
 
 pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
-    let raw_used = i.total_mem.saturating_sub(i.actual_free);
+    // UMA basis clamp: free readings are `MemAvailable + SwapFree` and can
+    // exceed the CUDA total (swap is not part of `total_mem`). Comparing an
+    // unclamped baseline against `total_mem`-derived numbers made
+    // `atlas_own > raw_used` PERMANENTLY true once baseline > total
+    // (124.0 GB baseline vs 119.7 GB total, Memory_errors.log 2026-09-11),
+    // so every hot-swap load fell into the raw fallback that bills
+    // co-tenants and page cache to Atlas. Clamp both readings to
+    // `total_mem` so all arithmetic shares one basis.
+    let actual_free = i.actual_free.min(i.total_mem);
+    let raw_used = i.total_mem - actual_free;
     let (used_so_far, source, cotenants) = if let Some(ext) = i.manual_external_reserve {
         (raw_used.saturating_sub(ext), UsedSource::Manual, 0)
-    } else if let Some(baseline) = i.baseline_free {
+    } else if let Some(baseline) = i.baseline_free.map(|b| b.min(i.total_mem)) {
         // Sanity gate identical to the original build.rs block: atlas_own
         // positive and no larger than total used (co-tenants can't be
         // negative); implausible numbers fall back to raw.
-        let atlas_own = baseline.saturating_sub(i.actual_free);
+        let atlas_own = baseline.saturating_sub(actual_free);
         if atlas_own > 0 && atlas_own <= raw_used {
             (atlas_own, UsedSource::AutoBaseline, raw_used - atlas_own)
         } else {
@@ -72,7 +82,7 @@ pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
     };
 
     let total_budget = (i.total_mem as f64 * i.gpu_memory_utilization) as usize;
-    let physical_cap = i.actual_free.saturating_sub(i.inference_reserve);
+    let physical_cap = actual_free.saturating_sub(i.inference_reserve);
     let kv_budget = match i.kv_pool_override {
         Some(pinned) => pinned.min(physical_cap),
         None => total_budget
@@ -176,6 +186,37 @@ mod tests {
         let r = compute(&i);
         // min(200, 20.6 − 2.6) = 18.0
         assert!((as_gib(r.kv_budget) - 18.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn baseline_above_total_is_clamped_not_implausible() {
+        // The 2026-09-11 hot-swap failure: the boot baseline was captured
+        // as MemAvailable + SwapFree (124.0 GB) and exceeds the CUDA total
+        // (119.7 GB). Unclamped, atlas_own > raw_used on EVERY later load,
+        // so the auto path was structurally dead and the raw fallback
+        // billed all resident memory to Atlas.
+        let mut i = failure_scene(gib(12.3));
+        i.baseline_free = Some(gib(124.0));
+        let r = compute(&i);
+        assert_eq!(r.source, UsedSource::AutoBaseline);
+        // Clamped baseline (= total) − free-now: everything currently
+        // resident, but via the gate — not the fallback — and co-tenant
+        // free/alloc churn keeps self-correcting from here.
+        assert_eq!(r.used_so_far, gib(119.7) - gib(12.3));
+        assert_eq!(r.cotenants, 0);
+    }
+
+    #[test]
+    fn free_above_total_clamps_used_to_zero() {
+        // Fresh boot with empty swap: MemAvailable + SwapFree > CUDA total.
+        let mut i = failure_scene(gib(125.0));
+        i.baseline_free = None;
+        let r = compute(&i);
+        assert_eq!(r.source, UsedSource::Raw);
+        assert_eq!(r.used_so_far, 0);
+        // Budget: total×0.9 − 0 − reserve; the physical cap (clamped free
+        // − reserve = 117.1) does not bind.
+        assert!((as_gib(r.kv_budget) - (119.7 * 0.9 - 2.6)).abs() < 0.05);
     }
 
     #[test]

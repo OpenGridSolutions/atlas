@@ -223,6 +223,42 @@ pub(super) fn tracker_drain() -> Vec<u64> {
         .collect()
 }
 
+/// Stop recording, drain the global tracker, and `cuMemFree` every live
+/// allocation. Returns `(freed, failed)`.
+///
+/// For the model-build FAILURE path (Todo.md 0.4): `build_model` consumes
+/// the backend `Box`, so when it errors the caller holds no handle to free
+/// the aborted build's allocations through — but the tracker is process-
+/// global, so this works handle-less. Caller must be on a thread with the
+/// CUDA context bound (the scheduler thread is). Arena-interior pointers
+/// are skipped like `GpuBackend::free` does; the tracker never records
+/// them, so hitting one here would be a bug, not routine.
+pub fn drain_and_free_tracked_allocs() -> (usize, usize) {
+    tracker_set_recording(false);
+    let protected = PROTECTED_RANGES
+        .read()
+        .expect("PROTECTED_RANGES lock poisoned")
+        .clone();
+    let mut freed = 0usize;
+    let mut failed = 0usize;
+    for ptr in tracker_drain() {
+        if protected.iter().any(|&(base, len)| ptr >= base && ptr < base + len) {
+            tracing::debug!("drain_and_free_tracked_allocs: {ptr:#x} suppressed (arena-owned)");
+            continue;
+        }
+        let status = unsafe { cuMemFree_v2(ptr) };
+        if status == 0 {
+            freed += 1;
+        } else {
+            failed += 1;
+            tracing::error!(
+                "drain_and_free_tracked_allocs: cuMemFree_v2({ptr:#x}) failed: status {status}"
+            );
+        }
+    }
+    (freed, failed)
+}
+
 impl AtlasCudaBackend {
     /// Initialize the CUDA backend on the given GPU ordinal.
     ///

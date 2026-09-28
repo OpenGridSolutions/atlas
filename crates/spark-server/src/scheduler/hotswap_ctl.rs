@@ -134,6 +134,9 @@ impl SwapCtl {
         }
         for mut p in prefilling.drain(..) {
             send_error_to_sink(&mut p.sink, "request aborted: model_swap");
+            // Regular drain exit — consume the memdebug guard so the Drop
+            // backstop stays reserved for genuinely missed releases.
+            crate::memdebug::on_aborted(&mut p.mem, "model_swap");
             if let Err(e) = model.free_sequence(&mut p.seq) {
                 tracing::error!("hot-swap drain: free_sequence(prefilling): {e:#}");
             }
@@ -153,6 +156,17 @@ impl SwapCtl {
 /// Consumes the model; runs on the scheduler thread.
 fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_json::Value> {
     let t0 = Instant::now();
+    // Release accounting (Todo.md case B1): meminfo + raw CUDA before and
+    // after teardown prove the swap actually returned memory to the kernel
+    // — the 2026-09-11 failure mode was exactly this not happening (arena
+    // pages stayed resident, follow-up loads found no KV budget). Logged on
+    // the `hotswap` target AND returned in the unload reply so
+    // scripts/hotswap_release_test.sh can assert it from outside.
+    let gib = |b: usize| b as f64 / (1024.0 * 1024.0 * 1024.0);
+    let mem_before = spark_runtime::meminfo::read();
+    let cuda_before = spark_runtime::cuda_backend::cuda_mem_get_info_raw();
+    let pool_before = spark_runtime::kv_stats::snapshot();
+    let arena_used = hotswap.arena.used();
     // Attribute the outgoing model's residency time (Task 6 §5 metrics).
     {
         let active = hotswap.active_model();
@@ -197,6 +211,53 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
          {duration_ms} ms); arena reset (base {} unchanged)",
         hotswap.arena.base()
     );
+    let mem_after = spark_runtime::meminfo::read();
+    let cuda_after = spark_runtime::cuda_backend::cuda_mem_get_info_raw();
+    // Signed: co-tenants allocating during the teardown can legitimately
+    // push this below the arena payload; a value near zero after a big
+    // model is the leak signal (was permanently ~0 before the
+    // MADV_DONTNEED fix in WeightsArena::reset).
+    let reclaimed_gb = match (mem_before, mem_after) {
+        (Some(b), Some(a)) => {
+            Some(gib(a.available_for_alloc) - gib(b.available_for_alloc))
+        }
+        _ => None,
+    };
+    // Todo.md 0.3: the boot-time baseline is stale after a swap (see the
+    // --kv-pool-gb note in factory::build). Re-arm it at the post-teardown
+    // state — with the arena pages just released this IS "our footprint =
+    // zero" for the next load's self-relative budget. Same max(cuda,
+    // meminfo) rule as gpu.free_memory().
+    let free_after = match (cuda_after, mem_after) {
+        (Some((f, _)), Some(m)) => Some(f.max(m.available_for_alloc)),
+        (Some((f, _)), None) => Some(f),
+        (None, Some(m)) => Some(m.available_for_alloc),
+        (None, None) => None,
+    };
+    if let Some(free) = free_after {
+        spark_runtime::gpu::set_baseline_free_bytes(free);
+        tracing::info!(
+            target: "hotswap",
+            baseline_free_gib = gib(free),
+            "KV-budget baseline re-armed post-unload"
+        );
+    }
+    tracing::info!(
+        target: "hotswap",
+        event = "unload_release",
+        freed_allocs = freed,
+        free_failed,
+        pool_used_blocks = pool_before.map_or(-1i64, |p| p.used_blocks as i64),
+        pool_total_blocks = pool_before.map_or(-1i64, |p| p.total_blocks as i64),
+        arena_used_gib = gib(arena_used),
+        meminfo_avail_gib_before = mem_before.map_or(-1.0, |m| gib(m.available_for_alloc)),
+        meminfo_avail_gib_after = mem_after.map_or(-1.0, |m| gib(m.available_for_alloc)),
+        cuda_free_gib_before = cuda_before.map_or(-1.0, |(f, _)| gib(f)),
+        cuda_free_gib_after = cuda_after.map_or(-1.0, |(f, _)| gib(f)),
+        reclaimed_gib = reclaimed_gb.unwrap_or(-1.0),
+        duration_ms,
+        "hot-swap unload release accounting"
+    );
     Ok(json!({
         "state": "unloaded",
         "freed_allocs": freed,
@@ -206,6 +267,16 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
             "base": format!("{:#x}", hotswap.arena.base().0),
             "capacity_bytes": hotswap.arena.capacity(),
             "used_bytes": hotswap.arena.used(),
+        },
+        "released": {
+            "arena_used_bytes_before": arena_used,
+            "pool_used_blocks_before": pool_before.map(|p| p.used_blocks),
+            "pool_total_blocks_before": pool_before.map(|p| p.total_blocks),
+            "meminfo_available_gb_before": mem_before.map(|m| gib(m.available_for_alloc)),
+            "meminfo_available_gb_after": mem_after.map(|m| gib(m.available_for_alloc)),
+            "cuda_free_gb_before": cuda_before.map(|(f, _)| gib(f)),
+            "cuda_free_gb_after": cuda_after.map(|(f, _)| gib(f)),
+            "reclaimed_gb": reclaimed_gb,
         },
     }))
 }
