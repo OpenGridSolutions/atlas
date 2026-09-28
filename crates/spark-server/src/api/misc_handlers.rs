@@ -129,6 +129,20 @@ pub async fn metrics_handler() -> impl IntoResponse {
 
 /// GET /health — readiness probe (503 while model is loading).
 pub async fn health(State(state): State<Arc<AppState>>) -> Response {
+    // Sticky CUDA error (Todo.md 1.4, case D1): the context is poisoned,
+    // every request will fail until restart — tell orchestrators 503
+    // once instead of streaming per-request 500s.
+    if let Some(detail) = spark_runtime::cuda_err::sticky() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({
+                "status": "cuda_context_poisoned",
+                "detail": detail,
+                "action": "restart the server",
+            })),
+        )
+            .into_response();
+    }
     if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
         Json(serde_json::json!({"status": "ready", "model": &state.runtime().model_name}))
             .into_response()

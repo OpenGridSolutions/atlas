@@ -139,6 +139,30 @@ pub fn on_server_ready(addr: &str, registered_models: usize) {
     );
 }
 
+/// Model-build lifecycle (Todo.md 1.5): meminfo/CUDA/RSS snapshot around
+/// `build_model`, so the build FAILURE path (catalog case A4 — the
+/// 2026-09-11 retry leak) is measurable per phase, not just per request.
+/// Phases: "start" | "ok" | "fail".
+pub fn on_build_phase(phase: &str, model: &str) {
+    if !enabled() {
+        return;
+    }
+    let (gpu_free, gpu_total) = gpu_free_total_mib();
+    let mem = spark_runtime::meminfo::read();
+    tracing::debug!(
+        target: "memdebug",
+        event = "model_build",
+        phase,
+        model,
+        gpu_free_mib = gpu_free,
+        gpu_total_mib = gpu_total,
+        mem_available_mib = mem.map_or(-1, |m| (m.mem_available >> 20) as i64),
+        swap_free_mib = mem.map_or(-1, |m| (m.swap_free >> 20) as i64),
+        rss_mib = rss_mib(),
+        "model build phase"
+    );
+}
+
 /// Request admission: pool stats + GPU/RSS context. `active_used` is the sum
 /// of block-table lengths over active + prefilling sequences (scheduler view).
 pub fn on_request_admitted(model: &dyn Model, prompt_tokens: usize, active_used: usize) {

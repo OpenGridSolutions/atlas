@@ -107,7 +107,9 @@ impl GpuBackend for AtlasCudaBackend {
     fn device_synchronize(&self) -> Result<()> {
         let status = unsafe { super::cuCtxSynchronize() };
         if status != 0 {
-            bail!("cuCtxSynchronize failed: {}", cuda_error_text(status));
+            let detail = format!("cuCtxSynchronize failed: {}", cuda_error_text(status));
+            crate::cuda_err::report("ctx_sync", "context", &detail);
+            bail!(detail);
         }
         Ok(())
     }
@@ -217,14 +219,32 @@ impl GpuBackend for AtlasCudaBackend {
         unsafe {
             registry
                 .launch_on_stream(raw_func, cfg, stream, params)
-                .map_err(|e| anyhow::anyhow!("Kernel launch failed: {e}"))
+                .map_err(|e| {
+                    // Todo.md 1.4 (case D1/D2): the ONE choke point every
+                    // model kernel launches through — name the kernel,
+                    // log on `cuda_err`, arm the sticky flag for /health.
+                    let detail = format!("{e}");
+                    crate::cuda_err::report(
+                        "launch",
+                        &format!(
+                            "{} grid={grid:?} block={block:?} smem={shared_mem}",
+                            crate::cuda_err::kernel_name(func.0)
+                        ),
+                        &detail,
+                    );
+                    anyhow::anyhow!("Kernel launch failed: {detail}")
+                })
         }
     }
 
     fn synchronize(&self, stream: u64) -> Result<()> {
         let status = unsafe { cuStreamSynchronize(stream) };
         if status != 0 {
-            bail!("cuStreamSynchronize failed: {}", cuda_error_text(status));
+            // Async kernel errors (device asserts, illegal addresses)
+            // surface HERE, not at launch — same reporting path.
+            let detail = format!("cuStreamSynchronize failed: {}", cuda_error_text(status));
+            crate::cuda_err::report("stream_sync", &format!("stream {stream:#x}"), &detail);
+            bail!(detail);
         }
         Ok(())
     }
@@ -242,6 +262,8 @@ impl GpuBackend for AtlasCudaBackend {
         match registry.raw_function_for_target(self.target_key.as_deref(), module, func_name) {
             Ok(raw) => {
                 crate::kernel_audit::record(module, func_name, true);
+                // Name registry for launch-error attribution (cuda_err).
+                crate::cuda_err::register_kernel_name(raw.0 as u64, module, func_name);
                 Ok(KernelHandle(raw.0 as u64))
             }
             Err(e) => {
@@ -358,7 +380,9 @@ impl GpuBackend for AtlasCudaBackend {
     fn launch_graph(&self, graph: GraphHandle, stream: u64) -> Result<()> {
         let status = unsafe { cuGraphLaunch(graph.0, stream) };
         if status != 0 {
-            bail!("cuGraphLaunch failed: status {status}");
+            let detail = format!("cuGraphLaunch failed: status {status}");
+            crate::cuda_err::report("graph_launch", &format!("graph {:#x}", graph.0), &detail);
+            bail!(detail);
         }
         Ok(())
     }

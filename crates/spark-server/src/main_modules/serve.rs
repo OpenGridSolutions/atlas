@@ -780,6 +780,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             // Track the rebuild's derived-buffer allocations for the next
             // unload (same window as the boot build).
             gpu.set_alloc_tracking(true);
+            crate::memdebug::on_build_phase("start", &prep.model_id);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let model = match serve_phases::build_model(
                 &reload_args,
@@ -796,8 +797,12 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 None, // dflash out of hot-swap scope
                 prep.default_mtp_quantization,
             ) {
-                Ok(m) => m,
+                Ok(m) => {
+                    crate::memdebug::on_build_phase("ok", &prep.model_id);
+                    m
+                }
                 Err(e) => {
+                    crate::memdebug::on_build_phase("fail", &prep.model_id);
                     // Todo.md 0.4: an aborted rebuild must not strand its
                     // device allocations — the 2026-09-11 retry loop leaked
                     // memory on every failed load until nothing fit anymore.

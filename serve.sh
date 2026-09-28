@@ -73,7 +73,8 @@ exec "${BIN}" serve "${MODEL_ARG[@]}" \
     --bind 0.0.0.0 \
     --port 11434 \
     --max-seq-len 104416 \
-    --max-batch-size 1 \
+    --max-batch-size 4 \
+    --swap-space-gb 32 \
     --gpu-memory-utilization 0.90 \
     --kv-high-precision-layers 3 \
     --scheduling-policy slai \

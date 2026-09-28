@@ -90,6 +90,7 @@ fn init_logging() {
     if std::env::var("ATLAS_FILE_LOG").as_deref() != Ok("0") {
         let dir = spark_runtime::crash::log_dir();
         if std::fs::create_dir_all(&dir).is_ok() {
+            prune_old_logs(&dir);
             let ts = spark_runtime::crash::timestamp_compact();
             let open = |name: String| {
                 std::fs::OpenOptions::new()
@@ -124,6 +125,39 @@ fn init_logging() {
         .with(stdout)
         .with(file_layers)
         .init();
+}
+
+/// Retention for OUR log files only (`atlas-*`, `critical-*`, `crash-*`):
+/// delete anything older than `ATLAS_LOG_RETENTION_DAYS` (default 14,
+/// 0 = keep forever). Other files in the dir (e.g. the serve.sh tee's
+/// `serve-*.log`) are never touched.
+fn prune_old_logs(dir: &std::path::Path) {
+    let days: u64 = std::env::var("ATLAS_LOG_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(14);
+    if days == 0 {
+        return;
+    }
+    let cutoff = std::time::SystemTime::now() - std::time::Duration::from_secs(days * 86_400);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        let ours = name.starts_with("atlas-")
+            || name.starts_with("critical-")
+            || name.starts_with("crash-");
+        if ours
+            && name.ends_with(".log")
+            && e.metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|t| t < cutoff)
+        {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Todo.md Phase 1.6: the scheduler thread owns the model and the CUDA

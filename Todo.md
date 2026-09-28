@@ -165,8 +165,8 @@ Abweichungen vom heutigen Dev-Setup (`serve.sh` + `.devpod/compose.yml`):
 
 | Setting | Dev heute | Produktion | Warum |
 |---|---|---|---|
-| `--max-batch-size` | 1 | 4 jetzt, 8 nach 0.6 | Continuous Batching aktivieren; ohne 0.6-Guard killt Decode-Zeit-Erschöpfung den ganzen Batch |
-| `--swap-space-gb` | 3 (Default) | 32–64 | Disk-Spill ist das Überlaufventil bei Batch > 1 mit langen Kontexten |
+| `--max-batch-size` | 4 (seit 0.6) | 8 möglich | Decode-Zeit-Guard (0.6) ist live-getestet; serve.sh fährt jetzt 4 |
+| `--swap-space-gb` | 32 (seit 0.6) | 32–64 | Disk-Spill ist das aktive Überlaufventil des Decode-Guards |
 | `--kv-pool-gb` | nicht gesetzt | fest setzen (z. B. 16–24) | deterministische Hot-Swaps, entkoppelt vom Messproblem, solange 0.3 offen ist |
 | `ATLAS_DISABLE_WATCHDOGS` | 1 | **entfernen** | Code-Kommentar selbst: „re-enable for production"; schützt vor Fall C3 |
 | `ATLAS_KV_OVERCOMMIT` | 1 | 1 behalten | hohe `--max-seq-len` ohne Boot-Verweigerung; Risiko wird durch 0.6 + Swap-Space getragen |
@@ -187,15 +187,15 @@ Ursache in einer Datei — kein Dashboard, kein externer Stack.
       `critical-<ts>.log` (**alle** WARN+ERROR jedes Targets — die eine Datei,
       in die man schaut, wenn etwas schiefging). `ATLAS_FILE_LOG=0` schaltet ab.
       Rotation = pro Serverstart (wie das bisherige `logs/serve-<ts>.log`-Muster);
-      Retention/Pruning noch offen (Cron o. ä.).
-- [ ] **1.2 Katalog-Abdeckung herstellen:** jedes Ereignis aus dem Katalog bekommt ein
-      strukturiertes Event auf seinem Target mit den Zahlen, die man zur Diagnose
-      braucht (A: meminfo+cuda-Snapshot; B: freed/failed/Bytes/Dauer; D: Kernel-Name,
-      Modell, Grid/Block). Lücken heute vor allem: A1/A8-Vorläufer, B4-Details, D*.
-      *Teil erledigt (2026-09-28):* B1 hat jetzt das `unload_release`-Event (Target
-      `hotswap`): freed/failed, KV-Pool-Belegung vor Teardown, Arena-Payload,
-      meminfo+cuda vor/nach, `reclaimed_gib` — zusätzlich als `released`-Block in
-      der `/admin/models/unload`-Antwort für externe Assertions.
+      Retention: eigene Dateien (atlas-/critical-/crash-) älter als
+      `ATLAS_LOG_RETENTION_DAYS` (Default 14) werden beim Start gelöscht.
+- [x] **1.2 Katalog-Abdeckung** *(im Wesentlichen erledigt 2026-09-28)*:
+      A1/A8-Vorläufer → Heartbeat-WARNs (1.3); A2/E1 → Crash-Snapshots (1.6);
+      A4 → `load_fail_cleanup` + memdebug-Build-Phasen (1.5); B1 →
+      `unload_release`-Event + `released`-Block in der Unload-Antwort; A6 →
+      „Decode-time guard"-Events; D1–D3 → `cuda_err`-Target (1.4); C* →
+      memdebug (bestand). Restlücke: B4-Detailfelder (Snapshot-Reload-Fehler
+      tragen bislang nur den anyhow-Kontext) — bei Bedarf nachschärfen.
 - [x] **1.3 Speicher-Heartbeat statt Dashboard.** *(umgesetzt 2026-09-28)*
       `main_modules/heartbeat.rs`: 1×/min eine INFO-Zeile auf Target `mem`
       (MemAvailable, SwapFree, cudaFree, KV-Pool used/total, Arena used/cap, RSS);
@@ -203,13 +203,18 @@ Ursache in einer Datei — kein Dashboard, kein externer Stack.
       8 GB oder SwapFree 2 GB (via `ATLAS_MEM_WARN_{AVAIL,SWAP}_GB` einstellbar),
       wird WARN geloggt → landet automatisch in critical.log (A1/A2/A8-
       Frühwarnung). Intervall `ATLAS_MEM_HEARTBEAT_SECS` (0 = aus).
-- [ ] **1.4 Zentraler CUDA-Error-Wrapper (`cuda_err`):** heute verstreut über
-      `buffers.rs`, `fast_weights`, `load_fns.rs`. Jeder Launch-/Sync-Fehler loggt
-      Kernel-Name, Modell, Shapes, letzte Allokation; sticky-Error-Erkennung markiert
-      den Server-Zustand (Health-Endpoint → 503), statt endlos Request-Fehler zu
-      produzieren (D1).
-- [ ] **1.5 memdebug auf den Build-/Swap-Pfad ausweiten:** Events build_start/
-      build_fail/build_ok mit meminfo-Snapshot vorher/nachher (deckt A4/0.4 ab).
+- [x] **1.4 Zentraler CUDA-Error-Wrapper (`cuda_err`).** *(umgesetzt 2026-09-28)*
+      Statt alle verstreuten Call-Sites umzubauen, sind die vier Choke-Points
+      instrumentiert, durch die JEDER Modell-Kernel läuft: `GpuBackend::launch`
+      (loggt Kernel-Name aus der neuen Handle→Name-Registry + Grid/Block/SMEM),
+      `synchronize`/`device_synchronize` (wo asynchrone Device-Fehler auftauchen)
+      und `launch_graph` — alles auf Target `cuda_err` (→ critical.log).
+      Sticky-Erkennung (`spark_runtime::cuda_err`, Status 700/710/713–716/719/999):
+      ein vergifteter Kontext schaltet `/health` dauerhaft auf 503
+      `cuda_context_poisoned` statt endloser Request-500er (Fall D1).
+- [x] **1.5 memdebug Build-Pfad.** *(umgesetzt 2026-09-28)*
+      `memdebug::on_build_phase("start"/"ok"/"fail")` mit meminfo/CUDA/RSS-
+      Snapshot, verdrahtet im Hot-Swap-Reload (deckt A4/0.4 messbar ab).
 - [x] **1.6 Crash-Forensik.** *(umgesetzt 2026-09-28)*
       `spark_runtime::crash::write_crash_snapshot`: meminfo + raw-CUDA + KV-Pool +
       letzte Budget-Entscheidung + RSS nach `logs/crash-<ts>.log`, zusätzlich als
@@ -233,21 +238,24 @@ Kernel-Microbenches (`crates/atlas-spark-bench/benches`).
       PASS** (R2 reclaimed 47,6 GB; R3 TranslateGemma-Load OK — der 2026-09-11-Fall
       ist damit geschlossen; R5 Drift 0,06 GB). Der Completion-Check ist
       kategorie-bewusst (Translate-Modelle via `/v1/translate`).
-- [ ] **2.1b N×-Hot-Swap-Churn** über alle Preseed-Kategorien mit Assertion
-      „`used_so_far` wächst nicht monoton" über `/v1/stats` (breiterer Leak-Detektor
-      als der 2-Zyklen-Check in 2.1a).
-- [ ] **2.2 Kernel-Fehler-Lauf:** pro Modell der Preseed-Matrix ein kurzer
-      Inferenz-Sweep; Bench-Ergebnis FAIL bei jedem Event in `critical.log` mit
-      Target `cuda_err` (nutzt 1.4). Kernel-Microbenches nightly, Diff gegen
-      `tests/baselines/`.
-- [ ] **2.3 Per-Request-Speichertracking im Bench:** Läufe mit `ATLAS_MEM_DEBUG=1`,
-      memdebug-Zeilen einsammeln; `KV LEAK` / monotones `gpu_drift_mib` ⇒ FAIL;
-      Drift-Trend pro Lauf archivieren.
-- [ ] **2.4 Scheduling auf dem Spark:** Cron/systemd-Timer auf dem Host, der die
-      volle Matrix nightly im bestehenden Container fährt (`podman exec`), plus
-      schneller Smoke-Satz (Health, 1 Chat, kv_budget K1, `critical.log` leer) als
-      pre-deploy-Gate in `Deploy.md`. Ergebnis: eine Zusammenfassungszeile +
-      `tests/all_models_results/`; bei FAIL bleiben die Server-Logs des Laufs liegen.
+- [x] **2.1b N×-Hot-Swap-Churn.** *(umgesetzt 2026-09-28)*
+      `scripts/hotswap_churn_test.sh`: N Zyklen (Default 5) alternierend über
+      Modelle; Assertions: `free_failed == 0` je Unload (C1), meminfo-Drift
+      < 2 GB über alle Zyklen (C2, Leak-Detektor A4) und
+      `kv_budget_decision.source == auto_baseline` am Ende (C3 — das Gate
+      bleibt über Swaps hinweg self-relative; nutzt 0.5).
+- [x] **2.2/2.3/2.4 Nightly-Bench + Gates.** *(umgesetzt 2026-09-28)*
+      `scripts/nightly_bench.sh`: N1 Health (fängt auch das Sticky-CUDA-503),
+      N2 Stats-Sanity (Gate nie `auto_implausible`), N3 Release-Suite, N4 Churn,
+      N5 **cuda_err-Gate** (kein `cuda_err`-Event in der neuesten critical-*.log
+      ⇒ deckt 2.2 ab), N6 **memdebug-Gate** („KV LEAK"/„release path was
+      skipped" in atlas-*.log ⇒ FAIL; mit `ATLAS_MEM_DEBUG=1` fahren ⇒ 2.3).
+      Scheduling: Host-Crontab-Zeile ist im Skript-Header dokumentiert
+      (`podman exec atlas-gb10 …`) — **auf dem Host noch einzutragen** (aus dem
+      Container heraus nicht möglich); dieselbe Zeile dient als
+      pre-deploy-Gate für Deploy.md. Noch offen: Kernel-Microbenches
+      (`cargo bench -p atlas-spark-bench`) nightly + Diff gegen
+      `tests/baselines/`, und die volle Serve-Matrix einhängen.
 
 ---
 
