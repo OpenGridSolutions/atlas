@@ -105,5 +105,8 @@ pub(super) fn build_prefill_in_progress(
         // prefill (multiclass 1.3).
         probed_logits: None,
         pooled_hidden: None,
+        // ATLAS_MEM_DEBUG guard, created at prefill start (request-start
+        // GPU/RSS snapshot); `None` when disabled.
+        mem: crate::memdebug::new_seq(),
     }
 }

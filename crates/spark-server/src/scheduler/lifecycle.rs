@@ -79,12 +79,33 @@ pub fn finish_sequence_with_reason(
     };
     let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
     tracing::info!("Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms");
+    // ATLAS_MEM_DEBUG: snapshot the block holdings before the release so
+    // on_finish can report released/freed/kept-by-cache. Only measured when
+    // the guard exists (zero cost otherwise).
+    let mem_acct = a
+        .mem
+        .as_ref()
+        .map(|_| (a.seq.block_table.len(), model.num_free_blocks()));
     // Cache the full sequence (prompt + generated) in the prefix cache.
     // Must happen BEFORE free_sequence() so block indices are still valid.
     // Enables multi-turn sessions to reuse KV cache for prior assistant responses.
     model.cache_sequence(&a.seq);
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("free_sequence: {e:#}");
+    }
+    if let Some((held_before, free_before)) = mem_acct {
+        crate::memdebug::on_finish(
+            &mut a.mem,
+            reason,
+            crate::memdebug::FinishBlockAccounting {
+                held_before,
+                freed_to_pool: model.num_free_blocks().saturating_sub(free_before),
+                held_after: a.seq.block_table.len(),
+            },
+            a.output_tokens.len(),
+            a.thinking_tokens,
+            model,
+        );
     }
     // EP: signal worker to free+realloc its mirrored sequence.
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
@@ -108,8 +129,26 @@ pub fn send_error(model: &dyn Model, a: &mut ActiveSeq, msg: &str) {
             }
         }
     }
+    let mem_acct = a
+        .mem
+        .as_ref()
+        .map(|_| (a.seq.block_table.len(), model.num_free_blocks()));
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("send_error: free_sequence: {e:#}");
+    }
+    if let Some((held_before, free_before)) = mem_acct {
+        crate::memdebug::on_finish(
+            &mut a.mem,
+            "error",
+            crate::memdebug::FinishBlockAccounting {
+                held_before,
+                freed_to_pool: model.num_free_blocks().saturating_sub(free_before),
+                held_after: a.seq.block_table.len(),
+            },
+            a.output_tokens.len(),
+            a.thinking_tokens,
+            model,
+        );
     }
     if let Err(e) = model.ep_broadcast_cmd_for_seq(a.seq.slot_idx as u32, 0xFFFFFFF1) {
         tracing::error!("send_error: ep_broadcast free+realloc: {e:#}");
@@ -170,6 +209,10 @@ pub fn swap_out_sequence(
     let num_blocks = a.seq.block_table.len();
     let seq_len = a.seq.seq_len;
     let tokens = a.seq.tokens.clone();
+
+    // ATLAS_MEM_DEBUG: consume the guard — this is a regular exit (blocks
+    // freed below, state continues on disk under a fresh resumed guard).
+    crate::memdebug::on_swap_out(&mut a.mem, num_blocks);
 
     // Free GPU resources (KV blocks + SSM slot).
     let slot_idx = a.seq.slot_idx as u32;
@@ -261,6 +304,11 @@ pub fn resume_swapped_seq(
     seq.tokens = s.tokens;
     seq.seq_len = s.seq_len;
 
+    // ATLAS_MEM_DEBUG: fresh guard (fresh ID, resumed=true) — the pre-swap
+    // portion of this request was already accounted by `on_swap_out`.
+    let mut mem = crate::memdebug::new_seq_resumed();
+    crate::memdebug::on_resumed(&mut mem, &seq);
+
     Ok(ActiveSeq {
         seq,
         session_hash: s.session_hash,
@@ -350,5 +398,6 @@ pub fn resume_swapped_seq(
         probed_logits: None,
         pooled_hidden: None,
         cached_prompt_tokens: s.cached_prompt_tokens,
+        mem,
     })
 }

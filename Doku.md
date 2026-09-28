@@ -387,3 +387,50 @@ So sind TranslateGemma (gemma3) und Qwen3-VL-FP8 integriert worden:
 | Test-Suiten | `scripts/categories_translate_test.sh`, `embed_rerank_test.sh`, `whisper_test.sh`, `stats_test.sh` |
 | Kernel-Rebuild | automatisch via `cargo build` (nvcc-Cache macht Wiederholungen billig) |
 | Projekt-Historie | `Plan.md` (Phasen K/T/W/S/V/Q mit Befunden), `CHANGELOG.md` |
+
+## 7. KV-Cache-Debugging (`ATLAS_MEM_DEBUG`)
+
+Per-Request/Per-Phase-Sicht auf den paged KV-Cache — für Block-Leak-Jagd
+(z. B. Client-Timeouts) und um zuzusehen, wie Prefill/Thinking/Generation
+Blöcke konsumieren. Reine Observability: ändert kein Scheduling, kein
+Caching, keine Eviction; ohne die Env-Var entstehen keine Kosten.
+
+```bash
+RUST_LOG="off,memdebug=debug" ATLAS_MEM_DEBUG=1 ./serve.sh
+```
+
+`RUST_LOG=off,memdebug=debug` stummschaltet alle anderen Module; alle
+Ausgaben laufen als strukturierte tracing-Felder auf dem Target `memdebug`
+(Level `debug`; `error` nur bei Invariantenverletzungen).
+
+Events pro Request (Feld `seq` = memdebug-ID, `resumed=true` nach
+Disk-Swap-Resume):
+
+| `event` | Wann | Schlüsselfelder |
+|---|---|---|
+| `server_ready` | Preseed fertig, Listener gebunden — ab hier testen | `addr`, `registered_models` (Modelle laden lazy beim ersten Request) |
+| `admission` | Request angenommen | `pool_total/free`, `active_used`, `cached_evictable`, `unaccounted`, `gpu_free_mib`, `rss_mib`, `*_drift_mib` |
+| `prefill` | Prefill fertig | `prompt_tokens`, `prefix_hit_tokens`, `reused_blocks`, `new_blocks`, `blocks_held` |
+| `block_alloc` | Neuer Block im Decode | `phase` (`thinking`/`generation`), `new_blocks`, `blocks_held`, `output_tokens`, `pool_free` |
+| `decode_summary` | Alle 128 Output-Tokens | `blocks_held`, `thinking_blocks`, `generation_blocks`, `pool_free` |
+| `phase_transition` | `inside_thinking`-Flip | `thinking_tokens`, `thinking_blocks` (fehlt bei Modellen ohne Thinking, z. B. TranslateGemma — dort ist alles `generation`) |
+| `finish` | Jeder Abschluss (stop/length/error/cancel/receiver-dropped/model_swap) | `blocks_released`, `freed_to_pool`, `kept_by_prefix_cache`, `held_after` (muss 0 sein), Per-Phase-Breakdown, `gpu_delta_mib`, `rss_delta_mib`, `*_drift_mib` |
+| `abort` / `swap_out` / `resume` | Reguläre Nicht-Finish-Exits | `why` bzw. `blocks_released` |
+| Idle-Zeile | Scheduler wird leer | `idle invariant ok` oder `error` `KV LEAK: blocks held by sequences while scheduler is idle` |
+
+So sieht ein Leak aus:
+- `finish` mit `held_after > 0` → `free_sequence` hat die Blocktabelle
+  nicht geräumt (error-Zeile).
+- Idle-`KV LEAK` mit `leaked_blocks > 0` → Pool-Blöcke, die weder dem
+  Prefix-Cache noch dem permanenten Baseline-Overhead (z. B. der
+  CUDA-Graph-Dummy-Block aus dem Modellbau) gehören.
+- `error` „sequence dropped without finish/abort accounting" → ein
+  Exit-Pfad hat die Freigabe-Buchung übersprungen.
+- Monoton sinkende `gpu_drift_mib` über viele Requests → CUDA-Graphen
+  oder andere GPU-Allokationen lecken (pro Request wird ein Graph
+  gecaptured).
+
+Rechen-Hinweis: `unaccounted = total − free − active_used −
+cached_evictable` kann **negativ** werden, weil ein per Prefix-Cache
+wiederverwendeter Block gleichzeitig in `active_used` und
+`cached_evictable` zählt. Die harte Invariante ist die Idle-Prüfung.

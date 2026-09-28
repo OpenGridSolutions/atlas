@@ -223,7 +223,7 @@ pub async fn transcriptions(
     // in ATLAS_PRESEED_TRANSCRIBE is accepted, plus the OpenAI-habitual
     // "whisper-1" / short aliases (clients hardcode those).
     let alias_ok = matches!(model.as_str(), "" | "whisper-1" | "whisper-large-v3" | WHISPER_ID);
-    let listed_ok = _state.transcribe_models.iter().any(|m| *m == model);
+    let listed_ok = _state.transcribe_models.contains(&model);
     if !alias_ok && !listed_ok {
         // A model registered for another endpoint gets the explaining 400.
         if let Some(reg) = _state

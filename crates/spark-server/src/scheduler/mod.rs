@@ -306,6 +306,9 @@ pub fn run(
 
     install_high_speed_swap(&*model, high_speed_swap_cfg);
 
+    // ATLAS_MEM_DEBUG: block size for prefix-reuse math (no-op when off).
+    crate::memdebug::init(block_size);
+
     let mut swap = hotswap_ctl::SwapCtl::new(hotswap.clone(), model_ready.clone());
 
     loop {
@@ -366,6 +369,17 @@ pub fn run(
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+        // ATLAS_MEM_DEBUG: admission-time pool stats + GPU/RSS context.
+        if crate::memdebug::enabled() && !new_reqs.is_empty() {
+            let active_used: usize = active
+                .iter()
+                .map(|a| a.seq.block_table.len())
+                .chain(prefilling.iter().map(|p| p.seq.block_table.len()))
+                .sum();
+            for req in &new_reqs {
+                crate::memdebug::on_request_admitted(&*model, req.prompt_len(), active_used);
+            }
+        }
         if new_reqs.is_empty() && active.is_empty() && prefilling.is_empty() {
             // Receiver thread was closed (shutdown).
             let pending_closed = pending.0.lock().closed;
@@ -453,6 +467,11 @@ pub fn run(
         );
 
         if active.is_empty() {
+            // ATLAS_MEM_DEBUG: a prefill error can end the last live request
+            // here (before the end-of-loop check is reached via `continue`).
+            if prefilling.is_empty() && swapped.is_empty() {
+                crate::memdebug::on_idle(&*model);
+            }
             continue;
         }
 
@@ -606,6 +625,21 @@ pub fn run(
             }
         }
 
+        // ATLAS_MEM_DEBUG: once-per-step decode tick BEFORE retirement so a
+        // finishing step's growth/transition is still observed. Covers the
+        // MTP, non-MTP and fused-mixed paths (all converge here). No-op per
+        // sequence when the guard is None.
+        for a in active.iter_mut() {
+            crate::memdebug::on_decode_tick(
+                &mut a.mem,
+                &a.seq,
+                a.output_tokens.len(),
+                a.thinking_tokens,
+                a.inside_thinking,
+                &*model,
+            );
+        }
+
         retire_finished_sequences(&*model, &mut active);
 
         // ── Swap-in: resume swapped sequences when blocks free up ──
@@ -634,6 +668,13 @@ pub fn run(
                 }
             }
         }
+
+        // ATLAS_MEM_DEBUG: idle invariant — zero live sequences after this
+        // step's retirement. Logs once per busy→idle transition; the next
+        // loop iteration blocks on the condvar until new work arrives.
+        if active.is_empty() && prefilling.is_empty() && swapped.is_empty() {
+            crate::memdebug::on_idle(&*model);
+        }
     }
 
     // Periodic session eviction: free SSM snapshots for expired sessions.
@@ -657,7 +698,11 @@ pub fn run(
             let _ = spill.remove_file(s.swap_id);
         }
     }
-    for p in prefilling {
+    for mut p in prefilling {
+        // Regular shutdown exit — consume the memdebug guard (blocks are
+        // freed right below); the Drop backstop stays reserved for
+        // genuinely missed releases.
+        crate::memdebug::on_aborted(&mut p.mem, "shutdown");
         let mut seq = p.seq;
         let _ = model.free_sequence(&mut seq);
         let _ = model.ep_broadcast_cmd_for_seq(seq.slot_idx as u32, 0xFFFFFFF1);

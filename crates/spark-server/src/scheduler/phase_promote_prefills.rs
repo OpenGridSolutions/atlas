@@ -24,9 +24,10 @@ pub(super) fn promote_completed_prefills(
     // Process in reverse order so swap_remove indices stay valid.
     completed_indices.sort_unstable_by_key(|x| std::cmp::Reverse(x.0));
     for (idx, maybe_token) in completed_indices {
-        let p = prefilling.swap_remove(idx);
+        let mut p = prefilling.swap_remove(idx);
         let Some(first) = maybe_token else {
             // Error path: free the sequence.
+            crate::memdebug::on_aborted(&mut p.mem, "prefill_error");
             let mut seq = p.seq;
             if let Err(e) = model.free_sequence(&mut seq) {
                 tracing::error!("phase_promote_prefills: free_sequence (error path): {e:#}");
@@ -53,6 +54,9 @@ pub(super) fn promote_completed_prefills(
             p.require_tool_call && p.grammar_state.is_none() && tool_call_start_token.is_some();
         let now = Instant::now();
         let cached_prompt_tok = p.seq.cached_prefix_tokens as u32;
+        // ATLAS_MEM_DEBUG: chunked prefill completed — log the summary now,
+        // before `p` (and its guard) moves into the ActiveSeq builder.
+        crate::memdebug::on_prefill_complete(&mut p.mem, &p.seq, p.prompt_tokens.len());
         let immediate_finish =
             !spontaneous_think && (p.eos_tokens.contains(&first) || p.max_tokens <= 1);
 
@@ -104,6 +108,7 @@ fn build_active_seq_from_prefill(
     // F4: sticky tool-request flag — grammar attached OR legacy tool path.
     // Computed before `p.grammar_state` is moved into the struct below.
     let tool_request = p.grammar_state.is_some() || use_legacy_tool_call;
+    let mem = p.mem;
     ActiveSeq {
         seq: p.seq,
         session_hash: p.session_hash,
@@ -204,5 +209,6 @@ fn build_active_seq_from_prefill(
         // paths (multiclass 1.3).
         probed_logits: p.probed_logits,
         pooled_hidden: p.pooled_hidden,
+        mem,
     }
 }

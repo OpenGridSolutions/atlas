@@ -371,6 +371,10 @@ pub fn start_chunked_prefill(
 
         let now = Instant::now();
         let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+        // ATLAS_MEM_DEBUG: single-chunk prefill completed here (the chunked
+        // path logs at promotion instead).
+        let mut mem = crate::memdebug::new_seq();
+        crate::memdebug::on_prefill_complete(&mut mem, &seq, total);
         if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
             let mut a = ActiveSeq {
                 seq,
@@ -447,6 +451,7 @@ pub fn start_chunked_prefill(
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
                 probed_logits,
                 pooled_hidden,
+                mem,
             };
             finish_sequence(model, &mut a);
             Ok(StartPrefillResult::Finished)
@@ -539,6 +544,7 @@ pub fn start_chunked_prefill(
                 adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
                 probed_logits,
                 pooled_hidden,
+                mem,
             }))
         }
     } else {

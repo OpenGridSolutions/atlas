@@ -209,6 +209,9 @@ pub fn prefill_request(
 
     let now = Instant::now();
     let cached_prompt_tok = seq.cached_prefix_tokens as u32;
+    // ATLAS_MEM_DEBUG: single-shot prefill completed here.
+    let mut mem = crate::memdebug::new_seq();
+    crate::memdebug::on_prefill_complete(&mut mem, &seq, prompt_tokens.len());
 
     if !spontaneous_think && (eos_tokens.contains(&first) || max_tokens <= 1) {
         let mut a = ActiveSeq {
@@ -286,6 +289,7 @@ pub fn prefill_request(
             adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
             probed_logits: probed_logits.clone(),
             pooled_hidden: pooled_hidden.clone(),
+            mem,
         };
         finish_sequence(model, &mut a);
         return Ok(None);
@@ -374,5 +378,6 @@ pub fn prefill_request(
         adaptive: crate::adaptive_sampler::AdaptiveSamplingState::new(temperature),
         probed_logits,
         pooled_hidden,
+        mem,
     }))
 }

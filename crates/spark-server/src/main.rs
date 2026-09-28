@@ -37,6 +37,7 @@ mod loop_detector;
 mod loop_simhash;
 mod lqer;
 mod main_modules;
+mod memdebug;
 pub mod metrics;
 mod model_resolver;
 mod moe_quality;

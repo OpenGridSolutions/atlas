@@ -721,6 +721,13 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// `(entries, cached_blocks)` of the prefix cache — read-only, used by
+    /// the ATLAS_MEM_DEBUG pool accounting (`memdebug` target). Default
+    /// `(0, 0)` for models without a prefix cache (test mocks).
+    fn prefix_cache_stats(&self) -> (usize, usize) {
+        (0, 0)
+    }
+
     /// Return the default CUDA stream handle.
     fn default_stream(&self) -> u64 {
         0

@@ -139,6 +139,9 @@ pub(super) struct PrefillInProgress {
     pub capture_hidden: bool,
     /// The captured pooled hidden state (parallel to `probed_logits`).
     pub pooled_hidden: Option<Vec<f32>>,
+    /// ATLAS_MEM_DEBUG per-request KV accounting; `None` when disabled
+    /// (zero cost). Moved onto the `ActiveSeq` at promotion.
+    pub mem: Option<Box<crate::memdebug::SeqMemDebug>>,
 }
 
 /// An in-flight sequence participating in batched decode.
@@ -364,6 +367,11 @@ pub(super) struct ActiveSeq {
     /// Pooled last-token hidden state (multiclass 1.3, embeddings) —
     /// same lifecycle contract as `probed_logits`.
     pub pooled_hidden: Option<Vec<f32>>,
+    /// ATLAS_MEM_DEBUG per-request KV accounting; `None` when disabled
+    /// (zero cost). Consumed by `memdebug::on_finish`/`on_aborted`/
+    /// `on_swap_out` on every exit path; `SeqMemDebug::drop` errors if a
+    /// path skipped all of them.
+    pub mem: Option<Box<crate::memdebug::SeqMemDebug>>,
 }
 
 impl ActiveSeq {

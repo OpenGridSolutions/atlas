@@ -42,6 +42,14 @@ pub(crate) async fn build_and_serve(
     // to avoid leaking backtrace contents to the client.
     let catch_panic = tower_http::catch_panic::CatchPanicLayer::new();
 
+    // Captured before `state` moves into the router (ATLAS_MEM_DEBUG ready
+    // line below). The boot model is always registered, hence the 1.
+    let registered_models = state
+        .hotswap
+        .as_ref()
+        .map(|h| h.registry.len())
+        .unwrap_or(1);
+
     let app = Router::new()
         .route("/v1/chat/completions", post(api::chat_completions))
         .route("/v1/chat/completions/{id}", get(api::get_stored_completion))
@@ -179,6 +187,10 @@ pub(crate) async fn build_and_serve(
     }
     tracing::info!("Listening on {addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    // ATLAS_MEM_DEBUG: readiness marker on the memdebug target — under
+    // `RUST_LOG=off,memdebug=debug` every other boot line is silenced, so
+    // this is the "start testing now" signal.
+    crate::memdebug::on_server_ready(&addr, registered_models);
     // `into_make_service_with_connect_info` exposes the socket peer addr
     // to extractors — needed by `rate_limit_middleware` when the caller
     // didn't send X-Forwarded-For.

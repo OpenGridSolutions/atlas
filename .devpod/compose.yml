@@ -35,6 +35,11 @@ services:
     environment:
       - IS_SANDBOX=1
       - ATLAS_KV_OVERCOMMIT=1
+      - ATLAS_DISABLE_WATCHDOGS=1
+      # KV-cache debugging (Doku.md §7) — uncomment both to trace per-phase
+      # block usage on the dedicated `memdebug` tracing target only:
+      # - ATLAS_MEM_DEBUG=1
+      # - RUST_LOG=off,memdebug=debug
       # Categorized preseed lists (Plan.md Phase K): each model declares
       # its serving category via the variable it is listed in and is ONLY
       # accepted at that category's endpoint (400 elsewhere).

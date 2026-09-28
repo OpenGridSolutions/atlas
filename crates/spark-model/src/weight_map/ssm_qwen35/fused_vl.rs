@@ -125,13 +125,13 @@ pub(super) fn load_experts_fused_fp8_transposed(
     // 768/128 all exact for this family) — a ceil-grid on non-multiples
     // would silently misalign scale lookups in the slice kernel.
     ensure!(
-        gu_sn > 0 && gu_sk > 0 && h % gu_sn == 0 && (2 * inter) % gu_sk == 0,
+        gu_sn > 0 && gu_sk > 0 && h.is_multiple_of(gu_sn) && (2 * inter).is_multiple_of(gu_sk),
         "{gu_key}_scale_inv grid {:?} does not evenly divide [{h}, {}]",
         gu_s.shape,
         2 * inter,
     );
     ensure!(
-        d_sn > 0 && d_sk > 0 && inter % d_sn == 0 && h % d_sk == 0,
+        d_sn > 0 && d_sk > 0 && inter.is_multiple_of(d_sn) && h.is_multiple_of(d_sk),
         "{d_key}_scale_inv grid {:?} does not evenly divide [{inter}, {h}]",
         d_s.shape,
     );
