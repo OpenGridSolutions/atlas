@@ -444,6 +444,52 @@ pub fn run(
             &mut prefilling,
         );
 
+        // ── Decode-time pool guard (Todo.md 0.6 / case A6) ──
+        // The admission-time swap-out above only runs when NEW requests
+        // arrive. Sequences that grow the pool dry between arrivals used
+        // to hit the block allocator mid-step, and the decode_batch error
+        // path kills the WHOLE batch. Worst case per step is one fresh
+        // block per active sequence (a step appends ≤ num_drafts+1 << 16
+        // tokens), so preemptively swap out the largest non-grammar
+        // sequence until the step is covered. Never the last one: a lone
+        // sequence that outgrew the pool gains nothing from swapping
+        // itself out (its restore needs the same blocks back).
+        if let Some(ref mut spill) = spill_manager {
+            while active.len() > 1 && model.num_free_blocks() < active.len() {
+                let victim_idx = active
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| a.grammar_state.is_none())
+                    .max_by_key(|(_, a)| a.seq.block_table.len())
+                    .map(|(i, _)| i);
+                let Some(victim_idx) = victim_idx else {
+                    tracing::warn!(
+                        "Decode-time guard: pool low ({} free blocks, {} active) but no \
+                         swappable sequence (all grammar-active) — decode may fail this step",
+                        model.num_free_blocks(),
+                        active.len()
+                    );
+                    break;
+                };
+                match swap_out_sequence(&*model, &mut active, victim_idx, spill) {
+                    Ok(s) => {
+                        tracing::info!(
+                            "Decode-time guard: KV pool low — swapped out seq \
+                             (seq_len={}, blocks={}) to disk; {} active remain",
+                            s.seq_len,
+                            s.num_blocks,
+                            active.len(),
+                        );
+                        swapped.push(s);
+                    }
+                    Err(e) => {
+                        tracing::error!("Decode-time guard: swap-out failed: {e:#}");
+                        break;
+                    }
+                }
+            }
+        }
+
         // ── Continue in-progress prefills ──
         let did_mixed_step = continue_in_progress_prefills(
             &*model,
@@ -648,7 +694,14 @@ pub fn run(
             while resumed_any && !swapped.is_empty() && active.len() < max_batch_size {
                 resumed_any = false;
                 let free = model.num_free_blocks();
-                if let Some(idx) = swapped.iter().position(|s| s.num_blocks <= free) {
+                // Headroom term: resuming must leave one free block per
+                // then-active sequence, otherwise the decode-time guard
+                // fires again next step and the pair ping-pongs the same
+                // sequence through disk on every iteration.
+                if let Some(idx) = swapped
+                    .iter()
+                    .position(|s| s.num_blocks + active.len() + 1 <= free)
+                {
                     let s = swapped.remove(idx);
                     match resume_swapped_seq(think_end_token, think_start_token, &*model, s, spill)
                     {

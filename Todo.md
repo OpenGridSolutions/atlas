@@ -58,14 +58,21 @@ NVMe-/zram-Swap vergrößert den Reclaim-Puffer, den die Budget-Formel mitzählt
 - [ ] **0.5 `/v1/stats` um die Gate-Entscheidung erweitern:** `UsedSource`
       (Raw/Manual/AutoBaseline/AutoImplausible), Baseline, atlas_own, cotenants als
       Felder exportieren, damit 0.1–0.4 von außen (Test-Bench, Phase 2) prüfbar sind.
-- [ ] **0.6 Decode-Zeit-Guard gegen Pool-Erschöpfung (Fall A6).**
-      Der Swap-out-Pfad läuft nur beim Eintreffen NEUER Requests (`mod.rs:392ff`).
-      Wachsen die bereits aktiven Sequenzen den Pool leer, ohne dass etwas Neues
-      reinkommt, schlägt `decode_batch` beim Block-Alloc fehl und der Fehlerpfad
-      (`decode_step.rs:59`) beendet ALLE aktiven Sequenzen. Fix: vor jedem
-      Decode-Schritt prüfen, ob für jede wachsende Sequenz ein freier Block
-      existiert; sonst EINE Sequenz (größte, nicht grammar-aktiv) swappen statt den
-      Batch zu killen. Voraussetzung für `--max-batch-size` > 1 in Produktion.
+- [x] **0.6 Decode-Zeit-Guard gegen Pool-Erschöpfung (Fall A6).** *(umgesetzt +
+      live getestet 2026-09-28)*
+      Vor jedem Decode-Schritt gilt jetzt die Invariante `free_blocks ≥ active`
+      (jede Sequenz braucht ≤ 1 neuen Block/Schritt): Der Scheduler swappt
+      präventiv die größte nicht-grammar-aktive Sequenz auf Disk statt beim
+      Alloc-Fehler den GANZEN Batch zu killen (`decode_step.rs:59`). Die
+      Swap-in-Bedingung bekam einen Headroom-Term (`num_blocks + active + 1 ≤
+      free`), sonst ping-pongt dieselbe Sequenz jeden Schritt durch die Platte.
+      Bewusste Ausnahme: eine EINZELNE Sequenz, die allein den Pool überwächst,
+      wird nicht geswappt (Restore bräuchte dieselben Blöcke) — sie bekommt den
+      sauberen Fehler, andere bleiben unberührt.
+      Live-Test (TranslateGemma, Pool absichtlich 68 Blöcke = 1088 Token, Batch 4,
+      4 parallele Requests): 7 Guard-Swap-outs, Restores korrekt, kein
+      Batch-Kill; die zwei 500er waren exakt der Einzelsequenz-Fall.
+      Damit ist `--max-batch-size` > 1 produktionstauglich (Prod-Tabelle: 8).
 - [x] **0.7 Quant-Einstellungen von global auf per-Modell umgestellt.**
       *(a–c umgesetzt 2026-09-28; nur das Audit d ist offen — siehe 0.7d unten.)*
       `--kv-cache-dtype` und `--mtp-quantization` sind jetzt `Option<String>`:
@@ -296,6 +303,39 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
 - [ ] **3.2d Lizenz-Hinweis:** Qwen Research License (nicht Apache-2.0) —
       vor Produktivnutzung klären; betrifft auch das Publishing im
       `avarok/atlas-gb10`-Image (atlas-release MODEL.toml-Gate).
+
+### 3.3 datalab-to/chandra-ocr-2 (OCR, eigener `/v1/ocr`-Endpoint, nur dieses Modell)
+
+Chandra 2 ist ein Qwen-3.5-basiertes OCR-Modell (Markdown/HTML/JSON-Output mit
+Layout, SOTA olmocr-Bench 85,8 %) — Architektur-Tag `qwen3_5`, d. h. die Basis
+sind die vorhandenen qwen3.5-Targets und der ssm_qwen35-Weight-Loader
+(inkl. VL-Pfad: `weight_map/ssm_qwen35/fused_vl.rs` existiert bereits).
+Lizenz beachten: modifizierte OpenRAIL-M (frei für Research/Startups < 2 M$,
+nicht kompetitiv zur Datalab-API einsetzbar) — vor Produktivnutzung klären.
+
+- [ ] **3.3a Kernel-Target `kernels/gb10/chandra-ocr-2/`**: MODEL.toml vom
+      passenden qwen3.5-Target ableiten (Geometrie aus dem HF-Config des
+      Chandra-2-Checkpoints bestimmen — Modellgröße/MoE-Layout prüfen, sobald
+      der Download da ist), Quant-Variante festlegen (Checkpoint ist BF16 →
+      bf16 servieren oder kalibriert quantisieren; `default_kv_dtype` bewusst
+      setzen — OCR ist layoutkritisch, eher bf16/fp8 als nvfp4).
+- [ ] **3.3b Neue `ModelCategory::Ocr`** + `ATLAS_PRESEED_OCR` + Route
+      `/v1/ocr`: Das Kategorien-System erzwingt bereits „nur dieses Modell an
+      diesem Endpoint" (400 überall sonst, 400 für fremde Modelle am
+      OCR-Endpoint) — exakt die gewünschte Ein-Modell-Semantik, analog
+      Translate. Request-Schema: Datei (PDF/Bild, multipart oder base64) +
+      `prompt_type` (`ocr_layout`/…) + `output` (`markdown`/`html`/`json`).
+- [ ] **3.3c Chandra-Preprocessing in Rust nachbauen** (Verhalten identisch
+      zur Python-Library `chandra-ocr`): PDF → Seitenbilder (pdfium-render
+      o. ä., gleiche Render-DPI), Bild-Skalierung passend zum
+      Qwen3-VL-Pixel-Budget (`vision_max_pixels`-Pfad existiert), die
+      Prompt-Templates je `prompt_type`, und das Output-Parsing
+      (`parse_markdown`, Layout-JSON, Bild-/Diagramm-Extraktion).
+- [ ] **3.3d Verhaltens-Parität testen:** Golden-Tests gegen die
+      Python-Referenz — dieselben PDFs durch `chandra` (Python, HF-Methode)
+      und durch `/v1/ocr` schicken, Markdown/JSON diffen; Beispiel-Dokumente
+      aus der Modellkarte (Tabellen, Handschrift, Mathe) als Fixtures.
+      In die Serve-Matrix aufnehmen.
 
 ## Bestandsaufnahme Tests/Benchmarks
 
