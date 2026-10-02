@@ -203,7 +203,12 @@ fn main() -> Result<()> {
                 c_cpu[row * n + col] = f32_to_bf16_bits(acc);
             }
         }
-        verdict("dense_gemm_bf16 [64x4096x4096]", &c_gpu, &c_cpu, GEMM_COSINE_GATE)?;
+        verdict(
+            "dense_gemm_bf16 [64x4096x4096]",
+            &c_gpu,
+            &c_cpu,
+            GEMM_COSINE_GATE,
+        )?;
     }
 
     // ── 3. dense_gemv_bf16 (module "gemv") — decode projection shape ──
@@ -240,7 +245,12 @@ fn main() -> Result<()> {
             }
             *slot = f32_to_bf16_bits(acc);
         }
-        verdict("dense_gemv_bf16 [1x12288x4096]", &c_gpu, &c_cpu, GEMV_COSINE_GATE)?;
+        verdict(
+            "dense_gemv_bf16 [1x12288x4096]",
+            &c_gpu,
+            &c_cpu,
+            GEMV_COSINE_GATE,
+        )?;
     }
 
     // ── 4. rms_norm (module "norm") — (1 + weight) scaling per kernel doc ──

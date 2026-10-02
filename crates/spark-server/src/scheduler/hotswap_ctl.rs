@@ -218,9 +218,7 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
     // model is the leak signal (was permanently ~0 before the
     // MADV_DONTNEED fix in WeightsArena::reset).
     let reclaimed_gb = match (mem_before, mem_after) {
-        (Some(b), Some(a)) => {
-            Some(gib(a.available_for_alloc) - gib(b.available_for_alloc))
-        }
+        (Some(b), Some(a)) => Some(gib(a.available_for_alloc) - gib(b.available_for_alloc)),
         _ => None,
     };
     // Todo.md 0.3: the boot-time baseline is stale after a swap (see the
@@ -314,7 +312,10 @@ pub(super) fn unload_and_park(
                 pending.1.wait(&mut g);
             }
             for req in g.requests.drain(..) {
-                fail_request(req, "no model loaded (state: unloaded); POST /admin/models/load");
+                fail_request(
+                    req,
+                    "no model loaded (state: unloaded); POST /admin/models/load",
+                );
             }
             if g.closed && g.control.is_empty() {
                 return None;

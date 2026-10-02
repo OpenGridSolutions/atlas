@@ -99,7 +99,9 @@ mod tests {
     #[test]
     fn sticky_classification() {
         assert!(is_sticky_status("cuStreamSynchronize failed: status 700"));
-        assert!(is_sticky_status("Kernel launch failed: CUDA_ERROR_ILLEGAL_ADDRESS"));
+        assert!(is_sticky_status(
+            "Kernel launch failed: CUDA_ERROR_ILLEGAL_ADDRESS"
+        ));
         assert!(!is_sticky_status("cuMemAlloc failed: status 2")); // OOM: not sticky
         assert!(!is_sticky_status("status 1 invalid value"));
     }

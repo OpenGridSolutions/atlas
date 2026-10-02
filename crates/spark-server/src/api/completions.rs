@@ -11,12 +11,12 @@ use futures::StreamExt;
 use std::sync::Arc;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::{AppState, ModelRuntime};
 use crate::openai::{
     ChatCompletionChunk, ChatCompletionRequest, ChatCompletionResponse, CompletionChunk,
     CompletionRequest, CompletionResponse, ModelInfo, ModelListResponse, PromptInput, Usage,
 };
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 // Sibling-cluster items hoisted from the original `api.rs`. These uses
 // give every sub-file access to helpers that the un-split file took for
@@ -120,7 +120,8 @@ pub async fn completions(
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
     )
-    .await {
+    .await
+    {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };

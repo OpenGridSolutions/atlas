@@ -46,7 +46,9 @@ fn parse(contents: &str) -> Option<MemInfo> {
         let (Some(key), Some(val)) = (it.next(), it.next()) else {
             continue;
         };
-        let Ok(n) = val.parse::<usize>() else { continue };
+        let Ok(n) = val.parse::<usize>() else {
+            continue;
+        };
         match key {
             "MemTotal:" => mem_total = Some(n * 1024),
             "MemAvailable:" => mem_available = Some(n * 1024),

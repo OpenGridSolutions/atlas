@@ -109,8 +109,7 @@ pub(super) fn start_new_requests(
         if batched_idx.len() >= 2 {
             match model.prepare_vision_embed_batched(&per_request_imgs) {
                 Ok(descs) if descs.len() == batched_idx.len() => {
-                    for (slot, (row_off, grid_off, n_img, row_cnt)) in
-                        batched_idx.iter().zip(descs)
+                    for (slot, (row_off, grid_off, n_img, row_cnt)) in batched_idx.iter().zip(descs)
                     {
                         vision_slices[*slot] = VisionSlice {
                             patch_row_offset: row_off,

@@ -148,15 +148,16 @@ static PDFIUM_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// chandra/input.py::load_pdf_images — render selected pages (0-based
 /// indices; empty range = all) at max(IMAGE_DPI, short-side→1024px)
 /// with flattened forms/annotations, RGB.
-pub fn load_pdf_images(bytes: &[u8], page_range: &[usize]) -> Result<Vec<(usize, image::RgbImage)>> {
+pub fn load_pdf_images(
+    bytes: &[u8],
+    page_range: &[usize],
+) -> Result<Vec<(usize, image::RgbImage)>> {
     use pdfium_render::prelude::*;
     let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let pdfium = Pdfium::new(
-        Pdfium::bind_to_system_library().context(
-            "libpdfium.so not found — install the bblanchon/pdfium-binaries \
+    let pdfium = Pdfium::new(Pdfium::bind_to_system_library().context(
+        "libpdfium.so not found — install the bblanchon/pdfium-binaries \
              linux-arm64 build to /usr/lib (see the gb10 Dockerfile)",
-        )?,
-    );
+    )?);
     let doc = pdfium
         .load_pdf_from_byte_slice(bytes, None)
         .context("unreadable PDF")?;
@@ -212,7 +213,10 @@ mod tests {
 
     #[test]
     fn range_str_mixed() {
-        assert_eq!(parse_range_str("0,2-5,9,3").unwrap(), vec![0, 2, 3, 4, 5, 9]);
+        assert_eq!(
+            parse_range_str("0,2-5,9,3").unwrap(),
+            vec![0, 2, 3, 4, 5, 9]
+        );
     }
 
     #[test]

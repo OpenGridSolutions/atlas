@@ -189,12 +189,7 @@ pub fn parse_html(html: &str, include_headers_footers: bool, include_images: boo
                 let new_tag = if let Some(s) = tag.find(" src=\"") {
                     let after = &tag[s + 6..];
                     match after.find('"') {
-                        Some(e) => format!(
-                            "{} src=\"{}\"{}",
-                            &tag[..s],
-                            src,
-                            &after[e + 1..],
-                        ),
+                        Some(e) => format!("{} src=\"{}\"{}", &tag[..s], src, &after[e + 1..],),
                         None => tag.clone(),
                     }
                 } else {

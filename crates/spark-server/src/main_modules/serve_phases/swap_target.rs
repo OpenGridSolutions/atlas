@@ -51,10 +51,7 @@ pub(crate) fn target_key(t: &atlas_core::target::KernelTarget) -> String {
 
 /// Prepare a swap to `model_id`. Mirrors the boot path's config/tokenizer
 /// phases in the same order; see module docs for what it installs.
-pub(crate) fn prepare_swap_target(
-    args: &cli::ServeArgs,
-    model_id: &str,
-) -> Result<PreparedSwap> {
+pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Result<PreparedSwap> {
     // 0/1. Resolve checkpoint + config (must already be cached locally —
     // preseed each swap target by booting it once).
     let model_dir = crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())
@@ -70,15 +67,14 @@ pub(crate) fn prepare_swap_target(
 
     // 2. Kernel target + quant compatibility (same gate as boot — a
     // mismatch would be silent garbage, not an error).
-    let ptx_set =
-        atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
-            .with_context(|| {
-                format!(
-                    "no compiled kernel target matches swap target '{model_id}' \
+    let ptx_set = atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
+        .with_context(|| {
+            format!(
+                "no compiled kernel target matches swap target '{model_id}' \
                      (model_type '{}', hidden_size {})",
-                    config.model_type, config.hidden_size
-                )
-            })?;
+                config.model_type, config.hidden_size
+            )
+        })?;
     let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
     if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
         bail!(
@@ -105,7 +101,10 @@ pub(crate) fn prepare_swap_target(
     // 2b. Topology onto the config (hot-swap is gated to world_size == 1).
     let topo = super::resolve_topology(args, &mut config)?;
     if topo.world_size != 1 {
-        bail!("hot-swap requires world_size == 1 (got {})", topo.world_size);
+        bail!(
+            "hot-swap requires world_size == 1 (got {})",
+            topo.world_size
+        );
     }
     config.fp8_kv_calibration_tokens = if args.fp8_kv_calibration_tokens > 0 {
         args.fp8_kv_calibration_tokens

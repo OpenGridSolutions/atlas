@@ -50,8 +50,7 @@ pub(crate) fn registered_model_checked(
     category: ModelCategory,
 ) -> Result<RegisteredModel> {
     let reg = registered_model(args, model_id, category)?;
-    let model_dir =
-        crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
+    let model_dir = crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
     let (mut config, _json) = super::load_model_config(&model_dir)
         .with_context(|| format!("parsing config.json of preseed model '{model_id}'"))?;
     // Sidecar-served classes (Plan.md W.0): whisper is deliberately NOT
@@ -70,16 +69,18 @@ pub(crate) fn registered_model_checked(
     super::merge_sidecar_quant_config(&model_dir, &mut config);
     // Loader gate first — its message names the actionable gap.
     spark_model::factory::loader_for_config(&config).map_err(|e| {
-        anyhow::anyhow!("no weight loader for model_type '{}' yet: {e}", config.model_type)
+        anyhow::anyhow!(
+            "no weight loader for model_type '{}' yet: {e}",
+            config.model_type
+        )
     })?;
-    let ptx_set =
-        atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
-            .with_context(|| {
-                format!(
-                    "no compiled kernel target matches model_type '{}' / hidden_size {}",
-                    config.model_type, config.hidden_size
-                )
-            })?;
+    let ptx_set = atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
+        .with_context(|| {
+            format!(
+                "no compiled kernel target matches model_type '{}' / hidden_size {}",
+                config.model_type, config.hidden_size
+            )
+        })?;
     let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
     if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
         bail!(
@@ -159,11 +160,13 @@ pub(crate) fn preseed_missing_snapshots(
         let ptx_set =
             atlas_kernels::ptx_for_model_id(&m.model_id, &config.model_type, config.hidden_size)
                 .with_context(|| {
-                    format!("no compiled kernel target matches preseed model '{}'", m.model_id)
+                    format!(
+                        "no compiled kernel target matches preseed model '{}'",
+                        m.model_id
+                    )
                 })?;
         let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
-        if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant)
-        {
+        if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
             bail!(
                 "preseed model '{}': kernel/model quant mismatch (kernel {} vs model {})",
                 m.model_id,
@@ -275,13 +278,7 @@ pub(crate) async fn run_boot_preseed(
     // backend handle onto the boot kernel target — the boot `gpu` box was
     // consumed by build_model.
     let gpu = spark_runtime::cuda_backend::AtlasCudaBackend::new(args.gpu_ordinal, boot_modules)?;
-    preseed_missing_snapshots(
-        args,
-        &gpu,
-        &ctx.arena,
-        &ctx.snapshot_dir,
-        &ctx.registry,
-    )?;
+    preseed_missing_snapshots(args, &gpu, &ctx.arena, &ctx.snapshot_dir, &ctx.registry)?;
 
     // 4. Post-condition (plan 2.2): assert it, loudly.
     if ctx.state() != SwapState::NoModel || ctx.arena.used() != 0 {

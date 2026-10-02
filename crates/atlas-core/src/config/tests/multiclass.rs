@@ -164,8 +164,16 @@ fn parse_all_cached_model_configs() {
         });
     // (repo dir name, expected model_type, expected hidden_size)
     let expected = [
-        ("models--nvidia--Qwen3-Next-80B-A3B-Thinking-NVFP4", "qwen3_next", 2048),
-        ("models--vincentzed-hf--Qwen3-Coder-Next-NVFP4", "qwen3_next", 2048),
+        (
+            "models--nvidia--Qwen3-Next-80B-A3B-Thinking-NVFP4",
+            "qwen3_next",
+            2048,
+        ),
+        (
+            "models--vincentzed-hf--Qwen3-Coder-Next-NVFP4",
+            "qwen3_next",
+            2048,
+        ),
         ("models--Qwen--Qwen3-Embedding-8B", "qwen3", 4096),
         ("models--Qwen--Qwen3-Reranker-8B", "qwen3", 4096),
         ("models--Qwen--Qwen3-VL-Embedding-8B", "qwen3_vl", 4096),

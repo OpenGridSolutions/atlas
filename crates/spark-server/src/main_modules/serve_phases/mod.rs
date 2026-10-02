@@ -25,22 +25,22 @@ pub(super) use config::{
     apply_lm_head_dtype_override, apply_model_default_num_drafts, cap_vocab_size_to_tokenizer,
     load_model_config, merge_sidecar_quant_config, resolve_model_dir,
 };
-#[cfg(feature = "cuda")]
-pub(super) use preseed::{registered_model_checked, run_boot_preseed};
-#[cfg(feature = "cuda")]
-pub(super) use swap_target::{prepare_swap_target, target_key};
 pub(super) use kv_cache::{
     KvCacheConfig, PrefillBudget, resolve_kv_cache_config, resolve_prefill_budget,
 };
 pub(super) use preflight::{
     ReservePreflight, init_gpu_backend, post_load_memory_audit, preflight_reserve,
 };
+#[cfg(feature = "cuda")]
+pub(super) use preseed::{registered_model_checked, run_boot_preseed};
 pub(super) use runtime::{
     SamplingDefaults, load_eos_tokens, load_sampling_defaults, log_behavior_audit,
     log_response_store_audit, open_dump_writer, resolve_model_name, resolve_tool_call_parser,
 };
+#[cfg(feature = "cuda")]
+pub(super) use swap_target::{prepare_swap_target, target_key};
 pub(super) use tokenizer_runtime::{TokenizerRuntime, resolve_tokenizer_runtime};
 pub(super) use topology::{Topology, init_nccl_comm, resolve_topology};
-pub(super) use weights::{auto_detect_weight_prefix, load_dflash_drafter, load_weight_store};
 #[cfg(unix)]
 pub(super) use weights::migrate_weights_to_arena;
+pub(super) use weights::{auto_detect_weight_prefix, load_dflash_drafter, load_weight_store};

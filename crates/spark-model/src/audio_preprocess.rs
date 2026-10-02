@@ -190,8 +190,7 @@ pub fn log_mel_chunks(samples: &[f32]) -> Vec<MelChunk> {
         // 30 s window with zeros BEFORE the reflective STFT pad).
         for i in 0..N_FFT / 2 {
             padded[N_FFT / 2 - 1 - i] = padded[N_FFT / 2 + 1 + i];
-            padded[N_FFT / 2 + CHUNK_SAMPLES + i] =
-                padded[N_FFT / 2 + CHUNK_SAMPLES - 2 - i];
+            padded[N_FFT / 2 + CHUNK_SAMPLES + i] = padded[N_FFT / 2 + CHUNK_SAMPLES - 2 - i];
         }
 
         // Power spectrogram → mel. HF computes 3001 frames and drops

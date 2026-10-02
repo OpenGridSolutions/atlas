@@ -283,7 +283,8 @@ mod tests {
 
     #[test]
     fn math_delimiters() {
-        let md = convert("<p>inline <math>a_1 + b</math> end</p><math display=\"block\">E=mc^2</math>");
+        let md =
+            convert("<p>inline <math>a_1 + b</math> end</p><math display=\"block\">E=mc^2</math>");
         assert!(md.contains("$a_1 + b$"), "{md}");
         assert!(md.contains("$$E=mc^2$$"), "{md}");
     }

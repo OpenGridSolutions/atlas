@@ -21,9 +21,9 @@ mod gemma4;
 mod minimax;
 mod nemotron;
 mod qwen3;
-mod qwen3_dense;
 mod qwen35;
 mod qwen35_dense;
+mod qwen3_dense;
 mod qwen3_vl;
 mod step3p7;
 

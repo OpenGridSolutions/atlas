@@ -189,11 +189,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
                 return sse_events;
             }
             // Open thinking: emit as reasoning_content
-            let full = ctx
-                .rt
-                .tokenizer
-                .decode(&state.all_toks)
-                .unwrap_or_default();
+            let full = ctx.rt.tokenizer.decode(&state.all_toks).unwrap_or_default();
             let stable_end = full.trim_end_matches('\u{FFFD}').len();
             if stable_end > state.emitted {
                 let raw = full[state.emitted..stable_end].to_string();
@@ -351,11 +347,7 @@ fn handle_token_inner(state: &mut StreamState, ctx: &StreamCtx, tok: u32) -> Sse
     // token completes it. `state.all_toks` and `state.emitted` are
     // reset at `</think>` (line 147), so this slice references the
     // post-thinking content only.
-    let full = ctx
-        .rt
-        .tokenizer
-        .decode(&state.all_toks)
-        .unwrap_or_default();
+    let full = ctx.rt.tokenizer.decode(&state.all_toks).unwrap_or_default();
     let stable_end = full.trim_end_matches('\u{FFFD}').len();
     let _ = tok; // tok already in state.all_toks via line 86
     let mut delta = if stable_end > state.emitted {
@@ -581,7 +573,11 @@ fn process_detector_content(
             );
         }
         crate::metrics::WATCHDOG_STOPS_TOTAL
-            .with_label_values(&[if semantic_trip { "simhash" } else { "line_loop" }])
+            .with_label_values(&[if semantic_trip {
+                "simhash"
+            } else {
+                "line_loop"
+            }])
             .inc();
         state.loop_watchdog_triggered = true;
         state.stop_string_triggered = true;

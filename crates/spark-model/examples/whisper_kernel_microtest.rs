@@ -120,8 +120,15 @@ fn main() -> Result<()> {
     let set = atlas_kernels::available_targets()
         .into_iter()
         .find(|t| t.target.model == "whisper-large-v3")
-        .ok_or_else(|| anyhow::anyhow!("whisper-large-v3 target not compiled — build with ATLAS_TARGET_MODEL='*'"))?;
-    println!("=== whisper kernel microtest: {} (seed 0x{seed:X}) ===", set.target);
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "whisper-large-v3 target not compiled — build with ATLAS_TARGET_MODEL='*'"
+            )
+        })?;
+    println!(
+        "=== whisper kernel microtest: {} (seed 0x{seed:X}) ===",
+        set.target
+    );
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     let gpu: &dyn GpuBackend = &backend;
     let stream = gpu.create_stream()?;
@@ -135,9 +142,15 @@ fn main() -> Result<()> {
         ("attention causal growing [nq=5, nk=41]", 5, 41, true),
         ("attention decode step [nq=1, nk=448]", 1, 448, true),
     ] {
-        let q: Vec<u16> = (0..nq * h * d).map(|_| f2b(rng.uniform(-1.0, 1.0))).collect();
-        let k: Vec<u16> = (0..nk * h * d).map(|_| f2b(rng.uniform(-1.0, 1.0))).collect();
-        let v: Vec<u16> = (0..nk * h * d).map(|_| f2b(rng.uniform(-1.0, 1.0))).collect();
+        let q: Vec<u16> = (0..nq * h * d)
+            .map(|_| f2b(rng.uniform(-1.0, 1.0)))
+            .collect();
+        let k: Vec<u16> = (0..nk * h * d)
+            .map(|_| f2b(rng.uniform(-1.0, 1.0)))
+            .collect();
+        let v: Vec<u16> = (0..nk * h * d)
+            .map(|_| f2b(rng.uniform(-1.0, 1.0)))
+            .collect();
         let (qp, kp, vp) = (up(gpu, &q)?, up(gpu, &k)?, up(gpu, &v)?);
         let op = gpu.alloc(nq * h * d * 2)?;
         let scale = 1.0 / (d as f32).sqrt();

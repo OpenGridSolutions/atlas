@@ -99,9 +99,10 @@ pub async fn admin_unload(State(state): State<Arc<AppState>>) -> Response {
         .push_control(crate::scheduler::ControlMsg::Unload { reply: reply_tx });
     match tokio::time::timeout(std::time::Duration::from_secs(60), reply_rx).await {
         Ok(Ok(Ok(stats))) => Json(stats).into_response(),
-        Ok(Ok(Err(e))) => {
-            openai_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("unload failed: {e:#}"))
-        }
+        Ok(Ok(Err(e))) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("unload failed: {e:#}"),
+        ),
         Ok(Err(_)) => openai_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "unload reply channel dropped (scheduler died?)".to_string(),
@@ -119,10 +120,7 @@ pub async fn admin_unload(State(state): State<Arc<AppState>>) -> Response {
 /// 1.3): the scheduler-side reloader rebuilds tokenizer, masks and runtime
 /// for it. The target must have a snapshot in `--snapshot-dir` (preseed by
 /// booting it once and POSTing /admin/models/snapshot).
-pub async fn admin_load(
-    State(state): State<Arc<AppState>>,
-    body: axum::body::Bytes,
-) -> Response {
+pub async fn admin_load(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
     let ctx = match ctx_or_503(&state) {
         Ok(c) => c,
         Err(r) => return *r,
@@ -194,16 +192,18 @@ pub async fn admin_load(
         }
     }
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    ctx.scheduler.push_control(crate::scheduler::ControlMsg::Load {
-        model: requested.filter(|r| *r != active.model_id),
-        reply: reply_tx,
-    });
+    ctx.scheduler
+        .push_control(crate::scheduler::ControlMsg::Load {
+            model: requested.filter(|r| *r != active.model_id),
+            reply: reply_tx,
+        });
     // Payload read (~50 GiB) + model rebuild (transposes) can take minutes.
     match tokio::time::timeout(std::time::Duration::from_secs(900), reply_rx).await {
         Ok(Ok(Ok(stats))) => Json(stats).into_response(),
-        Ok(Ok(Err(e))) => {
-            openai_error_response(StatusCode::INTERNAL_SERVER_ERROR, format!("load failed: {e:#}"))
-        }
+        Ok(Ok(Err(e))) => openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("load failed: {e:#}"),
+        ),
         Ok(Err(_)) => openai_error_response(
             StatusCode::INTERNAL_SERVER_ERROR,
             "load reply channel dropped (scheduler died?)".to_string(),

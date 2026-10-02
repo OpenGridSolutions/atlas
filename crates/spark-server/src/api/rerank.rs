@@ -16,8 +16,8 @@ use std::sync::Arc;
 
 use axum::extract::{FromRequest, Json, State};
 use axum::http::StatusCode;
-use axum::response::Response;
 use axum::response::IntoResponse;
+use axum::response::Response;
 
 use crate::main_modules::app_state::AppState;
 use crate::openai::rerank::{
@@ -91,7 +91,10 @@ pub async fn rerank(
 
 async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
     if req.documents.is_empty() {
-        return openai_error_response(StatusCode::BAD_REQUEST, "documents must not be empty".into());
+        return openai_error_response(
+            StatusCode::BAD_REQUEST,
+            "documents must not be empty".into(),
+        );
     }
     // Lazy multi-model swap BEFORE the runtime snapshot — the requested
     // model's tokenizer must be the one that encodes these prompts.
@@ -100,7 +103,8 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Rerank,
     )
-    .await {
+    .await
+    {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };
@@ -117,13 +121,13 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
     };
     let probe: Arc<[u32]> = Arc::from([yes_id, no_id].as_slice());
 
-    let instruction = req
-        .instruction
-        .as_deref()
-        .unwrap_or(DEFAULT_INSTRUCTION);
+    let instruction = req.instruction.as_deref().unwrap_or(DEFAULT_INSTRUCTION);
 
     let timeout_at = if state.request_timeout > 0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs(state.request_timeout as u64))
+        Some(
+            std::time::Instant::now()
+                + std::time::Duration::from_secs(state.request_timeout as u64),
+        )
     } else {
         None
     };
@@ -137,14 +141,13 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
     for (index, doc) in req.documents.iter().enumerate() {
         let (doc_text, doc_image) = doc.parts();
         // Image documents get the vision frame inside <Document>: (2.3).
-        let encoded =
-            super::multimodal_input::encode_item(&state, &rt, doc_image, |vision| {
-                format!(
-                    "{SYSTEM_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n<Document>: \
+        let encoded = super::multimodal_input::encode_item(&state, &rt, doc_image, |vision| {
+            format!(
+                "{SYSTEM_PREFIX}<Instruct>: {instruction}\n<Query>: {query}\n<Document>: \
                      {vision}{doc_text}{ASSISTANT_SUFFIX}",
-                    query = req.query,
-                )
-            });
+                query = req.query,
+            )
+        });
         let encoded = match encoded {
             Ok(e) => e,
             Err((status, msg)) => {
@@ -245,9 +248,9 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
         results.push(RerankResult {
             index,
             relevance_score: score,
-            document: req
-                .return_documents
-                .then(|| RerankDocument { text: req.documents[index].text_owned() }),
+            document: req.return_documents.then(|| RerankDocument {
+                text: req.documents[index].text_owned(),
+            }),
         });
     }
     crate::metrics::REQUESTS_ACTIVE.dec();

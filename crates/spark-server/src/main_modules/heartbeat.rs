@@ -46,8 +46,9 @@ pub(crate) fn spawn(hotswap: Option<Arc<HotswapCtx>>) -> Option<tokio::task::Joi
                 .map(|m| (gib(m.mem_available), gib(m.swap_free)))
                 .unwrap_or((-1.0, -1.0));
             let cuda_free_gb = cuda.map(|(f, _)| gib(f)).unwrap_or(-1.0);
-            let (pool_used, pool_total) =
-                pool.map(|p| (p.used_blocks as i64, p.total_blocks as i64)).unwrap_or((-1, -1));
+            let (pool_used, pool_total) = pool
+                .map(|p| (p.used_blocks as i64, p.total_blocks as i64))
+                .unwrap_or((-1, -1));
             let (arena_used_gb, arena_cap_gb) = hotswap
                 .as_ref()
                 .map(|c| (gib(c.arena.used()), gib(c.arena.capacity())))

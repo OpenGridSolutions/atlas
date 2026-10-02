@@ -14,13 +14,13 @@
 // ── Submodules (split for ≤500 LoC files) ──────────────────────────────────
 mod confidence;
 mod decode_logits_content;
-mod hotswap_ctl;
 mod decode_logits_seq;
 mod decode_logits_step;
 mod decode_step;
 mod emit_step;
 mod fast_greedy;
 mod helpers;
+mod hotswap_ctl;
 mod lifecycle;
 mod logit_dump;
 mod logit_processors;
@@ -60,10 +60,10 @@ pub use helpers::set_fence_token_mask;
 pub use helpers::set_im_start_hard_stop;
 pub use helpers::set_mid_word_token_mask;
 pub use helpers::set_numeric_token_mask;
-pub use helpers::{DigitTok, set_numeric_token_values};
 pub use helpers::set_tool_response_hard_stop;
 use helpers::*;
 pub use helpers::{CONTENT_LOOP_PERIOD_MAX, CONTENT_LOOP_PERIOD_MIN};
+pub use helpers::{DigitTok, set_numeric_token_values};
 pub use helpers::{WatchdogParams, set_watchdog_params};
 use lifecycle::*;
 use logprobs::*;
@@ -78,8 +78,8 @@ use rollback::{RollbackOutcome, rollback_to_boundary};
 use sample_step::*;
 use spec_step::*;
 use ssm_decode_ring::SsmDecodeRing;
-use types::*;
 pub use types::ControlMsg;
+use types::*;
 use verify_dflash_step::*;
 use verify_k2_step::*;
 use verify_k3_step::*;
@@ -700,7 +700,7 @@ pub fn run(
                 // sequence through disk on every iteration.
                 if let Some(idx) = swapped
                     .iter()
-                    .position(|s| s.num_blocks + active.len() + 1 <= free)
+                    .position(|s| s.num_blocks + active.len() < free)
                 {
                     let s = swapped.remove(idx);
                     match resume_swapped_seq(think_end_token, think_start_token, &*model, s, spill)

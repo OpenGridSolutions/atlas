@@ -27,14 +27,12 @@ pub(super) fn resolve_thinking(
     let max_budget = rt.behavior.max_thinking_budget;
     // `thinking_in_tools=false` is the MODEL.toml DEFAULT for tool-
     // active turns: it suppresses thinking when the client is silent.
-    let et = if tools_active
-        && !rt.behavior.thinking_in_tools
-        && !req.thinking_explicitly_requested()
-    {
-        false
-    } else {
-        et
-    };
+    let et =
+        if tools_active && !rt.behavior.thinking_in_tools && !req.thinking_explicitly_requested() {
+            false
+        } else {
+            et
+        };
     let budget = if et {
         let b = tb.unwrap_or(max_budget);
         // 2026-05-23 sweep: dropped the 70% special case for

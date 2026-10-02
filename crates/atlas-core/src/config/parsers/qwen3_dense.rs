@@ -71,10 +71,7 @@ pub(crate) fn parse_qwen3_vl_dense(raw: &Value) -> Result<ModelConfig> {
             .unwrap_or(0) as u32;
     }
     if config.vocab_size == 0 {
-        config.vocab_size = raw
-            .get("vocab_size")
-            .and_then(Value::as_u64)
-            .unwrap_or(0) as usize;
+        config.vocab_size = raw.get("vocab_size").and_then(Value::as_u64).unwrap_or(0) as usize;
     }
     // MRoPE lives under text_config.rope_scaling in this family
     // (rope_type "default" + mrope_interleaved + mrope_section) — the

@@ -155,10 +155,28 @@ pub(super) fn load_experts_fused_fp8_transposed(
         // gate = columns 0..inter, up = columns inter..2*inter
         // (transformers chunk(2, dim=-1)); each lands as [inter, h] BF16.
         let gate_bf16 = dequant_slice_transposed(
-            gpu, gu_ptr, gu_s_ptr, h, 2 * inter, 0, inter, gu_sn, gu_sk, gu_s_f32,
+            gpu,
+            gu_ptr,
+            gu_s_ptr,
+            h,
+            2 * inter,
+            0,
+            inter,
+            gu_sn,
+            gu_sk,
+            gu_s_f32,
         )?;
         let up_bf16 = dequant_slice_transposed(
-            gpu, gu_ptr, gu_s_ptr, h, 2 * inter, inter, inter, gu_sn, gu_sk, gu_s_f32,
+            gpu,
+            gu_ptr,
+            gu_s_ptr,
+            h,
+            2 * inter,
+            inter,
+            inter,
+            gu_sn,
+            gu_sk,
+            gu_s_f32,
         )?;
         // down: [inter, h] source → [h, inter] BF16.
         let down_bf16 = dequant_slice_transposed(

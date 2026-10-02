@@ -107,10 +107,7 @@ fn target_size_with_max_pixels(
         h_bar = (h_bar / beta / factor).floor().max(1.0) * factor;
         w_bar = (w_bar / beta / factor).floor().max(1.0) * factor;
     }
-    (
-        (h_bar as u32).min(MAX_DIM),
-        (w_bar as u32).min(MAX_DIM),
-    )
+    ((h_bar as u32).min(MAX_DIM), (w_bar as u32).min(MAX_DIM))
 }
 
 /// Preprocess a single base64-encoded image for the Qwen3-VL encoder.
@@ -211,10 +208,7 @@ mod tests {
         // upscaled to ≥ 262144 px → ~290 vision tokens (was 24 pre-fix,
         // 70 at the HF 65536 floor — both read as a single glyph).
         let (h, w) = target_size_with_max_pixels(86, 264, 32, None);
-        assert!(
-            h * w >= MIN_PIXELS,
-            "area {h}×{w} below the OCR floor"
-        );
+        assert!(h * w >= MIN_PIXELS, "area {h}×{w} below the OCR floor");
         assert_eq!(h % 32, 0);
         assert_eq!(w % 32, 0);
         let tokens = (h / 32) * (w / 32);

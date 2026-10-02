@@ -63,7 +63,10 @@ pub fn write_crash_snapshot(kind: &str, detail: &str) -> Option<PathBuf> {
     let budget = crate::kv_stats::budget_decision();
     let rss = rss_mib();
 
-    let mut body = format!("kind: {kind}\ntime_utc: {}\ndetail: {detail}\n", timestamp_compact());
+    let mut body = format!(
+        "kind: {kind}\ntime_utc: {}\ndetail: {detail}\n",
+        timestamp_compact()
+    );
     if let Some(m) = mem {
         body += &format!(
             "meminfo: available={:.2} GiB, swap_free={:.2} GiB, total={:.2} GiB, hugepages={}\n",
@@ -74,7 +77,11 @@ pub fn write_crash_snapshot(kind: &str, detail: &str) -> Option<PathBuf> {
         );
     }
     if let Some((free, total)) = cuda {
-        body += &format!("cuda: free={:.2} GiB, total={:.2} GiB (raw cuMemGetInfo)\n", gib(free), gib(total));
+        body += &format!(
+            "cuda: free={:.2} GiB, total={:.2} GiB (raw cuMemGetInfo)\n",
+            gib(free),
+            gib(total)
+        );
     }
     if let Some(p) = pool {
         body += &format!(

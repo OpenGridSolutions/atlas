@@ -39,7 +39,11 @@ pub(crate) fn normalize(mut v: Vec<f32>, dimensions: Option<usize>) -> Option<Ve
         }
         v.truncate(d);
     }
-    let norm = v.iter().map(|x| (*x as f64) * (*x as f64)).sum::<f64>().sqrt();
+    let norm = v
+        .iter()
+        .map(|x| (*x as f64) * (*x as f64))
+        .sum::<f64>()
+        .sqrt();
     if !(norm.is_finite() && norm > 0.0) || v.is_empty() {
         return None;
     }
@@ -103,7 +107,8 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Respon
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Embed,
     )
-    .await {
+    .await
+    {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };
@@ -127,11 +132,12 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Respon
         // Model-card format: queries carry an instruct prefix, documents
         // embed raw; the caller decides via the `instruction` field. An
         // image item gets the vision frame before the text (2.3).
-        let encoded = super::multimodal_input::encode_item(&state, &rt, image, |vision| {
-            match req.instruction.as_deref() {
-                Some(instr) => format!("Instruct: {instr}\nQuery: {vision}{text}{EOS_SUFFIX}"),
-                None => format!("{vision}{text}{EOS_SUFFIX}"),
-            }
+        let encoded = super::multimodal_input::encode_item(&state, &rt, image, |vision| match req
+            .instruction
+            .as_deref()
+        {
+            Some(instr) => format!("Instruct: {instr}\nQuery: {vision}{text}{EOS_SUFFIX}"),
+            None => format!("{vision}{text}{EOS_SUFFIX}"),
         });
         let encoded = match encoded {
             Ok(e) => e,

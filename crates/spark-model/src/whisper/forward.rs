@@ -17,7 +17,15 @@ const CONV1_COLS: usize = N_MELS * 3; // 384
 const CONV2_COLS: usize = D_MODEL * 3; // 3840
 
 impl Whisper {
-    fn gemm(&self, a: DevicePtr, b: DevicePtr, c: DevicePtr, m: usize, n: usize, k: usize) -> Result<()> {
+    fn gemm(
+        &self,
+        a: DevicePtr,
+        b: DevicePtr,
+        c: DevicePtr,
+        m: usize,
+        n: usize,
+        k: usize,
+    ) -> Result<()> {
         let g = self.gpu.as_ref();
         KernelLaunch::new(g, self.kern.gemm)
             .grid([(n as u32).div_ceil(16), (m as u32).div_ceil(16), 1])
@@ -61,9 +69,20 @@ impl Whisper {
         Ok(())
     }
 
-    fn bias(&self, data: DevicePtr, bias: DevicePtr, tokens: usize, n: usize, gelu: bool) -> Result<()> {
+    fn bias(
+        &self,
+        data: DevicePtr,
+        bias: DevicePtr,
+        tokens: usize,
+        n: usize,
+        gelu: bool,
+    ) -> Result<()> {
         let g = self.gpu.as_ref();
-        let kern = if gelu { self.kern.bias_gelu } else { self.kern.bias_add };
+        let kern = if gelu {
+            self.kern.bias_gelu
+        } else {
+            self.kern.bias_add
+        };
         KernelLaunch::new(g, kern)
             .grid([tokens as u32, 1, 1])
             .block([256, 1, 1])
@@ -139,7 +158,14 @@ impl Whisper {
     }
 
     /// MLP (fc1 → GELU → fc2) for `tokens` rows, ADDED to `residual`.
-    fn mlp_block(&self, x_normed: DevicePtr, fc1: &WB, fc2: &WB, residual: DevicePtr, tokens: usize) -> Result<()> {
+    fn mlp_block(
+        &self,
+        x_normed: DevicePtr,
+        fc1: &WB,
+        fc2: &WB,
+        residual: DevicePtr,
+        tokens: usize,
+    ) -> Result<()> {
         let s = &self.scratch;
         self.gemm(x_normed, fc1.w, s.h_c, tokens, FFN_DIM, D_MODEL)?;
         self.bias(s.h_c, fc1.b, tokens, FFN_DIM, true)?;
@@ -201,7 +227,14 @@ impl Whisper {
             .flat_map(|v| super::f32_to_bf16_bits(*v).to_le_bytes())
             .collect();
         g.copy_h2d(&bytes2, s.im2col)?;
-        self.gemm(s.im2col, self.conv2.w, s.h_a, N_AUDIO_CTX, D_MODEL, CONV2_COLS)?;
+        self.gemm(
+            s.im2col,
+            self.conv2.w,
+            s.h_a,
+            N_AUDIO_CTX,
+            D_MODEL,
+            CONV2_COLS,
+        )?;
         self.bias(s.h_a, self.conv2.b, N_AUDIO_CTX, D_MODEL, true)?;
 
         // ── + sinusoidal positions, 32 pre-LN layers, final LN ──
@@ -228,8 +261,22 @@ impl Whisper {
 
         // ── per-layer cross-attention K/V for this chunk ──
         for l in &self.dec_layers {
-            self.gemm(self.enc_out, l.cross_attn.k.w, l.k_cross, N_AUDIO_CTX, D_MODEL, D_MODEL)?;
-            self.gemm(self.enc_out, l.cross_attn.v.w, l.v_cross, N_AUDIO_CTX, D_MODEL, D_MODEL)?;
+            self.gemm(
+                self.enc_out,
+                l.cross_attn.k.w,
+                l.k_cross,
+                N_AUDIO_CTX,
+                D_MODEL,
+                D_MODEL,
+            )?;
+            self.gemm(
+                self.enc_out,
+                l.cross_attn.v.w,
+                l.v_cross,
+                N_AUDIO_CTX,
+                D_MODEL,
+                D_MODEL,
+            )?;
             self.bias(l.v_cross, l.cross_attn.v.b, N_AUDIO_CTX, D_MODEL, false)?;
         }
         g.synchronize(g.default_stream())?;
@@ -255,10 +302,28 @@ impl Whisper {
             self.gemv(s.h_b, l.self_attn.v.w, s.h_c, D_MODEL, D_MODEL)?;
             self.bias(s.h_c, l.self_attn.v.b, 1, D_MODEL, false)?;
             g.copy_d2d(s.h_c, l.v_cache.offset(pos * row), row)?;
-            self.attn_block(s.h_b, &l.self_attn, s.h_a, 1, l.k_cache, l.v_cache, pos + 1, true)?;
+            self.attn_block(
+                s.h_b,
+                &l.self_attn,
+                s.h_a,
+                1,
+                l.k_cache,
+                l.v_cache,
+                pos + 1,
+                true,
+            )?;
             // Cross-attention over the chunk's encoder output.
             self.layernorm(s.h_a, &l.ln2, s.h_b, 1)?;
-            self.attn_block(s.h_b, &l.cross_attn, s.h_a, 1, l.k_cross, l.v_cross, N_AUDIO_CTX, false)?;
+            self.attn_block(
+                s.h_b,
+                &l.cross_attn,
+                s.h_a,
+                1,
+                l.k_cross,
+                l.v_cross,
+                N_AUDIO_CTX,
+                false,
+            )?;
             // MLP.
             self.layernorm(s.h_a, &l.ln3, s.h_b, 1)?;
             self.mlp_block(s.h_b, &l.fc1, &l.fc2, s.h_a, 1)?;

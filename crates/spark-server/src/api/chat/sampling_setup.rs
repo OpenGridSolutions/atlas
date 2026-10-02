@@ -10,8 +10,8 @@ use axum::response::Response;
 use std::sync::Arc;
 
 use crate::openai::ChatCompletionRequest;
-use crate::{AppState, ModelRuntime};
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 use super::super::compact::openai_error_response;
 use super::super::inference_impl::tokenize_stop_sequences;

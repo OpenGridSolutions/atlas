@@ -387,7 +387,8 @@ pub fn watchdog_params() -> WatchdogParams {
 /// 1.2; OnceLock silently kept model A's mask). Drives the
 /// digit-normalized content-loop path. Fail-open: never set (or build
 /// failed) → normalized path inert, the exact detector is unaffected.
-static NUMERIC_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> = arc_swap::ArcSwapOption::const_empty();
+static NUMERIC_TOKEN_MASK: arc_swap::ArcSwapOption<MaskCell> =
+    arc_swap::ArcSwapOption::const_empty();
 
 /// Sized wrapper: `Arc<[bool]>` is a fat pointer, which arc-swap cannot
 /// store directly (`RefCnt` needs `T: Sized`). The extra indirection is
@@ -548,7 +549,9 @@ pub fn digit_tail_numbers(tokens: &[u32], vals: &[Option<DigitTok>]) -> Vec<u128
         let d = vals.get(t as usize).copied().flatten();
         match d {
             Some(d) => {
-                if d.leading_space && let Some((v, _)) = cur.take() {
+                if d.leading_space
+                    && let Some((v, _)) = cur.take()
+                {
                     nums.push(v);
                 }
                 let (v, dc) = cur.take().unwrap_or((0, 0));
@@ -556,7 +559,10 @@ pub fn digit_tail_numbers(tokens: &[u32], vals: &[Option<DigitTok>]) -> Vec<u128
                 if ndc > 30 {
                     return Vec::new(); // absurdly long digit run — not counting
                 }
-                cur = Some((v * 10u128.pow(u32::from(d.digits)) + u128::from(d.value), ndc));
+                cur = Some((
+                    v * 10u128.pow(u32::from(d.digits)) + u128::from(d.value),
+                    ndc,
+                ));
             }
             None => {
                 if let Some((v, _)) = cur.take() {

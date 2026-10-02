@@ -54,7 +54,8 @@ pub fn detect_repeat_token_with(
             break;
         }
         let candidate = &chars[chars.len() - seq_len..];
-        let max_repeats = (base_max_repeats as f64 * (1.0 + scaling_factor / seq_len as f64)) as usize;
+        let max_repeats =
+            (base_max_repeats as f64 * (1.0 + scaling_factor / seq_len as f64)) as usize;
         let mut repeat_count = 0usize;
         let mut pos = chars.len() as isize - seq_len as isize;
         while pos >= 0 {
@@ -99,6 +100,9 @@ mod tests {
     #[test]
     fn masked_tail_detected() {
         let s = format!("x {}{}", "pattern-block ".repeat(40), "and then an ending");
-        assert!(has_degenerate_tail(&s), "cut_from_end=50 should expose the repeat");
+        assert!(
+            has_degenerate_tail(&s),
+            "cut_from_end=50 should expose the repeat"
+        );
     }
 }

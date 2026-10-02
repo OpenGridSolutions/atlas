@@ -139,7 +139,9 @@ pub(crate) fn migrate_weights_to_arena(
         stats.shards,
         stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0),
         stats.duration_ms,
-        stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0) / (stats.duration_ms.max(1) as f64 / 1000.0),
+        stats.bytes as f64
+            / (1024.0 * 1024.0 * 1024.0)
+            / (stats.duration_ms.max(1) as f64 / 1000.0),
         stats.arena_used as f64 / (1024.0 * 1024.0 * 1024.0),
         stats.freed_ptrs,
     );

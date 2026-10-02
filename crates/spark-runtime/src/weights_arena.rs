@@ -138,7 +138,10 @@ impl WeightsArena {
     /// Bump-allocate `len` bytes at `align` (power of two, >= [`ARENA_ALIGN`]
     /// for weight tensors). Returns the byte offset from `base`.
     pub fn alloc(&self, len: usize, align: usize) -> Result<u64> {
-        debug_assert!(align.is_power_of_two(), "arena align must be a power of two");
+        debug_assert!(
+            align.is_power_of_two(),
+            "arena align must be a power of two"
+        );
         let offset = self
             .used
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
@@ -423,9 +426,7 @@ fn migrate_bounded(
 
         for op in &ops[start..end] {
             gpu.copy_d2d_async(op.src, op.dst, op.len, streams[copies % streams.len()])
-                .with_context(|| {
-                    format!("copying {} B into the arena at {}", op.len, op.dst)
-                })?;
+                .with_context(|| format!("copying {} B into the arena at {}", op.len, op.dst))?;
             copies += 1;
         }
 
@@ -531,7 +532,10 @@ mod tests {
         // MADV_DONTNEED dropped the dirty pages: the range refaults as
         // zero-fill, proving the physical memory went back to the kernel.
         let after = unsafe { std::slice::from_raw_parts(a.base().0 as *const u8, 4096) };
-        assert!(after.iter().all(|&b| b == 0), "dirty pages survived reset()");
+        assert!(
+            after.iter().all(|&b| b == 0),
+            "dirty pages survived reset()"
+        );
     }
 
     #[test]
@@ -586,7 +590,10 @@ mod tests {
         // Rebuild from manifest matches.
         let rebuilt = store_from_manifest(&arena, &entries).unwrap();
         for e in &entries {
-            assert_eq!(rebuilt.get(&e.name).unwrap().ptr.0, arena.base().0 + e.offset);
+            assert_eq!(
+                rebuilt.get(&e.name).unwrap().ptr.0,
+                arena.base().0 + e.offset
+            );
         }
     }
 

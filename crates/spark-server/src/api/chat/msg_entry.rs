@@ -12,8 +12,8 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use std::sync::Arc;
 
-use crate::{AppState, ModelRuntime};
 use crate::openai::ChatCompletionRequest;
+use crate::{AppState, ModelRuntime};
 
 use super::super::compact::openai_error_response;
 

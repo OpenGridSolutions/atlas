@@ -76,7 +76,9 @@ pub struct TranslateUsage {
 static LANGUAGES: std::sync::OnceLock<std::collections::HashMap<String, String>> =
     std::sync::OnceLock::new();
 
-fn language_map(model_id: &str) -> anyhow::Result<&'static std::collections::HashMap<String, String>> {
+fn language_map(
+    model_id: &str,
+) -> anyhow::Result<&'static std::collections::HashMap<String, String>> {
     if let Some(m) = LANGUAGES.get() {
         return Ok(m);
     }
@@ -221,19 +223,22 @@ pub async fn translate(
     };
 
     // Category gate + lazy swap (Plan.md Phase K).
-    let swap_ms = match super::lazy_swap::ensure_model_active(
-        &state,
-        &model_id,
-        ModelCategory::Translate,
-    )
-    .await
-    {
-        Ok(ms) => ms,
-        Err(resp) => return resp,
-    };
+    let swap_ms =
+        match super::lazy_swap::ensure_model_active(&state, &model_id, ModelCategory::Translate)
+            .await
+        {
+            Ok(ms) => ms,
+            Err(resp) => return resp,
+        };
 
     let rt = state.runtime();
-    let prompt = render_prompt(source_lang, &source_code, target_lang, &target_code, &req.text);
+    let prompt = render_prompt(
+        source_lang,
+        &source_code,
+        target_lang,
+        &target_code,
+        &req.text,
+    );
     let mut prompt_tokens = match rt.tokenizer.encode(&prompt) {
         Ok(t) => t,
         Err(e) => {

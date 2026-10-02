@@ -456,7 +456,11 @@ fn phase_m_blocks_are_exact_and_never_overcommit_per_dtype() {
     let fp8_bytes = phase_m_config(KvCacheDtype::Fp8, vec![]).block_bytes_kv_all_layers();
     let nvfp4_bytes = phase_m_config(KvCacheDtype::Nvfp4, vec![]).block_bytes_kv_all_layers();
     assert_eq!(fp8_bytes * 2, bf16_bytes);
-    assert_eq!(nvfp4_bytes * 32, bf16_bytes * 9, "nvfp4 = 9/32 of bf16 (0.5625/2)");
+    assert_eq!(
+        nvfp4_bytes * 32,
+        bf16_bytes * 9,
+        "nvfp4 = 9/32 of bf16 (0.5625/2)"
+    );
 }
 
 #[test]
@@ -483,14 +487,20 @@ fn phase_m_selective_boundary_mix_is_layer_sum() {
     // And equals 6 bf16-layers + 42 nvfp4-layers exactly.
     let bf16_layer = uniform_bf16.block_bytes_kv_all_layers() / 48;
     let nvfp4_layer = uniform_nvfp4.block_bytes_kv_all_layers() / 48;
-    assert_eq!(mixed.block_bytes_kv_all_layers(), 6 * bf16_layer + 42 * nvfp4_layer);
+    assert_eq!(
+        mixed.block_bytes_kv_all_layers(),
+        6 * bf16_layer + 42 * nvfp4_layer
+    );
 
     // Same budget buys a block count strictly between the uniform extremes.
     let budget = 8usize * 1024 * 1024 * 1024;
     let n_mixed = PagedKvCache::compute_num_blocks(&mixed, budget).unwrap();
     let n_bf16 = PagedKvCache::compute_num_blocks(&uniform_bf16, budget).unwrap();
     let n_nvfp4 = PagedKvCache::compute_num_blocks(&uniform_nvfp4, budget).unwrap();
-    assert!(n_bf16 < n_mixed && n_mixed < n_nvfp4, "{n_bf16} {n_mixed} {n_nvfp4}");
+    assert!(
+        n_bf16 < n_mixed && n_mixed < n_nvfp4,
+        "{n_bf16} {n_mixed} {n_nvfp4}"
+    );
     assert!(n_mixed * mixed.block_bytes_kv_all_layers() <= budget);
 }
 

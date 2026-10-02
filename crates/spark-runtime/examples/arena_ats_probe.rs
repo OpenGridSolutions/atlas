@@ -306,13 +306,17 @@ fn main() -> Result<()> {
     gpu.copy_d2d(DevicePtr(src_va), dev_src, HALF)?;
     match kernel_bandwidth(gpu, kernel, stream, dev_dst.0, dev_src.0) {
         Ok((cold, warm)) => {
-            println!("  kernel on cuMemAlloc buffers (baseline): cold {cold:.2}, warm {warm:.2} GiB/s")
+            println!(
+                "  kernel on cuMemAlloc buffers (baseline): cold {cold:.2}, warm {warm:.2} GiB/s"
+            )
         }
         Err(e) => println!("  kernel baseline FAILED: {e:#}"),
     }
     match kernel_bandwidth(gpu, kernel, stream, dst_va, src_va) {
         Ok((cold, warm)) => {
-            println!("  kernel on mmap VAs:                      cold {cold:.2}, warm {warm:.2} GiB/s")
+            println!(
+                "  kernel on mmap VAs:                      cold {cold:.2}, warm {warm:.2} GiB/s"
+            )
         }
         Err(e) => println!("  kernel on mmap FAILED: {e:#}"),
     }
@@ -387,7 +391,11 @@ fn main() -> Result<()> {
         {
             let t1 = Instant::now();
             for _ in 0..TIMED_ITERS {
-                gpu.copy_d2d(DevicePtr(base_va.wrapping_add(delta)), dev_full, ARENA_BYTES)?;
+                gpu.copy_d2d(
+                    DevicePtr(base_va.wrapping_add(delta)),
+                    dev_full,
+                    ARENA_BYTES,
+                )?;
             }
             let warm = t1.elapsed().as_secs_f64() / TIMED_ITERS as f64;
             println!(

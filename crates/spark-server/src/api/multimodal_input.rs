@@ -97,9 +97,7 @@ impl MultimodalItem {
     pub fn parts(&self) -> (&str, Option<&str>) {
         match self {
             Self::Text(s) => (s.as_str(), None),
-            Self::Object { text, image } => {
-                (text.as_deref().unwrap_or(""), image.as_deref())
-            }
+            Self::Object { text, image } => (text.as_deref().unwrap_or(""), image.as_deref()),
         }
     }
 
@@ -143,23 +141,33 @@ fn bytes_to_data_uri(bytes: &[u8]) -> String {
 
 type FieldError = (StatusCode, String);
 
-async fn field_text(field: axum::extract::multipart::Field<'_>, name: &str) -> Result<String, FieldError> {
-    field
-        .text()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("reading '{name}' field: {e}")))
+async fn field_text(
+    field: axum::extract::multipart::Field<'_>,
+    name: &str,
+) -> Result<String, FieldError> {
+    field.text().await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("reading '{name}' field: {e}"),
+        )
+    })
 }
 
 async fn field_image_item(
     field: axum::extract::multipart::Field<'_>,
     name: &str,
 ) -> Result<MultimodalItem, FieldError> {
-    let bytes = field
-        .bytes()
-        .await
-        .map_err(|e| (StatusCode::BAD_REQUEST, format!("reading '{name}' file field: {e}")))?;
+    let bytes = field.bytes().await.map_err(|e| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("reading '{name}' file field: {e}"),
+        )
+    })?;
     if bytes.is_empty() {
-        return Err((StatusCode::BAD_REQUEST, format!("'{name}' file field is empty")));
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("'{name}' file field is empty"),
+        ));
     }
     Ok(MultimodalItem::Object {
         text: None,
@@ -208,7 +216,10 @@ pub(crate) async fn embeddings_from_multipart(
             }
             Ok(None) => break,
             Err(e) => {
-                return Err((StatusCode::BAD_REQUEST, format!("multipart parse error: {e}")));
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("multipart parse error: {e}"),
+                ));
             }
         }
     }
@@ -247,8 +258,7 @@ pub(crate) async fn rerank_from_multipart(
                         if field.file_name().is_some() {
                             documents.push(field_image_item(field, &name).await?);
                         } else {
-                            documents
-                                .push(MultimodalItem::Text(field_text(field, &name).await?));
+                            documents.push(MultimodalItem::Text(field_text(field, &name).await?));
                         }
                     }
                     "model" => model = Some(field_text(field, "model").await?),
@@ -272,7 +282,10 @@ pub(crate) async fn rerank_from_multipart(
             }
             Ok(None) => break,
             Err(e) => {
-                return Err((StatusCode::BAD_REQUEST, format!("multipart parse error: {e}")));
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("multipart parse error: {e}"),
+                ));
             }
         }
     }

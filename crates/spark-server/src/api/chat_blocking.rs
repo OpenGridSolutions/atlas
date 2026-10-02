@@ -14,8 +14,8 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 
 use crate::openai::{ChatCompletionRequest, ChatCompletionResponse, Usage};
-use crate::{AppState, ModelRuntime};
 use crate::tool_parser;
+use crate::{AppState, ModelRuntime};
 
 use super::compact::openai_error_response;
 use super::inference_impl::{extract_thinking, strip_stop_sequences};

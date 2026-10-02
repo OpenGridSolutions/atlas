@@ -94,9 +94,7 @@ pub(crate) fn parse_gemma3_params(raw: &serde_json::Value) -> Result<ModelConfig
     let rope_linear_factor = tc
         .get("rope_parameters")
         .and_then(|r| r.get("full_attention"))
-        .filter(|fa| {
-            fa.get("rope_type").and_then(Value::as_str) == Some("linear")
-        })
+        .filter(|fa| fa.get("rope_type").and_then(Value::as_str) == Some("linear"))
         .and_then(|fa| fa.get("factor"))
         .and_then(Value::as_f64)
         .or_else(|| {

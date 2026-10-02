@@ -443,7 +443,14 @@ pub(crate) fn load_moe_no_shared(
     let mut experts;
     if store.contains(&format!("{p}.experts.gate_up_proj")) {
         experts = fused_vl::load_experts_fused_fp8_transposed(
-            store, &p, num_experts, inter, h, gpu, config, qctx,
+            store,
+            &p,
+            num_experts,
+            inter,
+            h,
+            gpu,
+            config,
+            qctx,
         )?;
     } else {
         experts = Vec::with_capacity(num_experts);

@@ -398,7 +398,8 @@ pub fn read_payload_into_arena(
             next += 1;
             in_flight += 1;
         }
-        ring.submit_and_wait(1).context("io_uring submit_and_wait")?;
+        ring.submit_and_wait(1)
+            .context("io_uring submit_and_wait")?;
         // Drain completions; resubmit partial reads.
         let mut resubmit: Vec<usize> = Vec::new();
         for cqe in ring.completion() {
@@ -434,7 +435,11 @@ pub fn read_payload_into_arena(
                 .offset(c.file_off)
                 .build()
                 .user_data(idx as u64);
-            unsafe { ring.submission().push(&sqe).context("io_uring push (resubmit)")? };
+            unsafe {
+                ring.submission()
+                    .push(&sqe)
+                    .context("io_uring push (resubmit)")?
+            };
             in_flight += 1;
         }
     }
@@ -509,7 +514,8 @@ fn read_payload_pread(
     Ok(SnapshotReadStats {
         bytes_read: padded as u64,
         duration_ms,
-        gib_per_s: padded as f64 / (1024.0 * 1024.0 * 1024.0)
+        gib_per_s: padded as f64
+            / (1024.0 * 1024.0 * 1024.0)
             / (duration_ms.max(1) as f64 / 1000.0),
     })
 }
@@ -573,9 +579,13 @@ mod tests {
             }
         }
         let path = dir.join("t.raw");
-        let stats =
-            write_snapshot(&path, &arena, &tiny_manifest(), model_version_hash("m/x", "r1"))
-                .unwrap();
+        let stats = write_snapshot(
+            &path,
+            &arena,
+            &tiny_manifest(),
+            model_version_hash("m/x", "r1"),
+        )
+        .unwrap();
         (path, arena, stats.payload_xxh3)
     }
 
@@ -590,10 +600,7 @@ mod tests {
         assert_eq!(header.payload_xxh3, xxh);
         assert_eq!(header.manifest_offset, (HEADER_LEN + 4096) as u64);
         assert_eq!(manifest, tiny_manifest());
-        assert_eq!(
-            header.model_version_hash,
-            model_version_hash("m/x", "r1")
-        );
+        assert_eq!(header.model_version_hash, model_version_hash("m/x", "r1"));
     }
 
     #[test]
@@ -616,7 +623,8 @@ mod tests {
         let f = OpenOptions::new().write(true).open(&path).unwrap();
         use std::os::unix::fs::FileExt;
         // Flip a byte inside the manifest region.
-        f.write_all_at(&[0xFF], len - FOOTER_LEN as u64 - 3).unwrap();
+        f.write_all_at(&[0xFF], len - FOOTER_LEN as u64 - 3)
+            .unwrap();
         let err = read_snapshot_meta(&path).unwrap_err().to_string();
         assert!(err.contains("manifest checksum"), "{err}");
     }
@@ -673,7 +681,10 @@ mod tests {
     #[test]
     fn file_name_and_hash_stable() {
         let h = model_version_hash("nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4", "abc");
-        assert_eq!(h, model_version_hash("nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4", "abc"));
+        assert_eq!(
+            h,
+            model_version_hash("nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4", "abc")
+        );
         let name = snapshot_file_name("nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4", &h);
         assert!(name.starts_with("nvidia--Qwen3-Next-80B-A3B-Thinking-NVFP4-"));
         assert!(name.ends_with(".raw"));

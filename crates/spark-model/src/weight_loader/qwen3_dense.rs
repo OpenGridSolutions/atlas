@@ -209,7 +209,10 @@ impl super::ModelWeightLoader for Qwen3DenseWeightLoader {
         _config: &ModelConfig,
         _gpu: &dyn GpuBackend,
     ) -> Result<DenseWeight> {
-        dense(store, &format!("{}embed_tokens.weight", store_prefix(store)))
+        dense(
+            store,
+            &format!("{}embed_tokens.weight", store_prefix(store)),
+        )
     }
 
     fn load_final_norm(

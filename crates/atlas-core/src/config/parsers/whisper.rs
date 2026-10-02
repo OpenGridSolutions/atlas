@@ -49,13 +49,11 @@ pub(crate) fn parse_whisper(json: &str, raw: &Value) -> Result<ModelConfig> {
     // optional fields (rope defaults, eps, quantization_config via
     // finalize) behave like everywhere else — but with hidden_size
     // injected from d_model instead of being serde-required.
-    let mut config: ModelConfig = serde_json::from_str(
-        &{
-            let mut v: Value = raw.clone();
-            v["hidden_size"] = Value::from(w.d_model);
-            v.to_string()
-        },
-    )
+    let mut config: ModelConfig = serde_json::from_str(&{
+        let mut v: Value = raw.clone();
+        v["hidden_size"] = Value::from(w.d_model);
+        v.to_string()
+    })
     .context("Failed to lower whisper config into ModelConfig")?;
     config.model_type = "whisper".to_string();
     config.hidden_size = w.d_model;

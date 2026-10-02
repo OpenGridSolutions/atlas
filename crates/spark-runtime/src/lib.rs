@@ -8,11 +8,13 @@ pub mod buffers;
 pub mod cublaslt;
 // Metal/no-cuda builds get unreachable stubs so spark-model's unconditional
 // references to these cuda-only entry points still resolve (compile-only).
+pub mod crash;
 #[cfg(not(feature = "cuda"))]
 #[path = "cublaslt_metal_stub.rs"]
 pub mod cublaslt;
 #[cfg(feature = "cuda")]
 pub mod cuda_backend;
+pub mod cuda_err;
 #[cfg(feature = "cuda")]
 pub mod cutlass;
 #[cfg(not(feature = "cuda"))]
@@ -31,8 +33,6 @@ pub mod kernel_audit;
 pub mod kv_cache;
 pub mod kv_dequant;
 pub mod kv_spill;
-pub mod crash;
-pub mod cuda_err;
 pub mod kv_stats;
 pub mod meminfo;
 #[cfg(feature = "metal")]

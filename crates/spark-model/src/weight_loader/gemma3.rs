@@ -207,9 +207,7 @@ impl super::ModelWeightLoader for Gemma3WeightLoader {
                 }
                 layer.set_sliding_window(None);
                 if i < interval * 2 {
-                    tracing::info!(
-                        "L{i}: full attn — θ={theta_full}, pos_scale={pos_scale:?}"
-                    );
+                    tracing::info!("L{i}: full attn — θ={theta_full}, pos_scale={pos_scale:?}");
                 }
             } else {
                 layer.set_rope_overrides(theta_sliding, config.head_dim as u32);
@@ -247,7 +245,10 @@ impl super::ModelWeightLoader for Gemma3WeightLoader {
     ) -> Result<DenseWeight> {
         // embed_scale (√hidden) is applied by the embedding forward from
         // config.embed_scale, gemma4 convention.
-        dense(store, &format!("{}embed_tokens.weight", text_prefix(store, config)))
+        dense(
+            store,
+            &format!("{}embed_tokens.weight", text_prefix(store, config)),
+        )
     }
 
     fn load_final_norm(
@@ -265,7 +266,10 @@ impl super::ModelWeightLoader for Gemma3WeightLoader {
         if store.contains("lm_head.weight") {
             return dense(store, "lm_head.weight");
         }
-        dense(store, &format!("{}embed_tokens.weight", text_prefix(store, config)))
+        dense(
+            store,
+            &format!("{}embed_tokens.weight", text_prefix(store, config)),
+        )
     }
 
     fn load_mtp_weights(

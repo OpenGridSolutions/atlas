@@ -79,7 +79,8 @@ pub async fn chat_completions(
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
     )
-    .await {
+    .await
+    {
         Ok(ms) => ms,
         Err(resp) => return resp,
     };
