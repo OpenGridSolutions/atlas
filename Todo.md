@@ -269,29 +269,54 @@ angelegt (`weight_map/ssm_qwen35/fused_vl.rs`, Kernel-Targets `qwen3.5-27b` /
 Quant-Rezept: **NVFP4 auf MLP + lm_head, FP8 auf Self-Attention UND
 Linear-Attention** (ModelOpt v0.48.0, Local-Hessian-Kalibrierung).
 
-- [ ] **3.1a Kernel-Target `kernels/gb10/qwen3.8-27b/` anlegen** (MODEL.toml nach
-      dem Muster von `qwen3.6-27b`): Layer-Geometrie aus dem HF-Config übernehmen;
-      Quant-Variante „mixed nvfp4-fp8" — NVFP4-GEMMs für MLP/lm_head existieren,
-      neu sind die **FP8-Attention-** und **FP8-GDN/Linear-Attention-Kernels**
-      (bisherige qwen3.5/3.6-Targets rechnen die Attention-Arme in NVFP4 bzw. BF16).
-- [ ] **3.1b Weight-Map erweitern:** `weight_map/ssm_qwen35/` um die
-      FP8-Tensor-Namen (`.weight_scale_inv`-Layout aus ModelOpt) für die
-      attention/linear-attention-Arme ergänzen; `quant_format`-Erkennung muss das
-      Misch-Rezept sauber pro Modul auflösen statt global NVFP4 anzunehmen.
-- [ ] **3.1c KV-Cache fp8_e4m3 — pro Modell konfigurieren.** NVIDIA served das
-      Modell mit `--kv-cache-dtype fp8_e4m3`. Der Mechanismus dafür existiert
-      bereits pro Modell: das Kernel-Target-MODEL.toml kann `default_kv_dtype`
-      deklarieren (`serve_phases/kv_cache.rs::resolve_kv_cache_config`,
-      Präzedenz: explizite CLI-Angabe > MODEL.toml-Default > CLI-Default `fp8`),
-      und der Hot-Swap wendet es per `prepare_swap_target` beim Modellwechsel an
-      — wechselnde Dtypes je geladenem Modell sind also schon abgedeckt.
-      Zu tun: `default_kv_dtype = "fp8"` im neuen `qwen3.8-27b`-MODEL.toml setzen,
-      bei 262K-Kontext gegen den Selective-Boundary-Mix (bf16-Randlayer)
-      benchen (Long-Context-Needle), und prüfen, ob die FP8-KV-Kernels für die
-      FP8-Attention-Arme dieses Checkpoints durch den Kernel-Preflight kommen.
-- [ ] **3.1d Verifikation:** in die Serve-Matrix aufnehmen (`ATLAS_PRESEED_GENERATIVE`),
-      Coherence + Tool-Calls + Long-Context-Needle; KV-Budget-Check bei 262K
-      max-seq-len nur mit `ATLAS_KV_OVERCOMMIT=1` sinnvoll (Worst-Case-Rechnung!).
+- [x] **3.1a Kernel-Target `kernels/gb10/qwen3.8-27b/` anlegen** — DONE 2026-10-02.
+      MODEL.toml (Geometrie identisch qwen3.6-27b; neu: `mtp_layers = 1`,
+      Sampling temp 1.0/top_p 0.95/top_k 20 lt. Modellkarte, `default_kv_dtype
+      = "fp8"`), `nvfp4/`-Variante von qwen3.6-27b kopiert. KEINE neuen
+      CUDA-Kernels nötig: die FP8-Arme fahren die vorhandenen common-Kernels
+      (`w8a16_gemv` Decode, `fp8_gemm_t_blockscaled` Prefill). NEU dabei:
+      hf_id-basierte Target-Auswahl (`atlas_kernels::ptx_for_model_id`,
+      MODEL.toml `[model].hf_id` → generierte Tabelle), weil die drei dense
+      27B jetzt ZWEI exakte `(qwen3_5, 5120)`-Matches hätten und
+      first-match-wins das 3.6-Bundle geliefert hätte.
+- [x] **3.1b Weight-Map erweitern** — DONE 2026-10-02, aber ANDERS als geplant:
+      Das Checkpoint nutzt NICHT `.weight_scale_inv`, sondern per-tensor-SKALAR
+      `.weight_scale` (F32) auf den FP8-Armen und nvidia-Standard-NVFP4-Naming
+      auf MLP/lm_head — beides war schon ladbar. Einzige echte Lücke: das
+      FP8-Overlay im FullAttention-Arm (`qwen35_dense.rs`) erkannte nur
+      2D-block-FP8 hinter `ATLAS_DENSE_FP8`. Jetzt: `mixed_fp8_attn`-Route
+      (variant Standard + `proj_is_fp8_any_scale` auf q/k/v/o) default-on,
+      Kill-Switch `ATLAS_NO_ATTN_FP8`. GDN-FP8 griff bereits default-on.
+      Detection bleibt Heuristik (MIXED_PRECISION → Standard via
+      dtype-Sniffing; ein expliziter Arm würde FP8-MLP-Mischrezepte à la Holo
+      falsch festnageln).
+- [x] **3.1c KV-Cache fp8_e4m3** — DONE 2026-10-02. `default_kv_dtype =
+      "fp8"` PLUS `fp8_kv_calibration_tokens = 256` (Checkpoint liefert
+      KEINE k/v-Scales; unkalibriertes fp8-KV clippt still auf E4M3 und
+      fiel den Greedy-Fib-Kanarienvogel 2/2 — kalibriert besteht die
+      volle Suite 16/16, gleichauf mit bf16-KV, bei 2x KV-Kapazität und
+      NVIDIA-Parität). Selective Boundary 6/16 bf16-Randlayer aktiv.
+- [x] **3.1d Verifikation** — DONE on-box 2026-10-02: Boot ✓ (16 Attn-Layer
+      nativ FP8 per-tensor, 48 GDN nativ FP8, MTP geladen, lm_head
+      pre-packed NVFP4), `single_gpu_suite.py` 16/16 PASS auf fp8-KV
+      kalibriert UND bf16-KV (Coherence 3/3, Fib, Tools 2/2, Needle 3/3
+      bis 14.6K; TPS 10.1), in `ATLAS_PRESEED_GENERATIVE` (serve.sh +
+      compose.yml). A/B `ATLAS_NO_ATTN_FP8=1`: Prefill ident. (899 vs
+      898 tok/s @4424), Decode NVFP4-Requant ~5% schneller (10.65/10.17
+      vs 10.10/9.57 c=1) — FP8 bleibt default (Qualitäts-Policy wie GDN
+      2026-07-03); fused FP8-Dual-GEMV würde die Lücke schließen.
+      262K-Check mit `ATLAS_KV_OVERCOMMIT=1`: bootet, Pool 603K KV-Tokens
+      (2 volle 262K-Seqs, Batch 4 via On-Demand-Backpressure), Needle-HIT
+      bei 29K Tokens, /v1/stats budget decision ok.
+      BEKANNTE EIGENHEIT (kein Regression-Blocker): bei temp=0 +
+      rep_penalty=1.05 (Suite-Fib-Betriebspunkt, NICHT der Karten-
+      Betriebspunkt temp=1.0) ist das Modell über ALLE KV-Dtypes flaky —
+      u.a. Rollen-Token-Loops (`user/assistant/…`) im Thinking, die das
+      Budget aufbrauchen; Prefix-Cache-Hits kippen das Greedy-Argmax
+      (Wiederholungs-Fails 2/4 auch auf bf16). Am Betriebspunkt sauber.
+      Noch offen (separate Läufe außerhalb Dev-Container): Docker-
+      Release-Matrix `tests/run_all_models.py` (atlas-release-Gate),
+      BFCL-artiger Qualitäts-A/B FP8- vs NVFP4-Attention.
 
 ### 3.2 Qwen/Qwen-Image-2.1 (Text-zu-Bild / Bild-Editing, eigener Endpoint)
 

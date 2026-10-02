@@ -47,7 +47,8 @@ services:
           [
             "nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4",
             "vincentzed-hf/Qwen3-Coder-Next-NVFP4",
-            "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8"
+            "Qwen/Qwen3-VL-30B-A3B-Instruct-FP8",
+            "nvidia/Qwen3.8-27B-NVFP4"
           ]
       - ATLAS_PRESEED_EMBED=
           [

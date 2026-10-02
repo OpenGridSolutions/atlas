@@ -72,13 +72,14 @@ pub(crate) fn registered_model_checked(
     spark_model::factory::loader_for_config(&config).map_err(|e| {
         anyhow::anyhow!("no weight loader for model_type '{}' yet: {e}", config.model_type)
     })?;
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-        .with_context(|| {
-            format!(
-                "no compiled kernel target matches model_type '{}' / hidden_size {}",
-                config.model_type, config.hidden_size
-            )
-        })?;
+    let ptx_set =
+        atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
+            .with_context(|| {
+                format!(
+                    "no compiled kernel target matches model_type '{}' / hidden_size {}",
+                    config.model_type, config.hidden_size
+                )
+            })?;
     let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
     if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
         bail!(
@@ -155,10 +156,11 @@ pub(crate) fn preseed_missing_snapshots(
         super::merge_sidecar_quant_config(&model_dir, &mut config);
         // Quant gate: refuse to preseed a model the kernel set cannot
         // serve — its snapshot would only ever produce a load-time error.
-        let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-            .with_context(|| {
-                format!("no compiled kernel target matches preseed model '{}'", m.model_id)
-            })?;
+        let ptx_set =
+            atlas_kernels::ptx_for_model_id(&m.model_id, &config.model_type, config.hidden_size)
+                .with_context(|| {
+                    format!("no compiled kernel target matches preseed model '{}'", m.model_id)
+                })?;
         let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
         if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant)
         {

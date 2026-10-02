@@ -156,9 +156,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     // 2. Select kernel target and initialize GPU backend
     //
-    // Each kernel target declares which (model_type, hidden_size) pairs it supports
-    // via [[model_types]] in MODEL.toml. Exact hidden_size matches win over wildcards.
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
+    // Exact MODEL.toml `hf_id` match wins; otherwise each kernel target
+    // declares which (model_type, hidden_size) pairs it supports via
+    // [[model_types]] in MODEL.toml (exact hidden_size beats wildcards).
+    let boot_model_id = args.model.clone().unwrap_or_default();
+    let ptx_set = atlas_kernels::ptx_for_model_id(
+        &boot_model_id,
+        &config.model_type,
+        config.hidden_size,
+    )
         .with_context(|| {
             format!(
                 "No compiled kernel target matches model_type '{}' / hidden_size={}. \

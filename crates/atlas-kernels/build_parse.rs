@@ -52,6 +52,28 @@ pub(super) fn parse_kernel_toml(
     (extra_flags, module_overrides)
 }
 
+/// Parse `[model].hf_id` from MODEL.toml. Empty string when the file or
+/// key is absent. Used for exact-id kernel-target selection at runtime —
+/// several targets can declare the same `(model_type, hidden_size)` pair
+/// (the dense 27B family: qwen3.5-27b / qwen3.6-27b / qwen3.8-27b all
+/// match (qwen3_5, 5120)), and the hf_id is the only unambiguous key.
+pub(super) fn parse_hf_id(model_dir: &std::path::Path) -> String {
+    let model_toml_path = model_dir.join("MODEL.toml");
+    if !model_toml_path.exists() {
+        return String::new();
+    }
+    let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
+    let toml: toml::Value = match toml::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return String::new(),
+    };
+    toml.get("model")
+        .and_then(|m| m.get("hf_id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string()
+}
+
 /// Parse sampling presets from MODEL.toml `[sampling.*]` sections.
 pub(super) fn parse_sampling_presets(
     model_dir: &std::path::Path,

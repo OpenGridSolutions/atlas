@@ -351,6 +351,10 @@ pub struct TargetPtxSet {
     pub modules: Vec<(&'static str, &'static [u8])>,
     pub sampling: SamplingPresets,
     pub behavior: ModelBehavior,
+    /// HuggingFace checkpoint id from `[model].hf_id` in MODEL.toml
+    /// ("" when the key is absent). Exact-id selection beats the
+    /// `(model_type, hidden_size)` matching — see `ptx_for_model_id`.
+    pub hf_id: &'static str,
     pub model_type_matches: Vec<ModelTypeMatch>,
     /// DFlash drafter pairing for this model. `None` when the MODEL.toml has
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
@@ -373,6 +377,27 @@ pub fn ptx_for_model(needle: &str) -> Option<TargetPtxSet> {
     all_ptx_sets()
         .into_iter()
         .find(|t| t.target.model.contains(needle))
+}
+
+/// Find the PTX module set whose MODEL.toml `hf_id` exactly matches the
+/// requested model id (ASCII case-insensitive), then fall back to
+/// `(model_type, hidden_size)` matching via [`ptx_for_config`].
+///
+/// The hf_id pass exists because `(model_type, hidden_size)` is not
+/// unique: the dense 27B family (qwen3.5-27b / qwen3.6-27b /
+/// qwen3.8-27b) all parse to `(qwen3_5, 5120)`, and first-match-wins on
+/// that pair would hand nvidia/Qwen3.8-27B-NVFP4 the qwen3.6-27b bundle
+/// (wrong sampling presets, wrong default_kv_dtype, no MTP). Targets
+/// without an `hf_id` key participate only in the config fallback.
+pub fn ptx_for_model_id(
+    model_id: &str,
+    model_type: &str,
+    hidden_size: usize,
+) -> Option<TargetPtxSet> {
+    all_ptx_sets()
+        .into_iter()
+        .find(|t| !t.hf_id.is_empty() && t.hf_id.eq_ignore_ascii_case(model_id))
+        .or_else(|| ptx_for_config(model_type, hidden_size))
 }
 
 /// Find the PTX module set matching a `(model_type, hidden_size)` pair.

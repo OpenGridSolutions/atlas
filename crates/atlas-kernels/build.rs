@@ -89,6 +89,10 @@ struct Target {
     behavior_rollback_resteer: bool,
     behavior_rom_head: String,
     behavior_tool_retry: bool,
+    /// HuggingFace checkpoint id from `[model].hf_id` in MODEL.toml
+    /// ("" when absent). Exact-match runtime selector that wins over the
+    /// `(model_type, hidden_size)` matching below.
+    hf_id: String,
     /// Which `(model_type, hidden_size)` pairs this kernel target supports.
     /// Parsed from `[[model_types]]` in MODEL.toml.
     model_type_matches: Vec<ModelTypeMatch>,
@@ -759,6 +763,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
+            let hf_id = parse_hf_id(&model_dir);
 
             targets.push(Target {
                 hw: hw.clone(),
@@ -801,6 +806,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 behavior_rollback_resteer: pb.rollback_resteer,
                 behavior_rom_head: pb.rom_head,
                 behavior_tool_retry: pb.tool_retry,
+                hf_id,
                 model_type_matches,
                 dflash,
             });
@@ -832,7 +838,8 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 #[path = "build_parse.rs"]
 mod build_parse;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_kernel_toml, parse_model_types, parse_sampling_presets,
+    parse_behavior, parse_dflash, parse_hf_id, parse_kernel_toml, parse_model_types,
+    parse_sampling_presets,
 };
 
 /// Collect kernel-source files with shadowing: common dir provides the

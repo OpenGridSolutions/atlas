@@ -47,7 +47,8 @@ unset ATLAS_PRESEED_MODELS
 export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE:-[
   \"nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4\",
   \"vincentzed-hf/Qwen3-Coder-Next-NVFP4\",
-  \"Qwen/Qwen3-VL-30B-A3B-Instruct-FP8\"
+  \"Qwen/Qwen3-VL-30B-A3B-Instruct-FP8\",
+  \"nvidia/Qwen3.8-27B-NVFP4\"
 ]}"
 export ATLAS_PRESEED_EMBED="${ATLAS_PRESEED_EMBED:-[
   \"Qwen/Qwen3-Embedding-8B\",

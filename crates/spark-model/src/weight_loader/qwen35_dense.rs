@@ -378,11 +378,39 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                     // enabled (single-GPU FP8 checkpoint). Hot decode/prefill paths
                     // dispatch FP8 (w8a16); any path without an FP8 branch falls back
                     // to the real NVFP4 weights above (never a null → no CUDA-700).
-                    if dense_fp8_enabled()
+                    //
+                    // Two routes into the overlay:
+                    //   1. Legacy all-FP8 dense checkpoint (Qwythos/Ornith):
+                    //      variant Fp8Dequanted + 2D block scale, opt-in via
+                    //      ATLAS_DENSE_FP8=1 (not a perf win there — see
+                    //      dense_fp8_enabled()'s doc).
+                    //   2. ModelOpt MIXED_PRECISION recipe (nvidia
+                    //      Qwen3.8-27B-NVFP4): variant Standard (NVFP4 MLP +
+                    //      lm_head) but self_attn q/k/v/o ship as F8_E4M3 +
+                    //      per-tensor SCALAR weight_scale. Default ON: the
+                    //      2026-07-03/04 GDN precision policy applies the same
+                    //      way to the attention arms — modelopt's sensitivity
+                    //      analysis deliberately kept them ≥FP8, and the
+                    //      default NVFP4 requant is the lossy double-quant
+                    //      that regressed BFCL-ST ~7pt on the GDN arms.
+                    //      `load_fp8_block_scaled_as_fp8weight` broadcasts the
+                    //      scalar into the uniform block grid, so decode
+                    //      (w8a16_gemv) and block-scaled prefill
+                    //      (fp8_gemm_t_blockscaled) dispatch unchanged.
+                    //      Kill-switch ATLAS_NO_ATTN_FP8 for the FP8-vs-NVFP4
+                    //      A/B (mirrors ATLAS_NO_GDN_FP8).
+                    let mixed_fp8_attn = std::env::var_os("ATLAS_NO_ATTN_FP8").is_none()
+                        && config.tp_world_size.max(1) == 1
+                        && matches!(variant, Nvfp4Variant::Standard)
+                        && proj_is_fp8_any_scale(store, &format!("{p}.q_proj"))
+                        && proj_is_fp8_any_scale(store, &format!("{p}.k_proj"))
+                        && proj_is_fp8_any_scale(store, &format!("{p}.v_proj"))
+                        && proj_is_fp8_any_scale(store, &format!("{p}.o_proj"));
+                    let legacy_fp8_overlay = dense_fp8_enabled()
                         && config.tp_world_size.max(1) == 1
                         && matches!(variant, Nvfp4Variant::Fp8Dequanted)
-                        && proj_is_native_fp8(store, &format!("{p}.q_proj"))
-                    {
+                        && proj_is_native_fp8(store, &format!("{p}.q_proj"));
+                    if mixed_fp8_attn || legacy_fp8_overlay {
                         let load_fp8_proj = |name: &str,
                                              _n: usize,
                                              _k: usize,
@@ -400,6 +428,15 @@ impl ModelWeightLoader for Qwen35DenseWeightLoader {
                         if let Err(e) = attn_layer.transpose_fp8_for_prefill(gpu, stream) {
                             tracing::warn!("Layer {i}: dense FP8 transpose failed: {e}");
                         }
+                        tracing::info!(
+                            "Attn[{lp}] native FP8 q/k/v/o ({}; no NVFP4 requant on hot \
+                             paths; decode w8a16_gemv, prefill fp8_gemm_t_blockscaled)",
+                            if mixed_fp8_attn {
+                                "mixed-precision per-tensor scale"
+                            } else {
+                                "block-scaled overlay"
+                            },
+                        );
                     }
                     layers.push(Box::new(attn_layer));
                     attn_idx += 1;

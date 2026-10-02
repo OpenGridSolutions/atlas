@@ -70,14 +70,15 @@ pub(crate) fn prepare_swap_target(
 
     // 2. Kernel target + quant compatibility (same gate as boot — a
     // mismatch would be silent garbage, not an error).
-    let ptx_set = atlas_kernels::ptx_for_config(&config.model_type, config.hidden_size)
-        .with_context(|| {
-            format!(
-                "no compiled kernel target matches swap target '{model_id}' \
-                 (model_type '{}', hidden_size {})",
-                config.model_type, config.hidden_size
-            )
-        })?;
+    let ptx_set =
+        atlas_kernels::ptx_for_model_id(model_id, &config.model_type, config.hidden_size)
+            .with_context(|| {
+                format!(
+                    "no compiled kernel target matches swap target '{model_id}' \
+                     (model_type '{}', hidden_size {})",
+                    config.model_type, config.hidden_size
+                )
+            })?;
     let model_quant = crate::main_modules::serve::canonicalize_model_quant(&config);
     if !crate::main_modules::serve::quant_pair_compatible(ptx_set.target.quant, &model_quant) {
         bail!(

@@ -1,0 +1,143 @@
+[model]
+name = "qwen3.8-27b"
+hf_id = "nvidia/Qwen3.8-27B-NVFP4"
+params = "27B"
+active_params = "27B"
+architecture = "Hybrid Attention + GDN + Dense FFN + MRoPE"
+
+# Geometry verified against the checkpoint's config.json (text_config),
+# snapshot 482ca0f3. Identical to Qwen3.6-27B except for the quant recipe
+# and the MTP head: 64 layers with full_attention_interval=4 (16 full,
+# 48 GDN), hidden 5120, head_dim 256, 24 Q / 4 KV heads, dense FFN 17408.
+layers_total = 64
+layers_full_attention = 16
+layers_linear_attention = 48
+
+hidden_dim = 5120
+head_dim = 256
+q_heads = 24
+kv_heads = 4
+intermediate_size = 17408
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+attn_output_gate = true
+partial_rotary_factor = 0.25
+
+# MRoPE-interleaved 3-axis rope, native in the upstream config (same as
+# Qwen3.6-27B). Text-only serving keeps H/W position IDs at zero.
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+
+# Single-layer MTP head (mtp.* tensors, BF16, with dedicated fc +
+# pre_fc_norm_embedding / pre_fc_norm_hidden). config.json:
+# mtp_num_hidden_layers = 1, mtp_use_dedicated_embeddings = false.
+# The dense loader's `load_mtp_weights` keys on `mtp.fc.weight`.
+mtp_layers = 1
+vision = true
+
+# ModelOpt v0.48 MIXED_PRECISION recipe (hf_quant_config.json,
+# Local-Hessian calibration):
+#   - NVFP4 gs=16 (U8-packed `.weight` + FP8 per-group `.weight_scale` +
+#     F32 `.weight_scale_2`/`.input_scale`): mlp.{gate,up,down}_proj (all
+#     64 layers) + lm_head — nvidia "Standard" naming, loads via
+#     `quantized()`.
+#   - FP8 E4M3 per-tensor (F32 SCALAR `.weight_scale` + `.input_scale`,
+#     NO weight_scale_inv): self_attn q/k/v/o (16 full-attn layers) AND
+#     linear_attn in_proj_qkv/in_proj_z/out_proj (48 GDN layers). The
+#     GDN arms ride the existing native-FP8 GDN path
+#     (qwen35_dense.rs::proj_is_fp8_any_scale); the self_attn arms are
+#     the new FP8-attention surface for this target.
+#   - BF16: vision tower (model.visual.*), MTP head (mtp.*),
+#     linear_attn in_proj_a/in_proj_b, conv1d, norms, embeddings.
+# Quant selection is the kernel-variant DIRECTORY (nvfp4/), not a TOML key;
+# the dir is named nvfp4 like the qwen3.5/3.6 siblings because the dominant
+# GEMM surface (MLP + lm_head) is NVFP4 — the FP8 arms ride the common
+# w8a16/fp8 kernels.
+
+# Effective context for agentic tasks. Carried from the 27B siblings
+# until a dedicated long-context needle run says otherwise (3.1d).
+effective_context = 24576
+
+# Official card: ALL evaluations at temperature=1.0, top_p=0.95
+# (generation_config.json additionally pins top_k=20). The Qwen3.8
+# generation moved to temp 1.0 — do NOT carry the 3.5/3.6-era 0.6/0.7
+# split. Penalties stay 0.0 family-wide (2026-07-04 lesson: rep_penalty
+# is the code-corruptor; penalties shift the argmax among legal JSON
+# tokens even under the tool grammar mask). Loop protection is the
+# watchdog + DRY-free stack, mirroring qwen3.6-27b.
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# Dense 27B family has the prose/code-attractor failure mode; keep the
+# watchdog until the 3.1d stress sweep clears it.
+enable_loop_watchdog = true
+thinking_default = true
+thinking_in_tools = true
+max_thinking_budget = 2048
+default_num_drafts = 1
+# NVIDIA serves this checkpoint with `--kv-cache-dtype fp8_e4m3`
+# (model card serve command). Todo 3.1c: declare fp8 here so the
+# resolve_kv_cache_config precedence (explicit CLI > this default >
+# CLI default) applies it per-model; the 262K-context bench against
+# the selective-boundary bf16 mix (qwen3.6-27b runs bf16 KV for
+# prefill-latency reasons) is an open 3.1d follow-up — revisit after
+# the long-context needle run.
+default_kv_dtype = "fp8"
+# The checkpoint ships NO k_scale/v_scale tensors, so uncalibrated FP8
+# KV silently clips to E4M3 range. 2026-10-02 suite A/B: uncalibrated
+# fp8 KV failed the greedy fib canary 2/2 (distinct failure modes);
+# with 256-token online calibration the full suite passes 16/16,
+# matching bf16 KV — while keeping 2x KV capacity (the reason to serve
+# 262K context on fp8 at all) and NVIDIA serving parity.
+fp8_kv_calibration_tokens = 256
+
+# Upstream config reports `model_type = "qwen3_5"` with
+# architectures=["Qwen3_5ForConditionalGeneration"] and the weights under
+# `model.language_model.*`. Dense variants are NOT rewritten to
+# qwen3_6_moe by the MRoPE detection (config/dispatch.rs keeps dense
+# qwen3_5 as-is so the factory routes to Qwen35DenseWeightLoader via
+# is_qwen35_dense). The qwen3_6_moe entry is kept for parity with the
+# 3.5/3.6-27b siblings, which map both.
+[[model_types]]
+model_type = "qwen3_5"
+hidden_size = 5120
+
+[[model_types]]
+model_type = "qwen3_6_moe"
+hidden_size = 5120
