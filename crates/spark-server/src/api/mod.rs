@@ -43,6 +43,7 @@ pub mod embeddings;
 pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod multimodal_input;
+pub mod ocr;
 pub mod rerank;
 pub mod stats;
 pub mod translate;

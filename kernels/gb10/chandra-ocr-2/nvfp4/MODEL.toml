@@ -1,0 +1,36 @@
+[model]
+name = "chandra-ocr-2"
+hf_id = "datalab-to/chandra-ocr-2"
+params = "4B"
+active_params = "4B"
+architecture = "Gated DeltaNet + Full Attention + Dense FFN + Qwen3-VL ViT (OCR)"
+
+layers_total = 32
+layers_linear_attention = 24
+layers_full_attention = 8
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+intermediate_size = 9216
+
+hidden_dim = 2560
+head_dim = 256
+q_heads = 16
+kv_heads = 4
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 32
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+mtp_layers = 1
+vision = true
+image_token_id = 248056

@@ -1,0 +1,119 @@
+[model]
+name = "chandra-ocr-2"
+hf_id = "datalab-to/chandra-ocr-2"
+params = "4B"
+active_params = "4B"
+architecture = "Gated DeltaNet + Full Attention + Dense FFN + Qwen3-VL ViT (OCR)"
+
+# Chandra 2 (datalab-to) — Qwen3.5-based OCR model (olmocr-bench 85.8%).
+# Geometry is IDENTICAL to Holo-3.1-4B (config.json, snapshot af93b47d):
+# dense 4B trunk, 32 layers at full_attention_interval=4 (8 full / 24 GDN),
+# hidden 2560, head_dim 256, 16 Q / 4 KV heads, SwiGLU 9216, same GDN dims
+# (16 key heads x 128 / 32 value heads x 128, conv 4), same Qwen3-VL ViT
+# patch geometry (depth 24, hidden 1024, out 2560). Differences vs Holo:
+# mtp_layers = 1 (mtp.* tensors present, BF16) and tie_word_embeddings
+# (an explicit lm_head.weight is still shipped, so no tie handling needed).
+layers_total = 32
+layers_linear_attention = 24
+layers_full_attention = 8
+layer_pattern = "3:1 (linear, linear, linear, full)"
+
+intermediate_size = 9216
+
+hidden_dim = 2560
+head_dim = 256
+q_heads = 16
+kv_heads = 4
+
+linear_attn_key_heads = 16
+linear_attn_key_dim = 128
+linear_attn_value_heads = 32
+linear_attn_value_dim = 128
+linear_conv_kernel = 4
+
+vocab_size = 248320
+max_position_embeddings = 262144
+rope_theta = 10000000
+partial_rotary_factor = 0.25
+attn_output_gate = true
+
+mrope_interleaved = true
+mrope_section = [11, 11, 10]
+mtp_layers = 1
+vision = true
+image_token_id = 248056
+
+# Quant: the checkpoint is pure BF16 (single 9.9 GB shard, no
+# quantization_config) → loads as Bf16Raw with runtime BF16→NVFP4, same
+# as the Holo BF16 releases on this kernel set. OCR is layout-critical;
+# if 3.3d parity testing shows NVFP4 drift on small glyphs/bboxes, the
+# ≥FP8 escape hatches are ATLAS_GDN_BF16_WEIGHTS / a calibrated requant.
+#
+# One page ≈ 1-3K vision tokens + ≤12384 output tokens (Chandra's
+# MAX_OUTPUT_TOKENS) — well inside this window.
+effective_context = 16384
+
+# Sampling from the Chandra reference pipeline (chandra/model/vllm.py):
+# temperature=0.0, top_p=0.1, max_tokens=12384. OCR is deterministic
+# transcription — all presets pin greedy-ish decoding; penalties stay 0
+# (tables/forms legitimately repeat tokens; penalties corrupt them).
+# Chandra's own degeneration handling is a RETRY at temperature+0.2
+# (cap 0.8, top_p 0.95, MAX_VLLM_RETRIES=6) — that lives in the /v1/ocr
+# handler (3.3c), not in the preset.
+[sampling.thinking_text]
+temperature = 0.0
+top_p = 0.1
+top_k = 0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.thinking_coding]
+temperature = 0.0
+top_p = 0.1
+top_k = 0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.non_thinking]
+temperature = 0.0
+top_p = 0.1
+top_k = 0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[sampling.tools]
+temperature = 0.0
+top_p = 0.1
+top_k = 0
+presence_penalty = 0.0
+frequency_penalty = 0.0
+repetition_penalty = 1.0
+dry_multiplier = 0.0
+
+[behavior]
+# OCR model: no reasoning traces — it emits layout-HTML directly.
+thinking_default = false
+thinking_in_tools = false
+# Loop watchdog OFF: OCR output legitimately repeats n-grams (table
+# rows, form checkboxes, dot leaders) far past the watchdog's
+# repetition thresholds. Degeneration recovery is the Chandra-style
+# temperature-bump retry in the /v1/ocr handler instead.
+enable_loop_watchdog = false
+default_num_drafts = 1
+# Layout-critical workload on a small model: KV stays bf16 (the 4B KV
+# footprint is tiny; fp8 capacity is not needed and the checkpoint has
+# no k/v scales).
+default_kv_dtype = "bf16"
+
+# NO [[model_types]] entries — deliberate. Chandra's (qwen3_5, 2560)
+# pair is identical to holo-3.1-4b's, and this directory sorts BEFORE
+# holo-3.1-4b in the generated table, so declaring the pair would steal
+# the (model_type, hidden_size) fallback from every Holo-geometry
+# checkpoint whose hf_id doesn't match a target. Chandra is selected
+# exclusively via the hf_id match above (atlas_kernels::ptx_for_model_id).

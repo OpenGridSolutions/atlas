@@ -60,6 +60,7 @@ export ATLAS_PRESEED_RERANK="${ATLAS_PRESEED_RERANK:-[
 ]}"
 export ATLAS_PRESEED_TRANSCRIBE="${ATLAS_PRESEED_TRANSCRIBE:-[\"openai/whisper-large-v3\"]}"
 export ATLAS_PRESEED_TRANSLATE="${ATLAS_PRESEED_TRANSLATE:-[\"google/translategemma-12b-it\"]}"
+export ATLAS_PRESEED_OCR="${ATLAS_PRESEED_OCR:-[\"datalab-to/chandra-ocr-2\"]}"
 # Retired checkpoint (2026-07-12, Plan.md Q): ig1's NVFP4 quant has a
 # defective vision encoder — container envs created before the swap still
 # list it; substitute the official FP8 release until the container is

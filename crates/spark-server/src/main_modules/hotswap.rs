@@ -69,6 +69,7 @@ pub enum ModelCategory {
     Rerank,
     Transcribe,
     Translate,
+    Ocr,
 }
 
 impl ModelCategory {
@@ -79,6 +80,7 @@ impl ModelCategory {
             ModelCategory::Rerank => "rerank",
             ModelCategory::Transcribe => "transcribe",
             ModelCategory::Translate => "translate",
+            ModelCategory::Ocr => "ocr",
         }
     }
 
@@ -90,6 +92,7 @@ impl ModelCategory {
             ModelCategory::Rerank => "/v1/rerank",
             ModelCategory::Transcribe => "/v1/audio/transcriptions",
             ModelCategory::Translate => "/v1/translate",
+            ModelCategory::Ocr => "/v1/ocr",
         }
     }
 
@@ -101,6 +104,7 @@ impl ModelCategory {
             ModelCategory::Rerank => "ATLAS_PRESEED_RERANK",
             ModelCategory::Transcribe => "ATLAS_PRESEED_TRANSCRIBE",
             ModelCategory::Translate => "ATLAS_PRESEED_TRANSLATE",
+            ModelCategory::Ocr => "ATLAS_PRESEED_OCR",
         }
     }
 }

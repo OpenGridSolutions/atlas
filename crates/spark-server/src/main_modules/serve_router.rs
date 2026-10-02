@@ -92,6 +92,9 @@ pub(crate) async fn build_and_serve(
         // TranslateGemma text translation (multiclass Plan.md Phase T):
         // structured request, server-side forced prompt frame.
         .route("/v1/translate", post(api::translate::translate))
+        // Chandra-2 document OCR (Todo 3.3): single-model category
+        // endpoint, server-side Chandra prompt frame.
+        .route("/v1/ocr", post(api::ocr::ocr))
         .route("/rerank", post(api::rerank::rerank))
         // 501 stubs: return an OpenAI-shaped error body so auto-probe
         // clients (Helicone, LangChain, Vercel AI SDK) fall back instead

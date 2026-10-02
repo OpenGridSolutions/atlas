@@ -68,6 +68,10 @@ services:
           [
             "google/translategemma-12b-it"
           ]
+      - ATLAS_PRESEED_OCR=
+          [
+            "datalab-to/chandra-ocr-2"
+          ]
     command: ["sleep", "infinity"]
 
 networks:

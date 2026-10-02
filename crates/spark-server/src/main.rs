@@ -42,6 +42,7 @@ pub mod metrics;
 mod model_resolver;
 mod moe_quality;
 mod ngram;
+mod ocr;
 mod openai;
 mod rate_limiter;
 pub mod reasoning_parser;

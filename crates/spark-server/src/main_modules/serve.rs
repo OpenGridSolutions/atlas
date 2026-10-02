@@ -36,8 +36,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             "ATLAS_PRESEED_MODELS has been removed — list each model under its category \
              instead: ATLAS_PRESEED_GENERATIVE (/v1/chat/completions), ATLAS_PRESEED_EMBED \
              (/v1/embeddings), ATLAS_PRESEED_RERANK (/v1/rerank), ATLAS_PRESEED_TRANSCRIBE \
-             (/v1/audio/transcriptions), ATLAS_PRESEED_TRANSLATE (/v1/translate); each is a \
-             JSON array of model ids"
+             (/v1/audio/transcriptions), ATLAS_PRESEED_TRANSLATE (/v1/translate), \
+             ATLAS_PRESEED_OCR (/v1/ocr); each is a JSON array of model ids"
         );
     }
     use crate::main_modules::hotswap::ModelCategory;
@@ -48,6 +48,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ModelCategory::Rerank,
         ModelCategory::Transcribe,
         ModelCategory::Translate,
+        ModelCategory::Ocr,
     ] {
         let flags: &[String] = if cat == ModelCategory::Generative {
             &args.preseed_model
