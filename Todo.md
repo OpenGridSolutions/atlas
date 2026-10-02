@@ -354,22 +354,34 @@ sind die vorhandenen qwen3.5-Targets und der ssm_qwen35-Weight-Loader
 Lizenz beachten: modifizierte OpenRAIL-M (frei für Research/Startups < 2 M$,
 nicht kompetitiv zur Datalab-API einsetzbar) — vor Produktivnutzung klären.
 
-- [ ] **3.3a Kernel-Target `kernels/gb10/chandra-ocr-2/`**: MODEL.toml vom
-      passenden qwen3.5-Target ableiten (Geometrie aus dem HF-Config des
-      Chandra-2-Checkpoints bestimmen — Modellgröße/MoE-Layout prüfen, sobald
-      der Download da ist), Quant-Variante festlegen (Checkpoint ist BF16 →
-      bf16 servieren oder kalibriert quantisieren; `default_kv_dtype` bewusst
-      setzen — OCR ist layoutkritisch, eher bf16/fp8 als nvfp4).
-- [ ] **3.3b Neue `ModelCategory::Ocr`** + `ATLAS_PRESEED_OCR` + Route
-      `/v1/ocr`: Das Kategorien-System erzwingt bereits „nur dieses Modell an
-      diesem Endpoint" (400 überall sonst, 400 für fremde Modelle am
-      OCR-Endpoint) — exakt die gewünschte Ein-Modell-Semantik, analog
-      Translate. Request-Schema: Datei (PDF/Bild, multipart oder base64) +
-      `prompt_type` (`ocr_layout`/…) + `output` (`markdown`/`html`/`json`).
-- [ ] **3.3c Chandra-Pipeline nativ in Rust nachbauen** — Modul-für-Modul-Port
-      von https://github.com/datalab-to/chandra (Python fliegt komplett raus;
-      der `/v1/ocr`-Handler fährt die ganze Pipeline in-process). Mapping
-      (Python-Quelle → Rust in einem neuen Modul `spark-server/src/ocr/`):
+- [x] **3.3a Kernel-Target `kernels/gb10/chandra-ocr-2/`** — DONE 2026-10-02
+      (Commit ec12c86). Geometrie = holo-3.1-4b exakt (dense 4B, 32L 8/24,
+      hidden 2560) + `mtp_layers = 1`; Sampling aus chandra/model/vllm.py
+      (temp 0.0 / top_p 0.1); thinking + Loop-Watchdog aus (OCR wiederholt
+      legitim; Degenerations-Schutz ist der Chandra-Retry im Handler);
+      `default_kv_dtype = "bf16"`. BF16-Checkpoint → Bf16Raw-Runtime-NVFP4
+      auf den Holo-Kernels. Bewusst OHNE `[[model_types]]` — Auswahl NUR
+      über die neue hf_id-Target-Selektion, damit der (qwen3_5, 2560)-
+      Fallback bei der Holo-Familie bleibt.
+- [x] **3.3b `ModelCategory::Ocr`** — DONE 2026-10-02 (Commit ec12c86).
+      Kategorie + `ATLAS_PRESEED_OCR` + `/v1/ocr` (api/ocr.rs), Sperre
+      beidseitig verifiziert (400 model_wrong_category am Chat-Endpoint).
+      Request: {image: base64|data-URI (Bild ODER PDF, %PDF-Sniff),
+      page_range, prompt_type, max_tokens, max_retries,
+      include_headers_footers, include_images}; Response pro Seite
+      {html, markdown, chunks[{label,bbox,content}], images{name→b64-webp},
+      retries} + usage.
+- [x] **3.3c Chandra-Pipeline nativ in Rust** — DONE 2026-10-02 (Commit
+      a420860): `spark-server/src/ocr/{input,prompts,output,markdown}.rs`
+      + Retry im Handler. PDF via pdfium-render/libpdfium (bblanchon
+      arm64, Dockerfile-Eintrag; Prozess-Lock + spawn_blocking), DPI-Regel
+      und Flatten wie die Referenz; prompts 1:1 inkl. Python-Listen-Repr;
+      output: Layout-Chunks/HTML-Filter/WebP-Crops; markdown: Subset-
+      Konverter mit markdownify-Referenzoptionen (Byte-Parität → 3.3d-
+      Golden-Test, nicht by construction); detect_repeat_token +
+      Temperatur-Bump-Retry. Abweichung vom Plan: multipart gibt es
+      nicht — ein JSON-Feld nimmt Bild ODER PDF (Magic-Sniff).
+      Ursprüngliches Mapping (Referenz):
       - `chandra/input.py` → `ocr/input.rs`: PDF-Rendering via **pdfium**
         (Python nutzt pypdfium2; Rust-Crate `pdfium-render` bindet dieselbe
         libpdfium → identisches Rendering erreichbar). Verhalten exakt
@@ -398,11 +410,16 @@ nicht kompetitiv zur Datalab-API einsetzbar) — vor Produktivnutzung klären.
         mit dem, was die Python-Lib pro Seite liefert; PDFs mit mehreren
         Seiten als Array + `page_range`-Parameter (Syntax aus
         `input.py::parse_range_str`).
-- [ ] **3.3d Verhaltens-Parität testen:** Golden-Tests gegen die
-      Python-Referenz — dieselben PDFs durch `chandra` (Python, HF-Methode)
-      und durch `/v1/ocr` schicken, Markdown/JSON diffen; Beispiel-Dokumente
-      aus der Modellkarte (Tabellen, Handschrift, Mathe) als Fixtures.
-      In die Serve-Matrix aufnehmen.
+- [ ] **3.3d Verhaltens-Parität testen** — TEILWEISE 2026-10-02:
+      `tests/ocr_smoke.py` (Modellkarten-Bilder → /v1/ocr, Keyword- +
+      Schema-Checks) läuft 3/3 PASS on-box (bench 16s, multilingual 15s,
+      handwritten_form 290s mit 1 Degenerations-Retry — Retry-Mechanik
+      greift wie die Referenz); `ATLAS_PRESEED_OCR` in serve.sh +
+      compose.yml. OFFEN: Golden-Diff gegen die Python-Referenz
+      (braucht torch/vLLM-Umgebung — Kandidat fürs Release-Gate neben
+      der Docker-Serve-Matrix) und die Lizenzklärung (OpenRAIL-M
+      modifiziert: frei für Research/Startups < 2 M$, nicht kompetitiv
+      zur Datalab-API) vor Produktivnutzung/Image-Publishing.
 
 ## Bestandsaufnahme Tests/Benchmarks
 
