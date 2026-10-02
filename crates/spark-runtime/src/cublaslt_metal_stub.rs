@@ -23,6 +23,21 @@ pub fn bf16_gemm_act_weight_t(
     unreachable!("cublaslt::bf16_gemm_act_weight_t is cuda-only (not built for metal)")
 }
 
+#[allow(clippy::too_many_arguments)]
+pub fn bf16_gemm_act_weight_t_ws(
+    _act: u64,
+    _weight: u64,
+    _out: u64,
+    _m: u32,
+    _n: u32,
+    _k: u32,
+    _stream: u64,
+    _workspace: u64,
+    _workspace_bytes: usize,
+) -> Result<()> {
+    unreachable!("cublaslt::bf16_gemm_act_weight_t_ws is cuda-only (not built for metal)")
+}
+
 pub fn fp8_gemm_act_weight_t_rowwise(
     _act_fp8: u64,
     _act_scale: u64,

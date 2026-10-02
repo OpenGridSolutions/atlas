@@ -305,8 +305,23 @@ pub fn build_model(
         gpu_memory_utilization,
         inference_reserve,
         kv_pool_override: kv_pool_bytes_override,
+        sidecar_reserve: spark_runtime::gpu::sidecar_pending_reserve_bytes(),
     };
     let budget = super::kv_budget::compute(&budget_inputs);
+    if budget.sidecar_reserved < budget_inputs.sidecar_reserve {
+        tracing::warn!(
+            "KV budget: only {:.1} of {:.1} GB could be kept free for the configured sidecar \
+             (image pipeline) without starving this model's KV pool — image requests are \
+             refused with 503 while that memory is missing",
+            gib(budget.sidecar_reserved),
+            gib(budget_inputs.sidecar_reserve),
+        );
+    } else if budget.sidecar_reserved > 0 {
+        tracing::info!(
+            "KV budget: {:.1} GB kept free for the configured sidecar (image pipeline)",
+            gib(budget.sidecar_reserved),
+        );
+    }
     match budget.source {
         super::kv_budget::UsedSource::Manual => {
             tracing::info!(

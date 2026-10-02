@@ -325,22 +325,93 @@ Sampler, VAE, RGBA-Support, bis 10 Referenzbilder) — kein autoregressives
 Decoding, kein paged KV. Läuft am ehesten als eigene Kategorie neben dem
 Whisper-Sidecar-Muster statt im Generative-Scheduler.
 
-- [ ] **3.2a Eigener API-Endpoint:** die vorhandenen Stubs
-      `/v1/images/generations`, `/v1/images/edits`, `/v1/images/variations`
-      (`serve_router.rs:119-121`, `api::images_stub`) OpenAI-Images-kompatibel
-      implementieren (prompt, size/aspect_ratio, n, response_format b64/url;
-      edits mit Referenzbild(ern) + optionaler Maske; RGBA via
-      `background: "transparent"`).
-- [ ] **3.2b Neue `ModelCategory::Image`** (+ `ATLAS_PRESEED_IMAGE`,
-      Endpoint-Mapping in `hotswap.rs`), damit das Kategorien-Routing (400 an
-      fremden Endpoints) und Lazy-Swap greifen. Speicher: ~14 GiB BF16 — muss ins
-      Arena/KV-Budget-Accounting als Nicht-KV-Consumer eingebucht werden
-      (Fall A7-Verwandter: der DiT konkurriert mit dem KV-Pool des
-      Generative-Modells um dieselbe UMA).
-- [ ] **3.2c Kernel-Target `kernels/gb10/qwen-image-2.1/`:** DiT-Block-Kernels
-      (Mixed-Granularity-Attention über Bild-Latents ohne Paging, AdaLN,
-      Patch-Embed), VAE-Decode, Flow-Matching-Steps; Text-Encoder ist ein
-      Qwen-LLM → vorhandene Prefill-Kernels wiederverwendbar.
+- [x] **3.2a Eigener API-Endpoint** — DONE 2026-10-02 für Text-zu-Bild:
+      `/v1/images/generations` (`api/images.rs`) OpenAI-Images-kompatibel:
+      `prompt`, `model`, `n` (1–4), `size` ("WxH", auf 32 px gerastert,
+      256 px … 2048x2048/2752x1536), `response_format` (`b64_json` |
+      `url` = data:-URI, Atlas hostet keine Dateien), `output_format`
+      (png|jpeg|webp), `background` (auto|opaque|transparent — der VAE
+      liefert immer RGBA; `transparent` verpackt den Prompt im
+      Modellkarten-Format, `auto` behält Alpha nur bei echt transparenten
+      Bildern). Erweiterungen: `seed`, `num_inference_steps` (Default 40),
+      `aspect_ratio` ("16:9" → 1376x768 bei 1024²-Fläche). Antwort pro
+      Bild zusätzlich `seed`. OFFEN: `/v1/images/edits` + `/variations`
+      antworten weiter 501 — Bildkonditionierung braucht den
+      Qwen3-VL-Vision-Tower im Text-Encoder, den VAE-Encoder und
+      block-kausale Präfix-Masken für die Referenzbild-Blöcke (die
+      Attention-Kernels können das schon: per-Row-Key-Limit).
+      Classifier-free Guidance (`negative_prompt`/`true_cfg_scale`) ist
+      nicht implementiert (Modell ist für Sampling ohne CFG gedacht).
+- [x] **3.2b `ModelCategory::Image`** — DONE 2026-10-02. Kategorie +
+      `ATLAS_PRESEED_IMAGE` (serve.sh + compose.yml) + Endpoint-Mapping;
+      wie Whisper ein RESIDENTER SIDECAR außerhalb von Scheduler/Arena
+      (lädt beim ersten Request in ~10 s, 26.7 GiB BF16 resident: DiT
+      13.3 + Text-Encoder 12.9 + VAE-Decoder 0.5; `/v1/stats` zeigt ihn
+      als `residency: sidecar`). Kategorien-400 beidseitig
+      (`model_wrong_category`). Speicher-Accounting:
+      - KV-Budget: neuer Term `sidecar_reserve` in `kv_budget::compute`
+        (`gpu::sidecar_pending_reserve_bytes`): solange der Sidecar
+        konfiguriert, aber nicht resident ist, bleiben 34 GiB
+        (`ATLAS_IMAGE_RESERVE_GB`) aus dem KV-Pool heraus; nach dem Laden
+        nur noch 7 GiB Arbeitsspeicher (die Gewichte misst dann
+        `baseline − free`). Die Reserve nimmt höchstens die HÄLFTE des
+        Pools, den das Modell ohne sie bekäme (WARN im Log) — sonst
+        scheiterte auf knapper Box der Modell-Load mit „No memory left
+        for KV cache" (so passiert am 2026-10-02).
+      - Preflight: Laden und jede Generierung prüfen `free_memory()`
+        gegen Bedarf + 4 GiB Marge und antworten sonst 503 statt den
+        Host in den OOM-Killer zu treiben.
+      - `cuda_backend::UntrackedAllocs`: Sidecar-Allokationen (Image UND
+        Whisper) landen nicht mehr im Watermark-Tracker eines parallel
+        laufenden Hot-Swap-Builds — sonst würden sie beim Unload dieses
+        Modells mit freigegeben (latenter Use-after-free).
+      - Eigener cuBLASLt-Workspace (`bf16_gemm_act_weight_t_ws`), weil
+        der Sidecar auf eigenem Thread neben dem Scheduler rechnet.
+- [x] **3.2c Kernel-Target `kernels/gb10/qwen-image-2.1/`** — DONE
+      2026-10-02. `bf16/qwen_image.cu` (16 Kernels: AdaLN-LayerNorm,
+      Per-Head-RMSNorm+RoPE, rechteckiger maskierter Row-Softmax,
+      NHWC-VAE-Ops) + common-GEMMs/cuBLASLt; Pipeline nativ in
+      `spark-model/src/qwen_image/` (st/ops/text/dit/vae/sched):
+      - Text-Encoder: Qwen3-VL-8B-LLM standalone (36 Layer, GQA 32/8),
+        liefert die Hidden-States VOR der finalen RMSNorm; Embedding-
+        Zeilen per pread statt 1.2 GiB Tabelle auf dem Device.
+      - DiT: Prompt läuft EINMAL als Präfix-Pass (t=0-Modulation, kausal,
+        K/V je Layer gecacht), jeder Denoising-Schritt rechnet nur die
+        Target-Tokens gegen [Präfix-K/V, Target-K/V] — mathematisch der
+        „extract"+„cached"-Pfad der Referenz ohne Sonderfall im ersten
+        Schritt. Attention = GEMM-SDPA pro Head (QKᵀ f32 → Softmax → P·V).
+      - VAE-Decoder: NHWC, Conv = im2col-Bänder + GEMM, letzte Conv mit
+        f32-Ausgabe (8-bit-Pixel nicht an BF16-Mantisse gebunden).
+      - Sampler/Schedule (dynamischer Shift + Terminal-Stretch) hostseitig;
+        eigener Seed-RNG (nicht torch-bitkompatibel).
+      Verifikation: `examples/qwen_image_golden` gegen die diffusers-
+      Referenz (CPU fp32, `scripts/qwen_image_ref_dump.py`): ALLE Stufen
+      PASS — Text-Encoder cos 0.9986, DiT-Blöcke/Noise-Preds ≥ 0.9994,
+      finale Latents 0.99998, VAE-Bild 0.99998. `tests/image_smoke.py`
+      (Serve-Matrix-Baustein) 11/11 PASS. Performance GB10: 1024x1024 /
+      40 Schritte ≈ 90 s (2.2 s/Schritt), 512x512 / 8 Schritte 3.4 s.
+      Koexistenz-Lauf (Qwen3.8-27B in der Arena + Sidecar, ein Server):
+      Chat vor / während / nach einer 1024²-Generierung jeweils 200,
+      `/v1/stats` zeigt beide resident (arena 20.4 GiB + sidecar
+      26.7 GiB); KV-Pool des Chat-Modells dabei 16.5 GB (Reserve-Regel
+      „halber Pool", WARN im Log).
+      OFFEN:
+      - 2048x2048 ist funktional abgedeckt (Limits/Preflight), aber noch
+        nicht gemessen; der Row-Softmax ist dort speichergebunden
+        (N×S×32 Heads × 32 Layer) — ein fusionierter Flash-Attention-
+        Kernel wäre der nächste Performance-Schritt.
+      - Speicher-Befund (2026-10-02): der NVIDIA-Treiber hält den
+        Gerätespeicher beendeter Prozesse bzw. entladener KV-Pools
+        minutenlang in einem Pool — in `MemAvailable` „belegt", für neue
+        CUDA-Allokationen aber wiederverwendbar. Das ist die
+        „co-tenants"-Zeile im KV-Budget-Log; Budget, Reserve und
+        Preflight rechnen dadurch konservativ (Details Doku.md §3.2).
+      - Fairness: Sidecar und Scheduler teilen sich GPU und Default-
+        Stream. Während einer Generierung brauchte eine kurze Chat-
+        Antwort 112 s statt 4.8 s, die Generierung selbst 125 s statt
+        94 s. Kandidaten: eigener Stream + Yield zwischen DiT-Blöcken
+        oder Chat-Vorrang am Sidecar-Lock.
+      - `tests/run_all_models.py`-Einhängung (Docker-Release-Matrix).
 - [ ] **3.2d Lizenz-Hinweis:** Qwen Research License (nicht Apache-2.0) —
       vor Produktivnutzung klären; betrifft auch das Publishing im
       `avarok/atlas-gb10`-Image (atlas-release MODEL.toml-Gate).

@@ -67,7 +67,11 @@ fn shadow_dir(model_dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf>
     let map: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&idx)?)?;
     let files: std::collections::HashSet<String> = map["weight_map"]
         .as_object()
-        .map(|m| m.values().filter_map(|v| v.as_str().map(String::from)).collect())
+        .map(|m| {
+            m.values()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect()
+        })
         .unwrap_or_default();
     for f in files {
         let dst = shadow.join(&f);
@@ -84,6 +88,9 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
         .get_or_try_init(|| async {
             tokio::task::spawn_blocking(|| -> anyhow::Result<Arc<Sidecar>> {
                 let t0 = std::time::Instant::now();
+                // Keep the sidecar's buffers out of a concurrent hot-swap
+                // build's watermark set (they would be freed at its unload).
+                let _untracked = spark_runtime::cuda_backend::UntrackedAllocs::enter();
                 let model_dir = crate::model_resolver::resolve_model_dir(WHISPER_ID, None)?;
                 let set = atlas_kernels::ptx_for_config("whisper", 1280).ok_or_else(|| {
                     anyhow::anyhow!("no compiled kernel target for whisper (hidden 1280)")
@@ -92,15 +99,20 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
                     "{}/{}/{}",
                     set.target.arch, set.target.model, set.target.quant
                 );
-                let backend =
-                    spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(&key, &set.modules)?;
+                let backend = spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
+                    &key,
+                    &set.modules,
+                )?;
                 let gpu: &dyn spark_runtime::gpu::GpuBackend = &backend;
                 gpu.bind_to_thread()?;
 
                 let shadow = shadow_dir(&model_dir)?;
                 use spark_runtime::weights::WeightLoader;
-                let store = spark_runtime::fast_weights::FastSafetensorsLoader::new()
-                    .load(&shadow, gpu, 2 * 1024 * 1024 * 1024)?;
+                let store = spark_runtime::fast_weights::FastSafetensorsLoader::new().load(
+                    &shadow,
+                    gpu,
+                    2 * 1024 * 1024 * 1024,
+                )?;
                 let whisper = Whisper::load(&store, Box::new(backend))?;
                 // Resident footprint for /v1/stats: every checkpoint tensor
                 // lives on as a BF16 buffer (2 bytes/element).
@@ -109,8 +121,7 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
                     .filter_map(|n| store.get(n).ok())
                     .map(|w| w.shape.iter().product::<usize>() * 2)
                     .sum();
-                SIDECAR_WEIGHTS_BYTES
-                    .store(bf16_bytes, std::sync::atomic::Ordering::Relaxed);
+                SIDECAR_WEIGHTS_BYTES.store(bf16_bytes, std::sync::atomic::Ordering::Relaxed);
                 // The FP32 store (~6.2 GiB device) is fully converted into
                 // the sidecar's BF16 buffers — release it.
                 let mut freed = 0usize;
@@ -126,16 +137,20 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
                     t0.elapsed().as_secs_f64()
                 );
 
-                let tokenizer =
-                    tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
-                        .map_err(|e| anyhow::anyhow!("whisper tokenizer: {e}"))?;
+                let tokenizer = tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
+                    .map_err(|e| anyhow::anyhow!("whisper tokenizer: {e}"))?;
                 let gc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
                     model_dir.join("generation_config.json"),
                 )?)?;
                 let u = |k: &str| gc[k].as_u64().map(|v| v as u32);
                 let list = |k: &str| -> Vec<u32> {
-                    gc[k].as_array()
-                        .map(|a| a.iter().filter_map(|v| v.as_u64().map(|x| x as u32)).collect())
+                    gc[k]
+                        .as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|v| v.as_u64().map(|x| x as u32))
+                                .collect()
+                        })
                         .unwrap_or_default()
                 };
                 let lang_to_id = gc["lang_to_id"]
@@ -143,8 +158,10 @@ async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
                     .map(|m| {
                         m.iter()
                             .filter_map(|(k, v)| {
-                                let code =
-                                    k.trim_start_matches("<|").trim_end_matches("|>").to_string();
+                                let code = k
+                                    .trim_start_matches("<|")
+                                    .trim_end_matches("|>")
+                                    .to_string();
                                 v.as_u64().map(|id| (code, id as u32))
                             })
                             .collect()
@@ -222,7 +239,10 @@ pub async fn transcriptions(
     // Category check (Plan.md Phase K): the REAL id of any model listed
     // in ATLAS_PRESEED_TRANSCRIBE is accepted, plus the OpenAI-habitual
     // "whisper-1" / short aliases (clients hardcode those).
-    let alias_ok = matches!(model.as_str(), "" | "whisper-1" | "whisper-large-v3" | WHISPER_ID);
+    let alias_ok = matches!(
+        model.as_str(),
+        "" | "whisper-1" | "whisper-large-v3" | WHISPER_ID
+    );
     let listed_ok = _state.transcribe_models.contains(&model);
     if !alias_ok && !listed_ok {
         // A model registered for another endpoint gets the explaining 400.
@@ -301,7 +321,12 @@ pub async fn transcriptions(
                 .tokenizer
                 .decode(&tokens, true)
                 .map_err(|e| anyhow::anyhow!("token decode: {e}"))?;
-            tracing::info!("Whisper chunk {}/{}: {} tokens", i + 1, chunks.len(), tokens.len());
+            tracing::info!(
+                "Whisper chunk {}/{}: {} tokens",
+                i + 1,
+                chunks.len(),
+                tokens.len()
+            );
             if !text.is_empty() && !piece.is_empty() {
                 text.push(' ');
             }

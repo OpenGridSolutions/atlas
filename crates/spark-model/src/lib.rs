@@ -17,6 +17,7 @@
 // HF safetensors index tuples are wide on purpose.
 #![allow(clippy::type_complexity)]
 
+pub mod audio_preprocess;
 pub mod engine;
 pub mod factory;
 pub mod forward;
@@ -25,13 +26,13 @@ pub mod layers;
 pub mod mistral_loader;
 pub mod model;
 pub mod precision_schedule;
-pub mod audio_preprocess;
 pub mod preflight;
 pub mod quant_format;
+pub mod qwen_image;
 pub mod speculative;
 pub mod tp_shard;
 pub mod traits;
 pub mod vision_preprocess;
 pub mod weight_loader;
-pub mod whisper;
 pub mod weight_map;
+pub mod whisper;

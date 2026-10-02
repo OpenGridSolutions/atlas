@@ -22,6 +22,36 @@ pub fn resolve_model_dir(model: &str, cache_dir: Option<&Path>) -> Result<PathBu
     resolve_from_hf_cache(model, cache_dir)
 }
 
+/// Resolve a diffusers-layout pipeline (`model_index.json` + component
+/// subfolders, no root `config.json`): a local directory or an HF model id
+/// in the hub cache (`refs/main` snapshot). Used by the Qwen-Image sidecar.
+pub fn resolve_diffusers_dir(model: &str, cache_dir: Option<&Path>) -> Result<PathBuf> {
+    let as_path = Path::new(model);
+    if as_path.is_dir() && as_path.join("model_index.json").exists() {
+        return Ok(as_path.to_path_buf());
+    }
+    let cache_root = resolve_cache_root(cache_dir)?;
+    let model_cache = cache_root.join(format!("models--{}", model.replace('/', "--")));
+    if !model_cache.is_dir() {
+        bail!(
+            "Model '{model}' not found in HF cache at {}.\n\
+             Download it first:\n  huggingface-cli download {model}",
+            cache_root.display(),
+        );
+    }
+    let ref_path = model_cache.join("refs/main");
+    let hash = std::fs::read_to_string(&ref_path)
+        .with_context(|| format!("No default revision for '{model}' ({})", ref_path.display()))?;
+    let snapshot = model_cache.join("snapshots").join(hash.trim());
+    if !snapshot.join("model_index.json").exists() {
+        bail!(
+            "'{model}' is not a diffusers pipeline: {} has no model_index.json",
+            snapshot.display(),
+        );
+    }
+    Ok(snapshot)
+}
+
 /// Look up a HuggingFace model ID in the local hub cache.
 ///
 /// Cache layout: `{cache_root}/models--{org}--{name}/snapshots/{hash}/`

@@ -1,0 +1,12 @@
+# Qwen-Image-2.1 — bf16 quant variant (Todo 3.2c).
+#
+# qwen_image.cu is the only net-new kernel file (module "qwen_image"):
+# AdaLN-style LayerNorm, per-head RMSNorm + RoPE, the rectangular masked
+# row softmax of the GEMM-SDPA attention, and the NHWC VAE-decoder ops
+# (3x3 im2col, channel norm + SiLU, nearest upsample, DupUp shortcut).
+# Every projection / convolution GEMM runs on the common
+# dense_gemm_bf16_pipelined(_f32out) kernels or cuBLASLt. No -DHDIM flag:
+# the sidecar never touches the paged attention path.
+
+[build]
+extra_nvcc_flags = ["--fmad=false"]

@@ -37,25 +37,26 @@ pub mod chat_stream_dispatch;
 pub mod compact;
 pub mod completions;
 pub mod conversations;
+pub mod embeddings;
+pub mod images;
 pub mod inference_impl;
 pub mod inference_types;
-pub mod embeddings;
 pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod multimodal_input;
 pub mod ocr;
 pub mod rerank;
-pub mod stats;
-pub mod translate;
 pub mod responses;
 pub mod responses_stream;
 pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
+pub mod stats;
 pub mod stored;
 pub mod stream_guards;
 pub mod strip;
 pub mod stubs;
+pub mod translate;
 
 #[cfg(test)]
 mod tests;
@@ -88,6 +89,5 @@ pub use stored::{
     delete_stored_response, get_stored_completion, get_stored_response, list_response_input_items,
 };
 pub use stubs::{
-    audio_stub, batch_get_stub, batch_list_stub, batches_stub, files_stub, images_stub,
-    moderations_stub,
+    audio_stub, batch_get_stub, batch_list_stub, batches_stub, files_stub, moderations_stub,
 };

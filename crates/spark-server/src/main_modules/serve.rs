@@ -37,7 +37,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
              instead: ATLAS_PRESEED_GENERATIVE (/v1/chat/completions), ATLAS_PRESEED_EMBED \
              (/v1/embeddings), ATLAS_PRESEED_RERANK (/v1/rerank), ATLAS_PRESEED_TRANSCRIBE \
              (/v1/audio/transcriptions), ATLAS_PRESEED_TRANSLATE (/v1/translate), \
-             ATLAS_PRESEED_OCR (/v1/ocr); each is a JSON array of model ids"
+             ATLAS_PRESEED_OCR (/v1/ocr), ATLAS_PRESEED_IMAGE (/v1/images/generations); \
+             each is a JSON array of model ids"
         );
     }
     use crate::main_modules::hotswap::ModelCategory;
@@ -49,6 +50,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         ModelCategory::Transcribe,
         ModelCategory::Translate,
         ModelCategory::Ocr,
+        ModelCategory::Image,
     ] {
         let flags: &[String] = if cat == ModelCategory::Generative {
             &args.preseed_model
@@ -79,6 +81,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 }
             }
         }
+    }
+    // The image sidecar loads on its first request, long after the boot
+    // model sized its KV pool — reserve its memory in the budget now.
+    if preseed_by_category
+        .iter()
+        .any(|(cat, ids)| *cat == ModelCategory::Image && !ids.is_empty())
+    {
+        spark_runtime::gpu::set_sidecar_pending_reserve_bytes(
+            crate::api::images::pending_reserve_bytes(),
+        );
     }
     for (cat, ids) in &preseed_by_category {
         if !ids.is_empty() {
@@ -161,23 +173,20 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // declares which (model_type, hidden_size) pairs it supports via
     // [[model_types]] in MODEL.toml (exact hidden_size beats wildcards).
     let boot_model_id = args.model.clone().unwrap_or_default();
-    let ptx_set = atlas_kernels::ptx_for_model_id(
-        &boot_model_id,
-        &config.model_type,
-        config.hidden_size,
-    )
-        .with_context(|| {
-            format!(
-                "No compiled kernel target matches model_type '{}' / hidden_size={}. \
+    let ptx_set =
+        atlas_kernels::ptx_for_model_id(&boot_model_id, &config.model_type, config.hidden_size)
+            .with_context(|| {
+                format!(
+                    "No compiled kernel target matches model_type '{}' / hidden_size={}. \
              Available targets: {:?}",
-                config.model_type,
-                config.hidden_size,
-                atlas_kernels::available_targets()
-                    .iter()
-                    .map(|t| &t.target.model)
-                    .collect::<Vec<_>>(),
-            )
-        })?;
+                    config.model_type,
+                    config.hidden_size,
+                    atlas_kernels::available_targets()
+                        .iter()
+                        .map(|t| &t.target.model)
+                        .collect::<Vec<_>>(),
+                )
+            })?;
     let sampling_presets = ptx_set.sampling;
 
     // QV1 (2026-05-26): kernel ↔ model quant compatibility validation.
@@ -629,6 +638,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     }];
     #[allow(unused_mut)]
     let mut transcribe_models: Vec<String> = Vec::new();
+    #[allow(unused_mut)]
+    let mut image_models: Vec<String> = Vec::new();
     #[cfg(feature = "cuda")]
     for (cat, ids) in &preseed_by_category {
         for id in ids {
@@ -639,6 +650,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     cat.endpoint(),
                 );
                 transcribe_models.push(id.clone());
+                continue;
+            }
+            if *cat == ModelCategory::Image {
+                tracing::info!(
+                    "Preseed [image]: '{id}' is served by the resident Qwen-Image sidecar \
+                     ({} loads it on first request) — not part of the arena swap registry",
+                    cat.endpoint(),
+                );
+                image_models.push(id.clone());
                 continue;
             }
             if model_registry.iter().any(|m| m.model_id == *id) {
@@ -664,7 +684,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         anyhow::bail!("--preseed-model / ATLAS_PRESEED_* requires the CUDA backend");
     }
     let lazy_enabled = preseed_by_category.iter().any(|(cat, ids)| {
-        *cat != ModelCategory::Transcribe && !ids.is_empty()
+        !matches!(cat, ModelCategory::Transcribe | ModelCategory::Image) && !ids.is_empty()
     });
     if lazy_enabled && !hotswap_enabled {
         anyhow::bail!(
@@ -673,19 +693,21 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         );
     }
 
-    let hotswap_ctx = _hotswap_arena.filter(|_| hotswap_enabled).map(|arena_state| {
-        Arc::new(crate::main_modules::hotswap::HotswapCtx::new(
-            arena_state.arena,
-            arena_state.manifest,
-            model_name.clone(),
-            &boot_revision,
-            model_registry.clone(),
-            lazy_enabled,
-            std::path::PathBuf::from(&args.snapshot_dir),
-            scheduler_handle.clone(),
-            model_ready.clone(),
-        ))
-    });
+    let hotswap_ctx = _hotswap_arena
+        .filter(|_| hotswap_enabled)
+        .map(|arena_state| {
+            Arc::new(crate::main_modules::hotswap::HotswapCtx::new(
+                arena_state.arena,
+                arena_state.manifest,
+                model_name.clone(),
+                &boot_revision,
+                model_registry.clone(),
+                lazy_enabled,
+                std::path::PathBuf::from(&args.snapshot_dir),
+                scheduler_handle.clone(),
+                model_ready.clone(),
+            ))
+        });
 
     // Memory heartbeat (Todo.md 1.3): one INFO line per minute on target
     // `mem`; threshold breaches WARN into critical.log (A1/A2/A8 early
@@ -745,31 +767,31 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 256 * 1024 * 1024,
                 reload_args.snapshot_read_qd,
             )?;
-            let store =
-                spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
+            let store = spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
             let mut config = prep.config;
             serve_phases::auto_detect_weight_prefix(&store, &mut config);
 
             // Backend handle bound to the target's kernel modules. The boot
             // target reuses the registry's default maps; any other target
             // loads its modules additively on first swap.
-            let gpu: Box<dyn spark_runtime::gpu::GpuBackend> =
-                if prep.target_key == boot_target_key {
-                    Box::new(spark_runtime::cuda_backend::AtlasCudaBackend::new(
-                        reload_args.gpu_ordinal,
-                        &boot_modules,
-                    )?)
-                } else {
-                    Box::new(spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
+            let gpu: Box<dyn spark_runtime::gpu::GpuBackend> = if prep.target_key == boot_target_key
+            {
+                Box::new(spark_runtime::cuda_backend::AtlasCudaBackend::new(
+                    reload_args.gpu_ordinal,
+                    &boot_modules,
+                )?)
+            } else {
+                Box::new(
+                    spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
                         &prep.target_key,
                         &prep.modules,
-                    )?)
-                };
+                    )?,
+                )
+            };
             // Same fail-fast as boot: every KV kernel the target's dtypes
             // dispatch to must resolve before the model is built.
             {
-                let mut distinct: Vec<spark_runtime::kv_cache::KvCacheDtype> =
-                    vec![prep.kv_dtype];
+                let mut distinct: Vec<spark_runtime::kv_cache::KvCacheDtype> = vec![prep.kv_dtype];
                 for d in &prep.layer_dtypes {
                     if !distinct.contains(d) {
                         distinct.push(*d);
@@ -1072,6 +1094,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         auth,
         hotswap: hotswap_ctx,
         transcribe_models,
+        image_models,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);

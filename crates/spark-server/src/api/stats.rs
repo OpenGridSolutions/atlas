@@ -126,6 +126,20 @@ pub async fn stats(State(state): State<Arc<AppState>>) -> Response {
             "kv_used_blocks": 0,
         }));
     }
+    // Qwen-Image sidecar: same residency model as Whisper.
+    let image_bytes = super::images::sidecar_stats();
+    for id in &state.image_models {
+        models.push(serde_json::json!({
+            "id": id,
+            "category": ModelCategory::Image.as_str(),
+            "resident": image_bytes.is_some(),
+            "residency": image_bytes.map(|_| "sidecar"),
+            "weights_bytes": image_bytes.unwrap_or(0),
+            "kv_reserved_bytes": 0,
+            "kv_reserved_blocks": 0,
+            "kv_used_blocks": 0,
+        }));
+    }
 
     let arena = state.hotswap.as_ref().map(|ctx| {
         serde_json::json!({

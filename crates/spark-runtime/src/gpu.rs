@@ -32,6 +32,23 @@ pub fn baseline_free_bytes() -> Option<usize> {
     }
 }
 
+/// Bytes a configured-but-not-yet-resident sidecar (the Qwen-Image
+/// pipeline) will allocate OUTSIDE the arena / KV pool on its first request.
+/// The KV-budget sizing subtracts it so a generative model built first does
+/// not claim the memory the sidecar still needs (Todo 3.2b). Once the
+/// sidecar is resident its weights show up in `baseline_free − free_now`
+/// like any other Atlas-own allocation, and the reserve drops to its
+/// working-memory share.
+static SIDECAR_PENDING_RESERVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_sidecar_pending_reserve_bytes(bytes: usize) {
+    SIDECAR_PENDING_RESERVE_BYTES.store(bytes, Ordering::Relaxed);
+}
+
+pub fn sidecar_pending_reserve_bytes() -> usize {
+    SIDECAR_PENDING_RESERVE_BYTES.load(Ordering::Relaxed)
+}
+
 /// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DevicePtr(pub u64);

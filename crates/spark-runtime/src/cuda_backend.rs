@@ -108,7 +108,9 @@ pub mod host_register_flags {
 pub unsafe fn cuda_host_register(ptr: *mut c_void, bytes: usize, flags: u32) -> Result<()> {
     let status = unsafe { cuMemHostRegister_v2(ptr, bytes, flags) };
     if status != 0 {
-        bail!("cuMemHostRegister_v2 failed: status {status}, ptr {ptr:p}, {bytes} bytes, flags {flags:#x}");
+        bail!(
+            "cuMemHostRegister_v2 failed: status {status}, ptr {ptr:p}, {bytes} bytes, flags {flags:#x}"
+        );
     }
     Ok(())
 }
@@ -190,7 +192,38 @@ static ALLOC_TRACKER: std::sync::LazyLock<std::sync::Mutex<AllocTracker>> =
         })
     });
 
+thread_local! {
+    /// Set while a sidecar (Whisper, Qwen-Image) allocates on this thread.
+    static UNTRACKED_ALLOCS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// RAII scope: device allocations made on this thread are NOT recorded by
+/// the watermark tracker. Sidecars load and run concurrently with model
+/// hot-swaps; without this, a sidecar allocation that happens inside a
+/// `build_model` recording window would be drained — freed — at that
+/// model's next unload while the sidecar still uses it.
+pub struct UntrackedAllocs {
+    prev: bool,
+}
+
+impl UntrackedAllocs {
+    pub fn enter() -> Self {
+        Self {
+            prev: UNTRACKED_ALLOCS.with(|c| c.replace(true)),
+        }
+    }
+}
+
+impl Drop for UntrackedAllocs {
+    fn drop(&mut self) {
+        UNTRACKED_ALLOCS.with(|c| c.set(self.prev));
+    }
+}
+
 pub(super) fn tracker_record(ptr: u64) {
+    if UNTRACKED_ALLOCS.with(|c| c.get()) {
+        return;
+    }
     let mut t = ALLOC_TRACKER.lock().expect("ALLOC_TRACKER poisoned");
     if t.recording {
         t.live.insert(ptr);
@@ -242,7 +275,10 @@ pub fn drain_and_free_tracked_allocs() -> (usize, usize) {
     let mut freed = 0usize;
     let mut failed = 0usize;
     for ptr in tracker_drain() {
-        if protected.iter().any(|&(base, len)| ptr >= base && ptr < base + len) {
+        if protected
+            .iter()
+            .any(|&(base, len)| ptr >= base && ptr < base + len)
+        {
             tracing::debug!("drain_and_free_tracked_allocs: {ptr:#x} suppressed (arena-owned)");
             continue;
         }

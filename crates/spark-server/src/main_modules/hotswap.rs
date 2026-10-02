@@ -59,9 +59,9 @@ pub struct ActiveModel {
 /// explicitly by the `ATLAS_PRESEED_<CATEGORY>` env var a model was listed
 /// in — never guessed from the model name or config. Each category maps to
 /// exactly one endpoint; requesting a model on a foreign endpoint is a 400.
-/// `Transcribe` never appears in the swap registry (whisper is served by
-/// the resident sidecar, outside the arena) but participates in endpoint
-/// checks and error messages.
+/// `Transcribe` and `Image` never appear in the swap registry (Whisper and
+/// the Qwen-Image pipeline are served by resident sidecars, outside the
+/// arena) but participate in endpoint checks and error messages.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum ModelCategory {
     Generative,
@@ -70,6 +70,7 @@ pub enum ModelCategory {
     Transcribe,
     Translate,
     Ocr,
+    Image,
 }
 
 impl ModelCategory {
@@ -81,6 +82,7 @@ impl ModelCategory {
             ModelCategory::Transcribe => "transcribe",
             ModelCategory::Translate => "translate",
             ModelCategory::Ocr => "ocr",
+            ModelCategory::Image => "image",
         }
     }
 
@@ -93,6 +95,7 @@ impl ModelCategory {
             ModelCategory::Transcribe => "/v1/audio/transcriptions",
             ModelCategory::Translate => "/v1/translate",
             ModelCategory::Ocr => "/v1/ocr",
+            ModelCategory::Image => "/v1/images/generations",
         }
     }
 
@@ -105,6 +108,7 @@ impl ModelCategory {
             ModelCategory::Transcribe => "ATLAS_PRESEED_TRANSCRIBE",
             ModelCategory::Translate => "ATLAS_PRESEED_TRANSLATE",
             ModelCategory::Ocr => "ATLAS_PRESEED_OCR",
+            ModelCategory::Image => "ATLAS_PRESEED_IMAGE",
         }
     }
 }
@@ -252,7 +256,8 @@ impl HotswapCtx {
             path.display(),
             stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0),
             stats.duration_ms,
-            stats.bytes as f64 / (1024.0 * 1024.0 * 1024.0)
+            stats.bytes as f64
+                / (1024.0 * 1024.0 * 1024.0)
                 / (stats.duration_ms.max(1) as f64 / 1000.0),
             stats.payload_xxh3,
             stats.o_direct,

@@ -49,10 +49,18 @@ pub async fn ensure_model_active(
     // Category gate BEFORE the active-model fast path — a mis-categorized
     // request must 400 even when its model happens to be resident.
     let Some(reg) = ctx.registered(requested) else {
-        // Transcribe models are configured but never in the swap registry;
-        // give them the categorized 400 rather than a generic 404.
+        // Sidecar models (transcribe, image) are configured but never in
+        // the swap registry; give them the categorized 400 rather than a
+        // generic 404.
         if state.transcribe_models.iter().any(|m| m == requested) {
-            return Err(category_mismatch(requested, ModelCategory::Transcribe, required));
+            return Err(category_mismatch(
+                requested,
+                ModelCategory::Transcribe,
+                required,
+            ));
+        }
+        if state.image_models.iter().any(|m| m == requested) {
+            return Err(category_mismatch(requested, ModelCategory::Image, required));
         }
         let available: Vec<&str> = ctx.registry.iter().map(|m| m.model_id.as_str()).collect();
         let body = serde_json::json!({
@@ -109,9 +117,7 @@ pub async fn ensure_model_active(
                     };
                     Action::Claim(done)
                 }
-                LazyPhase::Swapping { to, done } if to == requested => {
-                    Action::Wait(done.clone())
-                }
+                LazyPhase::Swapping { to, done } if to == requested => Action::Wait(done.clone()),
                 LazyPhase::Swapping { to, .. } => Action::Reject(to.clone()),
             }
         };
@@ -133,11 +139,8 @@ pub async fn ensure_model_active(
             Action::Wait(done) => {
                 // Notify is only an accelerator: a bounded timeout guards
                 // the register-after-notify race, and the loop re-checks.
-                let _ = tokio::time::timeout(
-                    std::time::Duration::from_secs(2),
-                    done.notified(),
-                )
-                .await;
+                let _ =
+                    tokio::time::timeout(std::time::Duration::from_secs(2), done.notified()).await;
                 continue;
             }
             Action::Reject(to) => {
@@ -205,10 +208,11 @@ async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
     }
 
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-    ctx.scheduler.push_control(crate::scheduler::ControlMsg::Load {
-        model: Some(target.to_string()),
-        reply: reply_tx,
-    });
+    ctx.scheduler
+        .push_control(crate::scheduler::ControlMsg::Load {
+            model: Some(target.to_string()),
+            reply: reply_tx,
+        });
     match tokio::time::timeout(std::time::Duration::from_secs(900), reply_rx).await {
         Ok(Ok(Ok(_stats))) => Ok(()),
         Ok(Ok(Err(e))) => Err(swap_error(format!("load '{target}' failed: {e:#}"))),
@@ -220,11 +224,7 @@ async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
 /// The Phase-K category 400: names the model's actual category, the
 /// endpoint that refused it, and the endpoint that serves it. Never a
 /// silent fallback.
-fn category_mismatch(
-    requested: &str,
-    actual: ModelCategory,
-    required: ModelCategory,
-) -> Response {
+fn category_mismatch(requested: &str, actual: ModelCategory, required: ModelCategory) -> Response {
     let body = serde_json::json!({
         "error": {
             "message": format!(

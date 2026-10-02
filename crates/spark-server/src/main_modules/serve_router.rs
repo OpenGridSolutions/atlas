@@ -119,9 +119,14 @@ pub(crate) async fn build_and_serve(
         .route("/v1/audio/transcriptions", post(api::audio::transcriptions))
         .route("/v1/audio/translations", post(api::audio_stub))
         .route("/v1/audio/speech", post(api::audio_stub))
-        .route("/v1/images/generations", post(api::images_stub))
-        .route("/v1/images/edits", post(api::images_stub))
-        .route("/v1/images/variations", post(api::images_stub))
+        // Image generation (Todo 3.2) — served by the resident Qwen-Image
+        // sidecar, independent of the hot-swap state (not GATED).
+        .route("/v1/images/generations", post(api::images::generations))
+        .route("/v1/images/edits", post(api::images::edits_unsupported))
+        .route(
+            "/v1/images/variations",
+            post(api::images::edits_unsupported),
+        )
         .route("/v1/moderations", post(api::moderations_stub))
         // Hot-swap admin surface (HOTSWAP_MVP_PLAN.md). Covered by the same
         // auth middleware as /v1/* — see the needs_auth predicate in

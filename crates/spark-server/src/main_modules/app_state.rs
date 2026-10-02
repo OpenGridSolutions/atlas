@@ -124,6 +124,10 @@ pub struct AppState {
     /// the arena swap registry. Used for the endpoint's model check and
     /// for the "categorized as transcribe" 400 on foreign endpoints.
     pub transcribe_models: Vec<String>,
+    /// Model ids from ATLAS_PRESEED_IMAGE (Todo 3.2). Served by the
+    /// Qwen-Image sidecar on /v1/images/generations — like the transcribe
+    /// models, never part of the arena swap registry.
+    pub image_models: Vec<String>,
 }
 
 impl AppState {

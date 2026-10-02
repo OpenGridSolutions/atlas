@@ -317,12 +317,14 @@ except Exception as e:
 
 
 # ── 7. 501 stubs on unsupported endpoints ─────────────────────────────────
+# /images/generations is a real endpoint since Todo 3.2 (tests/image_smoke.py);
+# image editing is the part of the Images API that is still a stub.
 section("[7] 501 stubs (batches / files / audio / images / moderations)")
 for path in [
     "/batches",
     "/files",
     "/audio/speech",
-    "/images/generations",
+    "/images/edits",
     "/moderations",
 ]:
     try:

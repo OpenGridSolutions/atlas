@@ -154,9 +154,11 @@ crates/
 
 ### 3.1 Boot (`serve.rs`, Reihenfolge)
 
-1. **Kategorisierte Preseed-Listen** aus den fünf ENV-Vars
-   `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE}`
+1. **Kategorisierte Preseed-Listen** aus den sieben ENV-Vars
+   `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE,OCR,IMAGE}`
    parsen (jede Kategorie ↔ genau ein Endpunkt; falscher Endpunkt ⇒ 400).
+   Ist ein Image-Modell gelistet, wird sofort die Sidecar-Reserve fürs
+   KV-Budget gesetzt (`ATLAS_IMAGE_RESERVE_GB`).
 2. Boot-Modell: config.json parsen (dispatch) → Kernel-Target wählen
    (`ptx_for_config`) → Quant-Kompatibilität prüfen
    (`quant_pair_compatible`: nvfp4↔fp8↔bf16-Matrix) → Safetensors
@@ -164,7 +166,7 @@ crates/
 3. **Registry** aufbauen: pro Preseed-Eintrag `registered_model_checked`
    (Config parst? Loader existiert? Target existiert? Quant passt?) —
    nicht ladbare Einträge werden mit WARN übersprungen, Boot läuft
-   weiter. Whisper wird nie registriert (Sidecar).
+   weiter. Whisper und Qwen-Image werden nie registriert (Sidecars).
 4. Scheduler-Thread starten, **Boot-Preseed**: Boot-Modell snapshotten,
    entladen, fehlende Snapshots aller anderen Modelle einmalig erzeugen
    (`serve_phases/preseed.rs`). Danach: Server idle, Arena leer.
@@ -194,6 +196,25 @@ Embeddings/Rerank nutzen denselben Weg mit `max_tokens=1`
 zwei Logit-Einträge. `/v1/translate` rendert das TranslateGemma-Template
 serverseitig (kein generisches Template). `/v1/audio/transcriptions`
 geht am Scheduler vorbei in den Whisper-Sidecar.
+
+`/v1/images/generations` geht ebenfalls am Scheduler vorbei: der
+Qwen-Image-Sidecar (`spark-model/src/qwen_image/`, lädt beim ersten
+Request, 26.7 GiB resident) fährt Text-Encoder → DiT-Sampler →
+VAE-Decoder synchron auf einem Blocking-Thread; ein Bild zur Zeit,
+weitere Requests warten am Sidecar-Lock. Das aktive Chat-Modell bleibt
+geladen. Vor dem Laden und vor jeder Generierung prüft ein
+Speicher-Preflight `MemAvailable` (ohne Swap) gegen Bedarf + 4 GiB
+Marge (sonst 503).
+
+Speicher-Eigenheit der GB10 (gemessen 2026-10-02): der NVIDIA-Treiber
+gibt freigegebenen Gerätespeicher — beendete Prozesse, der beim
+Boot-Preseed entladene KV-Pool — nicht sofort an den Kernel zurück,
+sondern hält ihn minutenlang in einem Pool. In `MemAvailable` zählt er
+als belegt (im KV-Budget-Log die „co-tenants"-Zeile), neue
+CUDA-Allokationen werden aber daraus bedient. Folge: KV-Budget,
+Sidecar-Reserve und Preflight sehen weniger freien Speicher als für
+Gerätespeicher real verfügbar ist und entscheiden konservativ;
+Host-Speicher (Weights-Arena) kann den Pool dagegen nicht nutzen.
 
 ---
 

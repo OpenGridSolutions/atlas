@@ -12,6 +12,11 @@
 //!   total_budget = total × utilization
 //!   kv = pinned override OR (total_budget − used − inference_reserve),
 //!        both clamped to (free_now − inference_reserve)
+//!   a pending sidecar reserve (Todo 3.2b) comes off both the budget and
+//!   the physical clamp — memory a configured sidecar has yet to allocate —
+//!   but never takes more than half of the pool the model would get
+//!   without it: the generative model is the primary workload, the sidecar
+//!   refuses work at request time when its memory is not there
 
 /// Where `used_so_far` came from — drives build.rs's log line choice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,6 +48,9 @@ pub(crate) struct BudgetInputs {
     pub inference_reserve: usize,
     /// --kv-pool-gb in bytes (deterministic hot-swap sizing).
     pub kv_pool_override: Option<usize>,
+    /// `gpu::sidecar_pending_reserve_bytes()` — memory a configured sidecar
+    /// (Qwen-Image) will still allocate outside the arena and the KV pool.
+    pub sidecar_reserve: usize,
 }
 
 pub(crate) struct BudgetResult {
@@ -52,6 +60,8 @@ pub(crate) struct BudgetResult {
     pub source: UsedSource,
     /// Auto path only: co-tenant bytes excluded (`raw_used − atlas_own`).
     pub cotenants: usize,
+    /// How much of `sidecar_reserve` was actually kept out of the pool.
+    pub sidecar_reserved: usize,
 }
 
 pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
@@ -82,20 +92,28 @@ pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
     };
 
     let total_budget = (i.total_mem as f64 * i.gpu_memory_utilization) as usize;
-    let physical_cap = actual_free.saturating_sub(i.inference_reserve);
-    let kv_budget = match i.kv_pool_override {
-        Some(pinned) => pinned.min(physical_cap),
-        None => total_budget
-            .saturating_sub(used_so_far)
+    let pool = |sidecar: usize| {
+        let physical_cap = actual_free
             .saturating_sub(i.inference_reserve)
-            .min(physical_cap),
+            .saturating_sub(sidecar);
+        match i.kv_pool_override {
+            Some(pinned) => pinned.min(physical_cap),
+            None => total_budget
+                .saturating_sub(used_so_far)
+                .saturating_sub(i.inference_reserve)
+                .saturating_sub(sidecar)
+                .min(physical_cap),
+        }
     };
+    let unreserved = pool(0);
+    let kv_budget = pool(i.sidecar_reserve).max(unreserved / 2);
     BudgetResult {
         used_so_far,
         total_budget,
         kv_budget,
         source,
         cotenants,
+        sidecar_reserved: unreserved - kv_budget,
     }
 }
 
@@ -125,6 +143,7 @@ mod tests {
             gpu_memory_utilization: 0.90,
             inference_reserve: gib(2.6),
             kv_pool_override: None,
+            sidecar_reserve: 0,
         }
     }
 
@@ -137,8 +156,16 @@ mod tests {
         // Pre-fix reading: 20.6 GB (swap-reclaimable memory invisible).
         let r = compute(&failure_scene(gib(20.6)));
         assert_eq!(r.source, UsedSource::AutoBaseline);
-        assert!((as_gib(r.used_so_far) - 95.9).abs() < 0.15, "{}", as_gib(r.used_so_far));
-        assert!((as_gib(r.kv_budget) - 9.2).abs() < 0.15, "{}", as_gib(r.kv_budget));
+        assert!(
+            (as_gib(r.used_so_far) - 95.9).abs() < 0.15,
+            "{}",
+            as_gib(r.used_so_far)
+        );
+        assert!(
+            (as_gib(r.kv_budget) - 9.2).abs() < 0.15,
+            "{}",
+            as_gib(r.kv_budget)
+        );
         // …which is exactly the observed failure:
         assert!(as_gib(r.kv_budget) < NEEDED_GIB);
     }
@@ -151,7 +178,11 @@ mod tests {
         let r = compute(&failure_scene(gib(91.0)));
         assert_eq!(r.source, UsedSource::AutoBaseline);
         // Atlas-own back to reality: TranslateGemma weights + arena ≈ 26 GB.
-        assert!((as_gib(r.used_so_far) - 25.5).abs() < 0.15, "{}", as_gib(r.used_so_far));
+        assert!(
+            (as_gib(r.used_so_far) - 25.5).abs() < 0.15,
+            "{}",
+            as_gib(r.used_so_far)
+        );
         assert!(as_gib(r.kv_budget) > 65.0, "{}", as_gib(r.kv_budget));
         assert!(as_gib(r.kv_budget) > NEEDED_GIB);
         // Overcommit guard: weights + KV stay under the util ceiling.
@@ -186,6 +217,37 @@ mod tests {
         let r = compute(&i);
         // min(200, 20.6 − 2.6) = 18.0
         assert!((as_gib(r.kv_budget) - 18.0).abs() < 0.05);
+    }
+
+    #[test]
+    fn pending_sidecar_reserve_comes_off_the_kv_pool() {
+        // A 30 GB image pipeline is configured but not resident yet: the
+        // generative model's pool must leave that much unclaimed, on the
+        // auto path and under a pinned --kv-pool-gb alike.
+        let base = compute(&failure_scene(gib(91.0)));
+        let mut i = failure_scene(gib(91.0));
+        i.sidecar_reserve = gib(30.0);
+        let r = compute(&i);
+        assert!((as_gib(base.kv_budget) - as_gib(r.kv_budget) - 30.0).abs() < 0.01);
+        assert_eq!(r.sidecar_reserved, gib(30.0));
+        i.kv_pool_override = Some(gib(200.0));
+        // min(200, 91 − 2.6 − 30) = 58.4
+        assert!((as_gib(compute(&i).kv_budget) - 58.4).abs() < 0.05);
+    }
+
+    #[test]
+    fn sidecar_reserve_yields_instead_of_starving_the_model() {
+        // Tight box: 45 GB free, the full 34 GB reserve would leave no KV
+        // pool at all (the 2026-10-02 "No memory left for KV cache" load
+        // failure). The reserve gives way at half the unreserved pool.
+        let mut i = failure_scene(gib(45.0));
+        let unreserved = compute(&i).kv_budget;
+        i.sidecar_reserve = gib(34.0);
+        let r = compute(&i);
+        assert!(unreserved > 0);
+        assert_eq!(r.kv_budget, unreserved / 2);
+        assert_eq!(r.sidecar_reserved, unreserved - unreserved / 2);
+        assert!(r.sidecar_reserved < gib(34.0));
     }
 
     #[test]

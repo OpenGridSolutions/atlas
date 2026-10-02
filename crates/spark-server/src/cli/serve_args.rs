@@ -290,7 +290,7 @@ pub struct ServeArgs {
     /// IDLE with no model resident; the first request naming a registered
     /// model loads it synchronously (~6 s). Flag entries join the
     /// GENERATIVE category; the full categorized lists come from the
-    /// `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE}` env
+    /// `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE,OCR,IMAGE}` env
     /// vars (each a JSON array, env and flags combined, duplicates
     /// removed). The boot model (positional arg) is always registered.
     #[arg(long = "preseed-model", value_name = "HF_ID")]
@@ -607,8 +607,7 @@ mod preseed_tests {
 
     #[test]
     fn malformed_env_fails_fast_naming_the_variable() {
-        let err =
-            resolve_category_models("ATLAS_PRESEED_EMBED", Some("a/b,c/d"), &[]).unwrap_err();
+        let err = resolve_category_models("ATLAS_PRESEED_EMBED", Some("a/b,c/d"), &[]).unwrap_err();
         let msg = format!("{err}");
         assert!(msg.contains("ATLAS_PRESEED_EMBED"), "{msg}");
         assert!(msg.contains("a/b,c/d"), "{msg}");
@@ -618,8 +617,16 @@ mod preseed_tests {
     fn empty_env_and_flags_yield_empty_list() {
         let v = "ATLAS_PRESEED_RERANK";
         assert!(resolve_category_models(v, None, &[]).unwrap().is_empty());
-        assert!(resolve_category_models(v, Some("  "), &[]).unwrap().is_empty());
-        assert!(resolve_category_models(v, Some("[]"), &[]).unwrap().is_empty());
+        assert!(
+            resolve_category_models(v, Some("  "), &[])
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            resolve_category_models(v, Some("[]"), &[])
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

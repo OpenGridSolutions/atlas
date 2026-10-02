@@ -1,0 +1,39 @@
+# Qwen/Qwen-Image-2.1 — text-to-image / image editing (Todo Phase 3.2).
+#
+# Diffusion pipeline, NOT an autoregressive LLM: a Qwen3-VL-8B text encoder
+# (hidden states only), a 7B single-stream DiT (32 blocks, block-causal
+# attention, flow-matching Euler sampler) and a 16x VAE decoder (RGBA).
+# Served as a RESIDENT SIDECAR MODULE outside the scheduler / Model-trait
+# stack (the Whisper pattern) — this target exists so the sidecar can load
+# its kernels through the standard registry path. BF16 compute end to end
+# (BF16 DiT + text encoder as shipped, FP32 VAE -> BF16 at load); NO NVFP4
+# quantization anywhere.
+#
+# Deliberately WITHOUT [[model_types]]: the repo is a diffusers layout
+# (model_index.json, no root config.json), so selection is hf_id-only.
+#
+# License: Qwen Research License (not Apache-2.0) — clarify before
+# production use / image publishing (Todo 3.2d).
+
+[model]
+name = "qwen-image-2.1"
+hf_id = "Qwen/Qwen-Image-2.1"
+model_type = "qwen_image"
+architecture = "diffusion (Qwen3-VL text encoder + single-stream DiT + VAE)"
+parameters = "7B DiT + 8B text encoder"
+active_parameters = "7B"
+
+# DiT geometry (transformer/config.json)
+layers_total = 32
+hidden_dim = 4096
+head_dim = 128
+q_heads = 32
+kv_heads = 32
+intermediate_size = 12288
+
+moe_experts = 0
+mtp_layers = 0
+
+[behavior]
+enable_loop_watchdog = false
+thinking_default = false

@@ -93,6 +93,10 @@ name = "whisper_kernel_microtest"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "qwen_image_golden"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "gdn_cdh_vblock_microtest"
 required-features = ["cuda", "gpu-examples"]
 

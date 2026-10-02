@@ -113,7 +113,9 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 
 | Variable | Wirkung |
 |---|---|
-| `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE}` | Kategorisierte Modell-Registry (JSON-Arrays) |
+| `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE,OCR,IMAGE}` | Kategorisierte Modell-Registry (JSON-Arrays) |
+| `ATLAS_IMAGE_RESERVE_GB` | Speicher, den das KV-Budget für den Qwen-Image-Sidecar freihält, solange er konfiguriert, aber nicht geladen ist (Default 34 = 27 Gewichte + 7 Arbeitsspeicher; nach dem Laden bleiben 7) |
+| `ATLAS_IMAGE_NO_CUBLAS=1` | Qwen-Image-Sidecar: In-Tree-GEMM statt cuBLASLt für die Projektionen (Debug) |
 | `ATLAS_KV_OVERCOMMIT=1` | Boot-Worst-Case-Check → Warnung (paged on-demand) |
 | `ATLAS_KV_EXTERNAL_RESERVE_GB` | Manueller Co-Tenant-Abzug im KV-Budget |
 | `ATLAS_SKIP_OOM_PREFLIGHT=1` | Loader-Preflight aus (UMA-False-Negatives) |

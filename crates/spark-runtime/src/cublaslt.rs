@@ -162,6 +162,35 @@ pub fn bf16_gemm_act_weight_t(
     stream: u64,
 ) -> Result<()> {
     let ctx = ctx()?;
+    bf16_gemm_act_weight_t_ws(
+        act,
+        weight,
+        out,
+        m,
+        n,
+        k,
+        stream,
+        ctx.workspace,
+        ctx.ws_size,
+    )
+}
+
+/// [`bf16_gemm_act_weight_t`] with a caller-owned workspace. The shared
+/// workspace is only safe for callers serialized on one stream; a sidecar
+/// running next to the scheduler on its own thread brings its own.
+#[allow(clippy::too_many_arguments)]
+pub fn bf16_gemm_act_weight_t_ws(
+    act: u64,
+    weight: u64,
+    out: u64,
+    m: u32,
+    n: u32,
+    k: u32,
+    stream: u64,
+    workspace: u64,
+    workspace_bytes: usize,
+) -> Result<()> {
+    let ctx = ctx()?;
     unsafe {
         let mut desc: cublasLtMatmulDesc_t = std::ptr::null_mut();
         chk(
@@ -208,7 +237,7 @@ pub fn bf16_gemm_act_weight_t(
         )?;
         let mut pref: cublasLtMatmulPreference_t = std::ptr::null_mut();
         chk(cublasLtMatmulPreferenceCreate(&mut pref), "PrefCreate")?;
-        let ws_size = ctx.ws_size;
+        let ws_size = workspace_bytes;
         chk(
             cublasLtMatmulPreferenceSetAttribute(
                 pref,
@@ -256,8 +285,8 @@ pub fn bf16_gemm_act_weight_t(
             out as *mut c_void,
             ld_,
             result.as_ptr() as *const c_void,
-            ctx.workspace as *mut c_void,
-            ctx.ws_size,
+            workspace as *mut c_void,
+            workspace_bytes,
             stream as *mut c_void,
         );
         cublasLtMatmulPreferenceDestroy(pref);

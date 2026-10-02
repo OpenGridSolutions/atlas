@@ -66,11 +66,6 @@ pub async fn audio_stub() -> Response {
     not_supported("Audio API is not supported. Atlas serves text chat/completion models only.")
 }
 
-/// POST /v1/images/* — Atlas has no image-generation model loaded.
-pub async fn images_stub() -> Response {
-    not_supported("Image API is not supported. Atlas serves text chat/completion models only.")
-}
-
 /// POST /v1/moderations — Atlas does not run a safety-classifier model.
 pub async fn moderations_stub() -> Response {
     not_supported(

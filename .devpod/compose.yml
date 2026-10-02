@@ -72,6 +72,10 @@ services:
           [
             "datalab-to/chandra-ocr-2"
           ]
+      - ATLAS_PRESEED_IMAGE=
+          [
+            "Qwen/Qwen-Image-2.1"
+          ]
     command: ["sleep", "infinity"]
 
 networks:
