@@ -355,12 +355,22 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
       `/variations` bleibt 501 (kein promptfreier Modus im Modell).
       Classifier-free Guidance (`negative_prompt`/`true_cfg_scale`) ist
       nicht implementiert (Modell ist für Sampling ohne CFG gedacht).
-      OFFEN (Feinschliff): Golden-Diff der NEUEN Stufen (ViT+Text-
-      Hidden, VAE-Encoder-Latents, Edit-DiT-Schritt) gegen die
-      diffusers-CPU-Referenz — `scripts/qwen_image_ref_dump.py` um eine
-      edit-Stufe erweitern (refenv/ steht wieder, diffusers
-      0.41.0.dev); bisheriger Beleg ist die starke visuelle Bildtreue
-      der E2E-Edits.
+      Golden-Diff der Edit-Stufen — DONE 2026-10-02 nachts (Commit
+      1521621): drei neue ref-dump-Stages (edit_text/edit_vae/edit_dit,
+      CPU f32, output_resolution=256) + Edit-Block im Golden-Harness
+      mit Stage-Entry-Points (vision_features_host, text_hidden_vl,
+      encode_cond_host, denoise_edit_host). ALLE CHECKS PASS: T2I-
+      Regression >=0.998 (DiT-Umbau verlustfrei), VAE-Encoder 0.99998,
+      Edit-DiT-Blöcke/noise_preds/final_latents >=0.998, VL-Text-Zeilen
+      0.9994 (MRoPE/Masken/Deepstack-Verdrahtung bewiesen). DABEI
+      GEFUNDEN + GEFIXT: Deepstack-Tap-Off-by-one im VisionEncoder
+      (einen Block zu früh; im Chat-Serving folgenlos, da ungenutzt —
+      deepstack_0-cos 0.716→0.9976). Bekanntes Rest-Band: der ViT
+      selbst läuft bei cos ~0.984 (BF16-GEMM-SDPA; historische
+      vit_reference_check-Alarmschwelle war 0.90) → Bild-Zeilen der
+      VL-Hidden ~0.92 nach 36 Layern; Gates darauf kalibriert und
+      dokumentiert. Präzisions-Feinschliff (f32-ViT-Pfad) wäre ein
+      eigener Performance/Qualitäts-Punkt.
 - [x] **3.2b `ModelCategory::Image`** — DONE 2026-10-02. Kategorie +
       `ATLAS_PRESEED_IMAGE` (serve.sh + compose.yml) + Endpoint-Mapping;
       wie Whisper ein RESIDENTER SIDECAR außerhalb von Scheduler/Arena
