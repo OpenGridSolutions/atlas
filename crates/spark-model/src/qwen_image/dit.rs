@@ -83,6 +83,18 @@ struct ModVecs {
     scale_out: DevicePtr,
 }
 
+/// One condition image's latents for the DiT prefix (`/v1/images/edits`).
+pub(crate) struct CondLatents {
+    /// Normalized, packed latents `[lat_h*lat_w, 64]` BF16 on device.
+    pub latents: DevicePtr,
+    pub lat_h: usize,
+    pub lat_w: usize,
+    /// This image's slot run in the VLM row space (prompt rows after the
+    /// system drop): start row and slot count (`= lat_h*lat_w/4`).
+    pub vlm_start: usize,
+    pub vlm_len: usize,
+}
+
 impl Dit {
     pub fn load(dir: &Path, ws: &mut WeightSet<'_>) -> Result<Self> {
         let st = StDir::open(dir)?;
@@ -171,15 +183,20 @@ impl Dit {
     /// Run the flow-matching sampler over `latents` (`[lat_h*lat_w, 64]`
     /// f32, target tokens in row-major order) in place.
     ///
-    /// `prompt` is the text encoder output `[tp, 4096]` BF16 on device;
-    /// `sigmas` has `steps + 1` entries.
+    /// `prompt` is the text encoder output `[tv, 4096]` BF16 on device —
+    /// with condition images these are the VLM rows INCLUDING the image
+    /// slot rows, whose txt_in features are replaced by the `img_in`
+    /// projection of the condition latents after the 4× slot expansion
+    /// (the reference's `joint_hidden_states[image_pad_mask] = img_in(
+    /// latents)`). `sigmas` has `steps + 1` entries.
     #[allow(clippy::too_many_arguments)]
     pub fn denoise(
         &self,
         g: &dyn GpuBackend,
         ops: &Ops,
         prompt: DevicePtr,
-        tp: usize,
+        tv: usize,
+        cond: &[CondLatents],
         lat_h: usize,
         lat_w: usize,
         latents: &mut [f32],
@@ -189,6 +206,41 @@ impl Dit {
     ) -> Result<()> {
         let n = lat_h * lat_w;
         anyhow::ensure!(latents.len() == n * LATENT_CH, "latents shape mismatch");
+        // Joint prefix layout: VLM text runs interleaved with the 4×-expanded
+        // condition-image blocks, in VLM order.
+        let mut segs: Vec<sched::Seg> = Vec::new();
+        let mut joint_starts = Vec::with_capacity(cond.len());
+        {
+            let mut vlm_pos = 0usize;
+            let mut joint_pos = 0usize;
+            for c in cond {
+                anyhow::ensure!(
+                    c.vlm_start >= vlm_pos && c.vlm_start + c.vlm_len <= tv,
+                    "condition image spans must be ordered and in range"
+                );
+                anyhow::ensure!(
+                    c.lat_h * c.lat_w == 4 * c.vlm_len,
+                    "condition latents must be 4x the VLM slot count"
+                );
+                let text_run = c.vlm_start - vlm_pos;
+                if text_run > 0 {
+                    segs.push(sched::Seg::Text(text_run));
+                }
+                joint_pos += text_run;
+                joint_starts.push(joint_pos);
+                segs.push(sched::Seg::Image {
+                    h: c.lat_h,
+                    w: c.lat_w,
+                });
+                joint_pos += c.lat_h * c.lat_w;
+                vlm_pos = c.vlm_start + c.vlm_len;
+            }
+            if tv > vlm_pos {
+                segs.push(sched::Seg::Text(tv - vlm_pos));
+            }
+        }
+        let cond_tokens: usize = cond.iter().map(|c| c.lat_h * c.lat_w).sum();
+        let tp = tv - cond.iter().map(|c| c.vlm_len).sum::<usize>() + cond_tokens;
         let s = tp + n;
         let (tp_pad, s_pad) = (pad_keys(tp), pad_keys(s));
         let hd = HEADS * HEAD_DIM;
@@ -196,20 +248,39 @@ impl Dit {
         let mut pool = Pool::new(g);
         let pool = &mut pool;
 
-        let positions = sched::t2i_positions(tp, lat_h, lat_w);
+        let mut all_segs = segs.clone();
+        all_segs.push(sched::Seg::Image { h: lat_h, w: lat_w });
+        let positions = sched::joint_positions(&all_segs);
         let (cos, sin) = sched::rope_tables(&positions);
         let cos_p = pool.upload(&f32s_to_bytes(&cos[..tp * half]))?;
         let sin_p = pool.upload(&f32s_to_bytes(&sin[..tp * half]))?;
         let cos_t = pool.upload(&f32s_to_bytes(&cos[tp * half..]))?;
         let sin_t = pool.upload(&f32s_to_bytes(&sin[tp * half..]))?;
 
-        // ── prefix pass: prompt tokens, t = 0 modulation, causal ──
+        // ── prefix pass: prompt + condition blocks, t = 0 modulation ──
+        // Block-causal rows: text rows see keys [0, row]; every token of a
+        // condition block sees keys [0, block_end) (bidirectional within
+        // the block, causal across the sequence).
         let mut kc = Vec::with_capacity(LAYERS);
         let mut vc = Vec::with_capacity(LAYERS);
         {
             let m0 = self.mod_vectors(g, ops, pool, 0.0)?;
-            let limits: Vec<u8> = (0..tp as u32).flat_map(|r| (r + 1).to_le_bytes()).collect();
-            let limits = pool.upload(&limits)?;
+            let mut limits_host: Vec<u32> = Vec::with_capacity(tp);
+            for seg in &segs {
+                match *seg {
+                    sched::Seg::Text(len) => {
+                        let base = limits_host.len() as u32;
+                        limits_host.extend((0..len as u32).map(|r| base + r + 1));
+                    }
+                    sched::Seg::Image { h, w } => {
+                        let end = limits_host.len() as u32 + (h * w) as u32;
+                        limits_host.extend(std::iter::repeat_n(end, h * w));
+                    }
+                }
+            }
+            debug_assert_eq!(limits_host.len(), tp);
+            let limits_bytes: Vec<u8> = limits_host.iter().flat_map(|v| v.to_le_bytes()).collect();
+            let limits = pool.upload(&limits_bytes)?;
             let h = pool.alloc(tp * HIDDEN * 2)?;
             let x = pool.alloc(tp * HIDDEN * 2)?;
             let q = pool.alloc(tp * hd * 2)?;
@@ -221,13 +292,51 @@ impl Dit {
             let probs = pool.alloc(tp * tp_pad * 2)?;
             let o_stage = pool.alloc(tp * HEAD_DIM * 2)?;
 
-            // txt_in: zero-centred RMSNorm → Linear → GELU(tanh) → Linear
-            ops.rms_norm(g, prompt, self.txt_norm, x, tp, HIDDEN, EPS, 1.0)?;
-            ops.gemm(g, x, self.txt_in, q, tp, HIDDEN, HIDDEN)?;
-            ops.gelu_tanh(g, q, tp * HIDDEN)?;
-            ops.gemm(g, q, self.txt_out, h, tp, HIDDEN, HIDDEN)?;
+            // txt_in: zero-centred RMSNorm → Linear → GELU(tanh) → Linear,
+            // over the tv VLM rows (into `x`/`q` scratch, result in txt_feat).
+            let txt_feat = pool.alloc(tv * HIDDEN * 2)?;
+            ops.rms_norm(g, prompt, self.txt_norm, x, tv, HIDDEN, EPS, 1.0)?;
+            ops.gemm(g, x, self.txt_in, q, tv, HIDDEN, HIDDEN)?;
+            ops.gelu_tanh(g, q, tv * HIDDEN)?;
+            ops.gemm(g, q, self.txt_out, txt_feat, tv, HIDDEN, HIDDEN)?;
+
+            // Assemble the joint prefix: copy text runs, project condition
+            // latents through img_in into their expanded blocks.
+            {
+                let mut vlm_pos = 0usize;
+                let mut joint_pos = 0usize;
+                let copy_text = |vlm_from: usize, len: usize, joint_to: usize| -> Result<()> {
+                    if len > 0 {
+                        g.copy_d2d(
+                            txt_feat.offset(vlm_from * HIDDEN * 2),
+                            h.offset(joint_to * HIDDEN * 2),
+                            len * HIDDEN * 2,
+                        )?;
+                    }
+                    Ok(())
+                };
+                for (ci, c) in cond.iter().enumerate() {
+                    let text_run = c.vlm_start - vlm_pos;
+                    copy_text(vlm_pos, text_run, joint_pos)?;
+                    joint_pos += text_run;
+                    debug_assert_eq!(joint_pos, joint_starts[ci]);
+                    ops.gemm(
+                        g,
+                        c.latents,
+                        self.img_in,
+                        h.offset(joint_pos * HIDDEN * 2),
+                        c.lat_h * c.lat_w,
+                        HIDDEN,
+                        LATENT_CH,
+                    )?;
+                    joint_pos += c.lat_h * c.lat_w;
+                    vlm_pos = c.vlm_start + c.vlm_len;
+                }
+                copy_text(vlm_pos, tv - vlm_pos, joint_pos)?;
+            }
+            g.synchronize(g.default_stream())?;
+            pool.free(txt_feat);
             if let Some(t) = trace.as_deref_mut() {
-                g.synchronize(g.default_stream())?;
                 t.push(("txt_in".into(), download_bf16(g, h, tp * HIDDEN)?));
             }
 

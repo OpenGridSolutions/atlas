@@ -23,6 +23,8 @@ pub(crate) struct Ops {
     gelu_tanh: KernelHandle,
     bias_add: KernelHandle,
     im2col3x3: KernelHandle,
+    im2col3x3_s2: KernelHandle,
+    vae_avg_down: KernelHandle,
     vae_norm: KernelHandle,
     upsample2x: KernelHandle,
     dup_shortcut_add: KernelHandle,
@@ -82,6 +84,8 @@ impl Ops {
             gelu_tanh: k("qimg_gelu_tanh")?,
             bias_add: k("qimg_bias_add")?,
             im2col3x3: k("qimg_im2col3x3")?,
+            im2col3x3_s2: k("qimg_im2col3x3_s2")?,
+            vae_avg_down: k("qimg_vae_avg_down")?,
             vae_norm: k("qimg_vae_norm")?,
             upsample2x: k("qimg_upsample2x")?,
             dup_shortcut_add: k("qimg_dup_shortcut_add")?,
@@ -450,6 +454,66 @@ impl Ops {
             .arg_u32(c as u32)
             .arg_u32(row0 as u32)
             .arg_u32(rows as u32)
+            .launch(g.default_stream())
+    }
+
+    /// Stride-2 im2col (encoder downsample conv): output rows cover the
+    /// `(h/2) × (w/2)` grid slice `[row0, row0+rows)`; `h`/`w` are the
+    /// INPUT dims.
+    #[allow(clippy::too_many_arguments)]
+    pub fn im2col3x3_s2(
+        &self,
+        g: &dyn GpuBackend,
+        x: DevicePtr,
+        out: DevicePtr,
+        h: usize,
+        w: usize,
+        c: usize,
+        row0: usize,
+        rows: usize,
+    ) -> Result<()> {
+        KernelLaunch::new(g, self.im2col3x3_s2)
+            .grid([blocks(rows * (w / 2) * 9 * c), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(x)
+            .arg_ptr(out)
+            .arg_u32(h as u32)
+            .arg_u32(w as u32)
+            .arg_u32(c as u32)
+            .arg_u32(row0 as u32)
+            .arg_u32(rows as u32)
+            .launch(g.default_stream())
+    }
+
+    /// AvgDown3D shortcut: 2×2 pool + channel-group average, ADDED onto
+    /// `out` (`[(h/2)*(w/2), cout]`). `factor = ft*4`, `group =
+    /// cin*factor/cout`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn vae_avg_down(
+        &self,
+        g: &dyn GpuBackend,
+        x: DevicePtr,
+        out: DevicePtr,
+        h: usize,
+        w: usize,
+        cin: usize,
+        cout: usize,
+        group: usize,
+        factor: usize,
+        ft: usize,
+    ) -> Result<()> {
+        KernelLaunch::new(g, self.vae_avg_down)
+            .grid([blocks((h / 2) * (w / 2) * cout), 1, 1])
+            .block([256, 1, 1])
+            .arg_ptr(x)
+            .arg_ptr(out)
+            .arg_u32(h as u32)
+            .arg_u32(w as u32)
+            .arg_u32(cin as u32)
+            .arg_u32(cout as u32)
+            .arg_u32(group as u32)
+            .arg_u32(factor as u32)
+            .arg_u32(ft as u32)
             .launch(g.default_stream())
     }
 

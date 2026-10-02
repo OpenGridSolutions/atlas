@@ -140,8 +140,36 @@ def main() -> int:
             base, "/v1/images/generations", {"prompt": prompt, "model": args.chat_model}, timeout=60
         )
         record("chat model on image endpoint → 400", [] if status == 400 else [f"status {status}"])
-    status, _ = post(base, "/v1/images/edits", {}, timeout=60)
-    record("image edits → 501", [] if status == 501 else [f"status {status}"])
+    # ── /v1/images/edits (JSON path; multipart is the curl -F variant) ──
+    status, _ = post(base, "/v1/images/edits", {"prompt": "x"}, timeout=60)
+    record("edits without image → 400", [] if status == 400 else [f"status {status}"])
+    if first is not None:
+        t0 = time.time()
+        status, r = post(
+            base,
+            "/v1/images/edits",
+            {
+                "image": base64.b64encode(first).decode(),
+                "prompt": "make it monochrome",
+                "size": "256x256",
+                "num_inference_steps": 2,
+                "seed": 3,
+            },
+        )
+        problems = []
+        if status != 200:
+            problems.append(f"status {status}: {r.get('error', {}).get('message')}")
+        else:
+            raw = base64.b64decode((r.get("data") or [{}])[0].get("b64_json", ""))
+            try:
+                w, h, _colour = png_header(raw)
+                if (w, h) != (256, 256):
+                    problems.append(f"{w}x{h}, wanted 256x256")
+            except ValueError as e:
+                problems.append(str(e))
+        record("image edit (conditioned)", problems, f"{time.time()-t0:.1f}s")
+    status, _ = post(base, "/v1/images/variations", {}, timeout=60)
+    record("image variations → 501", [] if status == 501 else [f"status {status}"])
     return 1 if failures else 0
 
 

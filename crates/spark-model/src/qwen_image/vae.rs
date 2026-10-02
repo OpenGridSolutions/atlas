@@ -19,26 +19,26 @@ use super::ops::{Ops, Pool, WeightSet, pad_keys};
 use super::st::{StDir, bf16_bytes_to_f32s, bytes_to_f32s, f32s_to_bf16_bytes, f32s_to_bytes};
 
 /// Upper bound for one im2col band (BF16 bytes).
-const IM2COL_BUDGET: usize = 768 << 20;
+pub(super) const IM2COL_BUDGET: usize = 768 << 20;
 
-struct Conv {
+pub(super) struct Conv {
     /// `[cout, 9*cin]` (3×3, columns ordered ky, kx, c) or `[cout, cin]` (1×1), BF16.
-    w: DevicePtr,
+    pub(super) w: DevicePtr,
     /// `[cout]` FP32 on device.
-    bias: DevicePtr,
+    pub(super) bias: DevicePtr,
     /// Host copy of the bias (the FP32 output convolution adds it on the host).
-    bias_host: Vec<f32>,
-    cin: usize,
-    cout: usize,
-    k3: bool,
+    pub(super) bias_host: Vec<f32>,
+    pub(super) cin: usize,
+    pub(super) cout: usize,
+    pub(super) k3: bool,
 }
 
-struct Res {
-    norm1: DevicePtr,
-    conv1: Conv,
-    norm2: DevicePtr,
-    conv2: Conv,
-    shortcut: Option<Conv>,
+pub(super) struct Res {
+    pub(super) norm1: DevicePtr,
+    pub(super) conv1: Conv,
+    pub(super) norm2: DevicePtr,
+    pub(super) conv2: Conv,
+    pub(super) shortcut: Option<Conv>,
 }
 
 struct Up {
@@ -67,17 +67,17 @@ pub(crate) struct VaeDecoder {
     pub weights_bytes: usize,
 }
 
-struct Loader<'a, 'g> {
-    st: StDir,
-    ws: &'a mut WeightSet<'g>,
+pub(super) struct Loader<'a, 'g> {
+    pub(super) st: StDir,
+    pub(super) ws: &'a mut WeightSet<'g>,
 }
 
 impl Loader<'_, '_> {
-    fn upload(&mut self, raw: &[u8]) -> Result<DevicePtr> {
+    pub(super) fn upload(&mut self, raw: &[u8]) -> Result<DevicePtr> {
         self.ws.upload(raw)
     }
 
-    fn conv(&mut self, base: &str) -> Result<Conv> {
+    pub(super) fn conv(&mut self, base: &str) -> Result<Conv> {
         let e = self.st.entry(&format!("{base}.weight"))?.clone();
         ensure!(
             e.shape.len() == 4,
@@ -110,12 +110,12 @@ impl Loader<'_, '_> {
         })
     }
 
-    fn gamma(&mut self, name: &str) -> Result<DevicePtr> {
+    pub(super) fn gamma(&mut self, name: &str) -> Result<DevicePtr> {
         let v = self.st.read_f32(name)?;
         self.upload(&f32s_to_bytes(&v))
     }
 
-    fn res(&mut self, base: &str) -> Result<Res> {
+    pub(super) fn res(&mut self, base: &str) -> Result<Res> {
         let shortcut = if self.st.contains(&format!("{base}.conv_shortcut.weight")) {
             Some(self.conv(&format!("{base}.conv_shortcut"))?)
         } else {
@@ -129,6 +129,123 @@ impl Loader<'_, '_> {
             shortcut,
         })
     }
+}
+
+/// Convolution over an NHWC buffer; returns a new `[h*w, cout]` buffer.
+pub(super) fn conv_nhwc(
+    g: &dyn GpuBackend,
+    ops: &Ops,
+    pool: &mut Pool<'_>,
+    x: DevicePtr,
+    h: usize,
+    w: usize,
+    c: &Conv,
+) -> Result<DevicePtr> {
+    let pixels = h * w;
+    let out = pool.alloc(pixels * c.cout * 2)?;
+    if c.k3 {
+        let k = 9 * c.cin;
+        let band = (IM2COL_BUDGET / (w * k * 2)).clamp(1, h);
+        let cols = pool.alloc(band * w * k * 2)?;
+        let mut row0 = 0;
+        while row0 < h {
+            let rows = band.min(h - row0);
+            ops.im2col3x3(g, x, cols, h, w, c.cin, row0, rows)?;
+            ops.gemm(
+                g,
+                cols,
+                c.w,
+                out.offset(row0 * w * c.cout * 2),
+                rows * w,
+                c.cout,
+                k,
+            )?;
+            row0 += rows;
+        }
+        g.synchronize(g.default_stream())?;
+        pool.free(cols);
+    } else {
+        ops.gemm(g, x, c.w, out, pixels, c.cout, c.cin)?;
+    }
+    ops.bias_add(g, out, c.bias, pixels, c.cout)?;
+    Ok(out)
+}
+
+/// Residual block; consumes nothing, returns a new `[h*w, cout]` buffer.
+pub(super) fn res_nhwc(
+    g: &dyn GpuBackend,
+    ops: &Ops,
+    pool: &mut Pool<'_>,
+    x: DevicePtr,
+    h: usize,
+    w: usize,
+    r: &Res,
+) -> Result<DevicePtr> {
+    let pixels = h * w;
+    let (cin, cout) = (r.conv1.cin, r.conv1.cout);
+    let t = pool.alloc(pixels * cin * 2)?;
+    ops.vae_norm(g, x, r.norm1, t, pixels, cin, true)?;
+    let a = conv_nhwc(g, ops, pool, t, h, w, &r.conv1)?;
+    pool.free(t);
+    ops.vae_norm(g, a, r.norm2, a, pixels, cout, true)?;
+    let b = conv_nhwc(g, ops, pool, a, h, w, &r.conv2)?;
+    pool.free(a);
+    match &r.shortcut {
+        Some(sc) => {
+            let s = conv_nhwc(g, ops, pool, x, h, w, sc)?;
+            ops.gated_add(g, b, s, DevicePtr::NULL, pixels, cout)?;
+            g.synchronize(g.default_stream())?;
+            pool.free(s);
+        }
+        None => ops.gated_add(g, b, x, DevicePtr::NULL, pixels, cout)?,
+    }
+    Ok(b)
+}
+
+/// Single-head self-attention over all pixels (mid block), parameterized
+/// so the encoder's mid block can reuse it.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn attn_nhwc(
+    g: &dyn GpuBackend,
+    ops: &Ops,
+    pool: &mut Pool<'_>,
+    x: DevicePtr,
+    h: usize,
+    w: usize,
+    norm: DevicePtr,
+    qkv_conv: &Conv,
+    proj_conv: &Conv,
+) -> Result<DevicePtr> {
+    let pixels = h * w;
+    let c = proj_conv.cin;
+    let k_rows = pad_keys(pixels);
+    let xn = pool.alloc(pixels * c * 2)?;
+    ops.vae_norm(g, x, norm, xn, pixels, c, false)?;
+    let qkv = conv_nhwc(g, ops, pool, xn, h, w, qkv_conv)?;
+    let q = xn; // reuse: the normalized input is consumed
+    let k = pool.alloc_zeroed(k_rows * c * 2)?;
+    let vt = pool.alloc_zeroed(c * k_rows * 2)?;
+    ops.vae_qkv_split(g, qkv, q, k, vt, pixels, c, k_rows)?;
+    let scores = pool.alloc(pixels * k_rows * 4)?;
+    let probs = pool.alloc(pixels * k_rows * 2)?;
+    ops.gemm_f32out(g, q, k, scores, pixels, k_rows, c)?;
+    ops.softmax_rows(
+        g,
+        scores,
+        probs,
+        pixels,
+        k_rows,
+        pixels,
+        1.0 / (c as f32).sqrt(),
+    )?;
+    ops.gemm(g, probs, vt, q, pixels, c, k_rows)?;
+    let out = conv_nhwc(g, ops, pool, q, h, w, proj_conv)?;
+    ops.gated_add(g, out, x, DevicePtr::NULL, pixels, c)?;
+    g.synchronize(g.default_stream())?;
+    for p in [qkv, q, k, vt, scores, probs] {
+        pool.free(p);
+    }
+    Ok(out)
 }
 
 impl VaeDecoder {
@@ -237,7 +354,6 @@ impl VaeDecoder {
         })
     }
 
-    /// Convolution over an NHWC buffer; returns a new `[h*w, cout]` buffer.
     fn conv(
         &self,
         g: &dyn GpuBackend,
@@ -248,37 +364,9 @@ impl VaeDecoder {
         w: usize,
         c: &Conv,
     ) -> Result<DevicePtr> {
-        let pixels = h * w;
-        let out = pool.alloc(pixels * c.cout * 2)?;
-        if c.k3 {
-            let k = 9 * c.cin;
-            let band = (IM2COL_BUDGET / (w * k * 2)).clamp(1, h);
-            let cols = pool.alloc(band * w * k * 2)?;
-            let mut row0 = 0;
-            while row0 < h {
-                let rows = band.min(h - row0);
-                ops.im2col3x3(g, x, cols, h, w, c.cin, row0, rows)?;
-                ops.gemm(
-                    g,
-                    cols,
-                    c.w,
-                    out.offset(row0 * w * c.cout * 2),
-                    rows * w,
-                    c.cout,
-                    k,
-                )?;
-                row0 += rows;
-            }
-            g.synchronize(g.default_stream())?;
-            pool.free(cols);
-        } else {
-            ops.gemm(g, x, c.w, out, pixels, c.cout, c.cin)?;
-        }
-        ops.bias_add(g, out, c.bias, pixels, c.cout)?;
-        Ok(out)
+        conv_nhwc(g, ops, pool, x, h, w, c)
     }
 
-    /// Residual block; consumes nothing, returns a new `[h*w, cout]` buffer.
     fn res(
         &self,
         g: &dyn GpuBackend,
@@ -289,28 +377,9 @@ impl VaeDecoder {
         w: usize,
         r: &Res,
     ) -> Result<DevicePtr> {
-        let pixels = h * w;
-        let (cin, cout) = (r.conv1.cin, r.conv1.cout);
-        let t = pool.alloc(pixels * cin * 2)?;
-        ops.vae_norm(g, x, r.norm1, t, pixels, cin, true)?;
-        let a = self.conv(g, ops, pool, t, h, w, &r.conv1)?;
-        pool.free(t);
-        ops.vae_norm(g, a, r.norm2, a, pixels, cout, true)?;
-        let b = self.conv(g, ops, pool, a, h, w, &r.conv2)?;
-        pool.free(a);
-        match &r.shortcut {
-            Some(sc) => {
-                let s = self.conv(g, ops, pool, x, h, w, sc)?;
-                ops.gated_add(g, b, s, DevicePtr::NULL, pixels, cout)?;
-                g.synchronize(g.default_stream())?;
-                pool.free(s);
-            }
-            None => ops.gated_add(g, b, x, DevicePtr::NULL, pixels, cout)?,
-        }
-        Ok(b)
+        res_nhwc(g, ops, pool, x, h, w, r)
     }
 
-    /// Single-head self-attention over all pixels (mid block).
     fn attn(
         &self,
         g: &dyn GpuBackend,
@@ -320,36 +389,17 @@ impl VaeDecoder {
         h: usize,
         w: usize,
     ) -> Result<DevicePtr> {
-        let pixels = h * w;
-        let c = self.attn_proj.cin;
-        let k_rows = pad_keys(pixels);
-        let xn = pool.alloc(pixels * c * 2)?;
-        ops.vae_norm(g, x, self.attn_norm, xn, pixels, c, false)?;
-        let qkv = self.conv(g, ops, pool, xn, h, w, &self.attn_qkv)?;
-        let q = xn; // reuse: the normalized input is consumed
-        let k = pool.alloc_zeroed(k_rows * c * 2)?;
-        let vt = pool.alloc_zeroed(c * k_rows * 2)?;
-        ops.vae_qkv_split(g, qkv, q, k, vt, pixels, c, k_rows)?;
-        let scores = pool.alloc(pixels * k_rows * 4)?;
-        let probs = pool.alloc(pixels * k_rows * 2)?;
-        ops.gemm_f32out(g, q, k, scores, pixels, k_rows, c)?;
-        ops.softmax_rows(
+        attn_nhwc(
             g,
-            scores,
-            probs,
-            pixels,
-            k_rows,
-            pixels,
-            1.0 / (c as f32).sqrt(),
-        )?;
-        ops.gemm(g, probs, vt, q, pixels, c, k_rows)?;
-        let out = self.conv(g, ops, pool, q, h, w, &self.attn_proj)?;
-        ops.gated_add(g, out, x, DevicePtr::NULL, pixels, c)?;
-        g.synchronize(g.default_stream())?;
-        for p in [qkv, q, k, vt, scores, probs] {
-            pool.free(p);
-        }
-        Ok(out)
+            ops,
+            pool,
+            x,
+            h,
+            w,
+            self.attn_norm,
+            &self.attn_qkv,
+            &self.attn_proj,
+        )
     }
 
     /// Decode normalized latents `[lat_h*lat_w, 64]` (row-major tokens) to

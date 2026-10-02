@@ -14,8 +14,11 @@
 //! sampler state (latents) and the final pixels stay FP32. NO NVFP4
 //! quantization anywhere in this path.
 //!
-//! Not implemented yet: image conditioning (`/v1/images/edits` — needs the
-//! Qwen3-VL vision tower in the text encoder and the VAE encoder) and
+//! Image conditioning (`/v1/images/edits`): condition images run through
+//! the Qwen3-VL vision tower (lazily loaded `EditStack`, deepstack taps
+//! included) so the prompt is visually grounded, their VAE-encoded
+//! latents join the DiT prefix as bidirectional blocks, and the target
+//! denoises against the cached joint prefix. Not implemented:
 //! classifier-free guidance (the model is meant to be sampled without it).
 
 mod dit;
@@ -24,6 +27,8 @@ pub mod sched;
 pub mod st;
 mod text;
 mod vae;
+mod vae_enc;
+mod vision;
 
 use std::path::Path;
 
@@ -33,8 +38,11 @@ use spark_runtime::gpu::{DevicePtr, GpuBackend};
 pub use dit::Trace;
 use dit::{Dit, LATENT_CH};
 use ops::{Ops, Pool, WeightSet};
+use std::path::PathBuf;
 use text::{TE_HIDDEN, TextEncoder};
 use vae::VaeDecoder;
+use vae_enc::VaeEncoder;
+use vision::VisionTower;
 
 /// System prompt the checkpoint was trained with.
 const SYS_PROMPT: &str = "Comprehend and analyze the provided prompt.";
@@ -60,6 +68,50 @@ pub fn t2i_prompt(prompt: &str) -> String {
     )
 }
 
+/// The image-conditioned (ti2i) template with one
+/// `<imageK><|vision_start|><|image_pad|><|vision_end|>` group per
+/// condition image (reference `prompt_template_ti2i`). The single
+/// `<|image_pad|>` per group is expanded to the image's merged ViT token
+/// count by the caller after tokenization.
+pub fn ti2i_prompt(prompt: &str, n_images: usize) -> String {
+    let prompt = if prompt.is_empty() { " " } else { prompt };
+    let mut vision = String::new();
+    for i in 1..=n_images.max(1) {
+        if i > 1 {
+            vision.push(' ');
+        }
+        vision.push_str(&format!(
+            "<image{i}><|vision_start|><|image_pad|><|vision_end|>"
+        ));
+    }
+    format!(
+        "{}<|im_start|>user\n{vision}{prompt}<|im_end|>\n<|im_start|>assistant\n",
+        system_prefix()
+    )
+}
+
+/// One condition image for [`QwenImage::generate_edit`].
+pub struct EditImage {
+    /// ViT patch pixels + grid from `vision_preprocess` (the RGBA source
+    /// composited over white, per the reference).
+    pub vit_pixels: Vec<f32>,
+    pub grid_h: usize,
+    pub grid_w: usize,
+    /// VAE input: RGBA NHWC f32 in [-1, 1] at (vae_height, vae_width),
+    /// both 32-aligned (the same resize the ViT copy uses).
+    pub vae_pixels: Vec<f32>,
+    pub vae_height: usize,
+    pub vae_width: usize,
+    /// This image's expanded `<|image_pad|>` run in the token sequence:
+    /// (start, len), including the system prefix offset.
+    pub span: (usize, usize),
+}
+
+struct EditStack {
+    vision: VisionTower,
+    vae_enc: VaeEncoder,
+}
+
 pub struct GenParams {
     pub width: usize,
     pub height: usize,
@@ -82,6 +134,10 @@ pub struct QwenImage {
     text: TextEncoder,
     dit: Dit,
     vae: VaeDecoder,
+    /// ViT tower + VAE encoder, loaded lazily for `/v1/images/edits`.
+    edit: Option<EditStack>,
+    /// Snapshot dir, kept for the lazy edit-stack load.
+    model_dir: PathBuf,
     /// Every resident allocation (weights + cuBLASLt workspace), released
     /// on drop.
     weights: Vec<DevicePtr>,
@@ -131,6 +187,8 @@ impl QwenImage {
             text,
             dit,
             vae,
+            edit: None,
+            model_dir: model_dir.to_path_buf(),
             weights,
         })
     }
@@ -193,7 +251,7 @@ impl QwenImage {
         let n = lat_h * lat_w;
 
         let mut pool = Pool::new(g);
-        let hidden = self.text.forward(g, &self.ops, &mut pool, tokens)?;
+        let hidden = self.text.forward(g, &self.ops, &mut pool, tokens, None)?;
         let prompt = hidden.offset(sys_tokens * TE_HIDDEN * 2);
         let tp = tokens.len() - sys_tokens;
 
@@ -205,6 +263,134 @@ impl QwenImage {
             &self.ops,
             prompt,
             tp,
+            &[],
+            lat_h,
+            lat_w,
+            &mut latents,
+            &sigmas,
+            None,
+            |s| on_step(s + 1, p.steps),
+        )?;
+        drop(pool);
+
+        let img = self
+            .vae
+            .decode(g, &self.ops, &latents, lat_h, lat_w, None)?;
+        let pixels = img
+            .iter()
+            .map(|v| ((v / 2.0 + 0.5).clamp(0.0, 1.0) * 255.0).round() as u8)
+            .collect();
+        Ok(GeneratedImage {
+            width,
+            height,
+            channels: self.vae.out_channels,
+            pixels,
+        })
+    }
+
+    /// Load the edit stack (ViT tower + VAE encoder) if not yet resident.
+    /// Lazy so text-to-image deployments skip its ~1.5 GiB of weights and
+    /// the encoder scratch; `/v1/images/edits` calls this on first use.
+    pub fn ensure_edit_stack(&mut self) -> Result<()> {
+        if self.edit.is_some() {
+            return Ok(());
+        }
+        let g = self.gpu.as_ref();
+        let mut ws = WeightSet::new(g);
+        let t0 = std::time::Instant::now();
+        let vision = VisionTower::load(self.text.st(), &mut ws, g)?;
+        let vae_enc = VaeEncoder::load(&self.model_dir.join("vae"), &mut ws)?;
+        tracing::info!(
+            "qwen-image: edit stack loaded (ViT {:.2} GiB + VAE encoder {:.2} GiB, {:.1}s)",
+            vision.weights_bytes as f64 / (1u64 << 30) as f64,
+            vae_enc.weights_bytes as f64 / (1u64 << 30) as f64,
+            t0.elapsed().as_secs_f64(),
+        );
+        self.weights.extend(ws.finish());
+        self.edit = Some(EditStack { vision, vae_enc });
+        Ok(())
+    }
+
+    /// True once [`Self::ensure_edit_stack`] has run.
+    pub fn edit_ready(&self) -> bool {
+        self.edit.is_some()
+    }
+
+    /// Image-conditioned generation (`/v1/images/edits`). `tokens` is the
+    /// tokenized ti2i template with the `<|image_pad|>` runs already
+    /// expanded; `images` carry each condition image's ViT pixels and VAE
+    /// pixels plus its pad span. Call [`Self::ensure_edit_stack`] first.
+    pub fn generate_edit(
+        &self,
+        tokens: &[u32],
+        sys_tokens: usize,
+        images: &[EditImage],
+        p: &GenParams,
+        mut on_step: impl FnMut(usize, usize),
+    ) -> Result<GeneratedImage> {
+        let edit = self
+            .edit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edit stack not loaded — call ensure_edit_stack"))?;
+        ensure!(
+            !images.is_empty(),
+            "edits need at least one condition image"
+        );
+        ensure!(p.steps >= 1, "steps must be >= 1");
+        let g = self.gpu.as_ref();
+        let (width, lat_w) = Self::snap(p.width);
+        let (height, lat_h) = Self::snap(p.height);
+        let n = lat_h * lat_w;
+
+        let mut pool = Pool::new(g);
+        let vit_images: Vec<(&[f32], usize, usize)> = images
+            .iter()
+            .map(|i| (i.vit_pixels.as_slice(), i.grid_h, i.grid_w))
+            .collect();
+        let vl = text::VlConditioning {
+            tower: &edit.vision,
+            images: vit_images,
+            spans: images.iter().map(|i| i.span).collect(),
+        };
+        let hidden = self
+            .text
+            .forward(g, &self.ops, &mut pool, tokens, Some(&vl))?;
+        let prompt = hidden.offset(sys_tokens * TE_HIDDEN * 2);
+        let tv = tokens.len() - sys_tokens;
+
+        // VAE-encode each condition image to normalized latents on device.
+        let mut cond = Vec::with_capacity(images.len());
+        for img in images {
+            ensure!(
+                img.span.0 >= sys_tokens,
+                "condition image span inside the system prefix"
+            );
+            let lat = edit.vae_enc.encode(
+                g,
+                &self.ops,
+                &img.vae_pixels,
+                img.vae_height,
+                img.vae_width,
+            )?;
+            let dev = pool.upload(&st::f32s_to_bf16_bytes(&lat))?;
+            cond.push(dit::CondLatents {
+                latents: dev,
+                lat_h: img.vae_height / VAE_SCALE,
+                lat_w: img.vae_width / VAE_SCALE,
+                vlm_start: img.span.0 - sys_tokens,
+                vlm_len: img.span.1,
+            });
+        }
+
+        let mut rng = sched::NormalRng::new(p.seed);
+        let mut latents: Vec<f32> = (0..n * LATENT_CH).map(|_| rng.sample()).collect();
+        let sigmas = sched::sigmas(p.steps, n);
+        self.dit.denoise(
+            g,
+            &self.ops,
+            prompt,
+            tv,
+            &cond,
             lat_h,
             lat_w,
             &mut latents,
@@ -235,7 +421,7 @@ impl QwenImage {
     pub fn text_hidden(&self, tokens: &[u32]) -> Result<Vec<f32>> {
         let g = self.gpu.as_ref();
         let mut pool = Pool::new(g);
-        let h = self.text.forward(g, &self.ops, &mut pool, tokens)?;
+        let h = self.text.forward(g, &self.ops, &mut pool, tokens, None)?;
         let mut raw = vec![0u8; tokens.len() * TE_HIDDEN * 2];
         g.copy_d2h(h, &mut raw)?;
         Ok(st::bf16_bytes_to_f32s(&raw))
@@ -263,6 +449,7 @@ impl QwenImage {
             &self.ops,
             prompt,
             tp,
+            &[],
             lat_h,
             lat_w,
             latents,

@@ -39,6 +39,7 @@ pub mod completions;
 pub mod conversations;
 pub mod embeddings;
 pub mod images;
+pub mod images_edit;
 pub mod inference_impl;
 pub mod inference_types;
 pub mod lazy_swap;

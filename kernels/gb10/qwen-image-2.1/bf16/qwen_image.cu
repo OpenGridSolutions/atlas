@@ -405,3 +405,73 @@ void qimg_vae_qkv_split(
     K[lin] = row[C + c];
     Vt[c * k_rows + p] = row[2 * (size_t)C + c];
 }
+
+// ── VAE encoder (NHWC) — /v1/images/edits condition-image path ──────────────
+
+// im2col for the encoder's downsampling 3×3 / stride 2 convolution
+// (nn.ZeroPad2d((0, 1, 0, 1)) + Conv2d(stride=2)): output pixel (y, x)
+// reads the window rows [2y, 2y+2] × cols [2x, 2x+2] with zero padding
+// ONLY below/right (the left/top pad of the stride-1 kernel is absent).
+// Columns ordered (ky, kx, c) like qimg_im2col3x3. H and W are the INPUT
+// dims (even); the output grid is (H/2) × (W/2) rows [row0, row0+rows).
+// grid = (ceil(rows*(W/2)*9*C/256),1,1), block = (256,1,1)
+extern "C" __global__
+void qimg_im2col3x3_s2(
+    const __nv_bfloat16* __restrict__ in,   // [H*W, C]
+    __nv_bfloat16* __restrict__ out,        // [rows*(W/2), 9*C]
+    unsigned int H, unsigned int W, unsigned int C,
+    unsigned int row0, unsigned int rows)
+{
+    size_t lin = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int Wo = W / 2;
+    size_t k9 = (size_t)9 * C;
+    if (lin >= (size_t)rows * Wo * k9) return;
+    size_t pix = lin / k9;
+    unsigned int col = (unsigned int)(lin % k9);
+    unsigned int tap = col / C, c = col % C;
+    unsigned int y = 2u * (row0 + (unsigned int)(pix / Wo)) + tap / 3;
+    unsigned int x = 2u * (unsigned int)(pix % Wo) + tap % 3;
+    __nv_bfloat16 v = f32_to_bf16(0.0f);
+    if (y < H && x < W)
+        v = in[((size_t)y * W + x) * C + c];
+    out[lin] = v;
+}
+
+// AvgDown3D shortcut of the encoder's residual down blocks: 2×2 spatial
+// pooling with channel-group averaging. The stacked channel order after
+// the reference's permute is (c, t, ky, kx) with `factor = ft*fs*fs` and
+// `group = Cin*factor/Cout`; out channel co averages the group entries
+// idx = co*group + g. With a single frame the reference zero-pads the
+// temporal axis IN FRONT, so only the LAST temporal slot (it == ft-1)
+// carries the image — every other slot contributes zero (this is why the
+// even output channels of the temporal blocks are exactly zero).
+// Identity blocks (factor == 1) should use a plain add instead.
+// grid = (ceil((H/2)*(W/2)*Cout/256),1,1), block = (256,1,1)
+extern "C" __global__
+void qimg_vae_avg_down(
+    const __nv_bfloat16* __restrict__ in,   // [H*W, Cin]
+    __nv_bfloat16* __restrict__ out,        // [(H/2)*(W/2), Cout] — ADDED to
+    unsigned int H, unsigned int W, unsigned int Cin, unsigned int Cout,
+    unsigned int group, unsigned int factor, unsigned int ft)
+{
+    size_t lin = (size_t)blockIdx.x * blockDim.x + threadIdx.x;
+    unsigned int Wo = W / 2;
+    unsigned int Ho = H / 2;
+    if (lin >= (size_t)Ho * Wo * Cout) return;
+    unsigned int co = (unsigned int)(lin % Cout);
+    size_t pix = lin / Cout;
+    unsigned int y = (unsigned int)(pix / Wo), x = (unsigned int)(pix % Wo);
+    unsigned int fs2 = factor / ft;         // fs*fs = 4 for the down blocks
+    float acc = 0.0f;
+    for (unsigned int g = 0; g < group; ++g) {
+        unsigned int idx = co * group + g;
+        unsigned int c = idx / factor;
+        unsigned int r = idx % factor;
+        unsigned int it = r / fs2;
+        unsigned int rest = r % fs2;
+        unsigned int ih = rest / 2u, iw = rest % 2u;
+        if (it == ft - 1u)
+            acc += bf16_to_f32(in[((size_t)(2u * y + ih) * W + (2u * x + iw)) * Cin + c]);
+    }
+    out[lin] = f32_to_bf16(bf16_to_f32(out[lin]) + acc / (float)group);
+}

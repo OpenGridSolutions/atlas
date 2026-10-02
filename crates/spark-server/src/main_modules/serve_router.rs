@@ -122,7 +122,7 @@ pub(crate) async fn build_and_serve(
         // Image generation (Todo 3.2) — served by the resident Qwen-Image
         // sidecar, independent of the hot-swap state (not GATED).
         .route("/v1/images/generations", post(api::images::generations))
-        .route("/v1/images/edits", post(api::images::edits_unsupported))
+        .route("/v1/images/edits", post(api::images_edit::edits))
         .route(
             "/v1/images/variations",
             post(api::images::edits_unsupported),

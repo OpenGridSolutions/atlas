@@ -31,14 +31,14 @@ use spark_model::qwen_image::{self, GenParams, GeneratedImage, QwenImage};
 
 use super::compact::openai_error_response;
 
-const DEFAULT_SIDE: usize = 1024;
+pub(super) const DEFAULT_SIDE: usize = 1024;
 const MIN_SIDE: usize = 256;
 /// 2048×2048 / 2752×1536 class — the model card's largest presets.
 const MAX_PIXELS: usize = 2752 * 1536;
-const DEFAULT_STEPS: usize = 40;
-const MAX_STEPS: usize = 100;
-const MAX_IMAGES: usize = 4;
-const MAX_PROMPT_TOKENS: usize = 2048;
+pub(super) const DEFAULT_STEPS: usize = 40;
+pub(super) const MAX_STEPS: usize = 100;
+pub(super) const MAX_IMAGES: usize = 4;
+pub(super) const MAX_PROMPT_TOKENS: usize = 2048;
 
 /// Resident weights of the pipeline (DiT + text tower + VAE decoder), GiB.
 const WEIGHTS_RESERVE_GIB: f64 = 27.0;
@@ -67,12 +67,12 @@ pub struct ImageRequest {
     num_inference_steps: Option<usize>,
 }
 
-struct Sidecar {
-    model_id: String,
-    pipeline: tokio::sync::Mutex<QwenImage>,
-    tokenizer: tokenizers::Tokenizer,
+pub(super) struct Sidecar {
+    pub(super) model_id: String,
+    pub(super) pipeline: tokio::sync::Mutex<QwenImage>,
+    pub(super) tokenizer: tokenizers::Tokenizer,
     /// Token count of the system prefix dropped from the encoder output.
-    sys_tokens: usize,
+    pub(super) sys_tokens: usize,
 }
 
 static SIDECAR: tokio::sync::OnceCell<Arc<Sidecar>> = tokio::sync::OnceCell::const_new();
@@ -90,13 +90,13 @@ pub fn sidecar_stats() -> Option<usize> {
     }
 }
 
-fn gib_bytes(gib: f64) -> usize {
+pub(super) fn gib_bytes(gib: f64) -> usize {
     (gib * (1u64 << 30) as f64) as usize
 }
 
 /// Refuse work the unified memory cannot hold instead of driving the host
 /// into the OOM killer: `need` plus a safety margin must be free right now.
-fn ensure_free_memory(
+pub(super) fn ensure_free_memory(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     need: usize,
     what: &str,
@@ -130,7 +130,7 @@ pub fn pending_reserve_bytes() -> usize {
     gib_bytes(gib)
 }
 
-async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
+pub(super) async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
     let id = model_id.to_string();
     SIDECAR
         .get_or_try_init(|| async {
@@ -208,7 +208,7 @@ async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
 }
 
 /// `"WxH"` → (width, height), snapped down to the 32 px latent grid.
-fn parse_size(size: &str) -> Result<(usize, usize), String> {
+pub(super) fn parse_size(size: &str) -> Result<(usize, usize), String> {
     let (w, h) = size
         .split_once(['x', 'X'])
         .and_then(|(w, h)| {
@@ -223,7 +223,7 @@ fn parse_size(size: &str) -> Result<(usize, usize), String> {
 
 /// `"W:H"` → dimensions with the default 1024² pixel area, snapped to 32 px
 /// (the reference pipeline's `calculate_dimensions`).
-fn dims_for_aspect(aspect: &str) -> Result<(usize, usize), String> {
+pub(super) fn dims_for_aspect(aspect: &str) -> Result<(usize, usize), String> {
     let (a, b) = aspect
         .split_once(':')
         .and_then(|(a, b)| Some((a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?)))
@@ -235,7 +235,7 @@ fn dims_for_aspect(aspect: &str) -> Result<(usize, usize), String> {
     check_dims(snap(width), snap(width / ratio))
 }
 
-fn check_dims(w: usize, h: usize) -> Result<(usize, usize), String> {
+pub(super) fn check_dims(w: usize, h: usize) -> Result<(usize, usize), String> {
     if w < MIN_SIDE || h < MIN_SIDE {
         return Err(format!(
             "image side below the {MIN_SIDE} px minimum ({w}x{h})"
@@ -250,7 +250,7 @@ fn check_dims(w: usize, h: usize) -> Result<(usize, usize), String> {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Background {
+pub(super) enum Background {
     Auto,
     Opaque,
     Transparent,
@@ -259,7 +259,11 @@ enum Background {
 /// Encode the pipeline's RGBA output. The VAE always produces an alpha
 /// channel; it is kept for `transparent`, dropped for `opaque`, and under
 /// `auto` kept only when the image actually is transparent somewhere.
-fn encode_image(img: &GeneratedImage, format: &str, bg: Background) -> anyhow::Result<Vec<u8>> {
+pub(super) fn encode_image(
+    img: &GeneratedImage,
+    format: &str,
+    bg: Background,
+) -> anyhow::Result<Vec<u8>> {
     anyhow::ensure!(
         img.channels == 4,
         "expected RGBA output, got {} channels",
@@ -310,13 +314,13 @@ fn transparent_prompt(prompt: &str) -> String {
     )
 }
 
-fn bad_request(msg: String) -> Response {
+pub(super) fn bad_request(msg: String) -> Response {
     openai_error_response(StatusCode::BAD_REQUEST, msg)
 }
 
 /// A failed load / generation: 503 when the memory preflight refused it
 /// (retryable once memory is free), 500 otherwise.
-fn failure(what: &str, e: &anyhow::Error) -> Response {
+pub(super) fn failure(what: &str, e: &anyhow::Error) -> Response {
     let msg = format!("{what}: {e:#}");
     let status = if msg.contains("not enough free memory") {
         StatusCode::SERVICE_UNAVAILABLE

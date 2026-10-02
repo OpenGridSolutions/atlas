@@ -66,24 +66,47 @@ pub fn timestep_proj(sigma: f32) -> Vec<f32> {
     out
 }
 
+/// One run of the DiT's joint sequence: a stretch of text tokens or one
+/// image block (condition images and the target alike) in latent tokens.
+#[derive(Clone, Copy, Debug)]
+pub enum Seg {
+    Text(usize),
+    Image { h: usize, w: usize },
+}
+
 /// Per-token (frame, height, width) position indices of the joint sequence
-/// for text-to-image: `text_len` text tokens followed by one `lat_h × lat_w`
-/// target block (`QwenImage21Rope.forward`). Text advances a shared
-/// position on all three axes; the image block freezes the frame axis at
-/// the position reached by the text and centres its grid on zero.
-pub fn t2i_positions(text_len: usize, lat_h: usize, lat_w: usize) -> Vec<[i32; 3]> {
-    let mut pos = Vec::with_capacity(text_len + lat_h * lat_w);
-    for i in 0..text_len as i32 {
-        pos.push([i, i, i]);
-    }
-    let frame = text_len as i32;
-    let (h, w) = (lat_h as i32, lat_w as i32);
-    for y in -(h - h / 2)..h / 2 {
-        for x in -(w - w / 2)..w / 2 {
-            pos.push([frame, y, x]);
+/// (`QwenImage21Rope.forward`). Text advances a shared position on all
+/// three axes; every image block freezes the frame axis at the position
+/// reached so far, centres its grid on zero, and advances the position by
+/// `max(h, w)` afterwards.
+pub fn joint_positions(segments: &[Seg]) -> Vec<[i32; 3]> {
+    let mut pos = Vec::new();
+    let mut position: i32 = 0;
+    for seg in segments {
+        match *seg {
+            Seg::Text(len) => {
+                for _ in 0..len {
+                    pos.push([position, position, position]);
+                    position += 1;
+                }
+            }
+            Seg::Image { h, w } => {
+                let (h, w) = (h as i32, w as i32);
+                for y in -(h - h / 2)..h / 2 {
+                    for x in -(w - w / 2)..w / 2 {
+                        pos.push([position, y, x]);
+                    }
+                }
+                position += h.max(w);
+            }
         }
     }
     pos
+}
+
+/// Text-to-image layout: `text_len` text tokens followed by the target.
+pub fn t2i_positions(text_len: usize, lat_h: usize, lat_w: usize) -> Vec<[i32; 3]> {
+    joint_positions(&[Seg::Text(text_len), Seg::Image { h: lat_h, w: lat_w }])
 }
 
 /// cos/sin tables `[tokens, 64]` for the adjacent-pair (complex) rotation:

@@ -335,13 +335,32 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
       Modellkarten-Format, `auto` behält Alpha nur bei echt transparenten
       Bildern). Erweiterungen: `seed`, `num_inference_steps` (Default 40),
       `aspect_ratio` ("16:9" → 1376x768 bei 1024²-Fläche). Antwort pro
-      Bild zusätzlich `seed`. OFFEN: `/v1/images/edits` + `/variations`
-      antworten weiter 501 — Bildkonditionierung braucht den
-      Qwen3-VL-Vision-Tower im Text-Encoder, den VAE-Encoder und
-      block-kausale Präfix-Masken für die Referenzbild-Blöcke (die
-      Attention-Kernels können das schon: per-Row-Key-Limit).
+      Bild zusätzlich `seed`.
+      `/v1/images/edits` — DONE 2026-10-02 abends (`api/images_edit.rs`):
+      multipart (OpenAI-kompatibel, bis 10 Referenzbilder) + JSON-b64;
+      Bildkonditionierung komplett nativ: Qwen3-VL-ViT im Text-Encoder
+      (WIEDERVERWENDET: `layers::VisionEncoder` inkl. Deepstack [8,16,24],
+      `vision_encoder.cu`-Symlink im bf16-Target; interleaved 3-Achsen-
+      MRoPE [24,20,20] + Deepstack-Adds nach LLM-Layern 0..2 in text.rs),
+      neuer NHWC-VAE-ENCODER (`vae_enc.rs`: stride-2-im2col- +
+      AvgDown3D-Shortcut-Kernels in qwen_image.cu; mode-Latents,
+      (x−mean)/std), DiT-Präfix = Text + 4×-expandierte Referenzblöcke
+      (img_in; Segment-Row-Limits: Text kausal, Block bidirektional —
+      kein neuer Attention-Kernel; Präfix komplett t=0-moduliert und
+      K/V-gecacht). Edit-Stack lädt LAZY beim ersten Edit (1.0 s,
+      ViT 1.07 + VAE-Enc 0.15 GiB). E2E auf GB10: Rot→Blau-Würfel
+      (bildtreu: Form/Komposition erhalten; 31 s inkl. Stack-Load,
+      1024² aus Quell-Aspekt) und Gold-Würfel via multipart (9.4 s
+      warm, 512²/8); `tests/image_smoke.py` 13/13 (neu: edits-Fälle).
+      `/variations` bleibt 501 (kein promptfreier Modus im Modell).
       Classifier-free Guidance (`negative_prompt`/`true_cfg_scale`) ist
       nicht implementiert (Modell ist für Sampling ohne CFG gedacht).
+      OFFEN (Feinschliff): Golden-Diff der NEUEN Stufen (ViT+Text-
+      Hidden, VAE-Encoder-Latents, Edit-DiT-Schritt) gegen die
+      diffusers-CPU-Referenz — `scripts/qwen_image_ref_dump.py` um eine
+      edit-Stufe erweitern (refenv/ steht wieder, diffusers
+      0.41.0.dev); bisheriger Beleg ist die starke visuelle Bildtreue
+      der E2E-Edits.
 - [x] **3.2b `ModelCategory::Image`** — DONE 2026-10-02. Kategorie +
       `ATLAS_PRESEED_IMAGE` (serve.sh + compose.yml) + Endpoint-Mapping;
       wie Whisper ein RESIDENTER SIDECAR außerhalb von Scheduler/Arena
