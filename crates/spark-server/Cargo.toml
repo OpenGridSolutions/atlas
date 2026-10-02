@@ -75,6 +75,11 @@ xgrammar = { path = "../xgrammar" }
 prometheus = { version = "0.14", default-features = false }
 lazy_static = "1"
 tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+scraper = "0.20"
+md-5 = "0.10"
+ego-tree = "0.6"
+pdfium-render = "0.8"
 
 [dev-dependencies]
 tempfile = "3"

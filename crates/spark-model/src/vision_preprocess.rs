@@ -134,7 +134,19 @@ pub fn preprocess_image_with_max_pixels(
     max_pixels: Option<usize>,
 ) -> Result<(Vec<f32>, usize, usize)> {
     let img = decode_image(data_uri)?;
-    let img = img.to_rgb8();
+    preprocess_rgb_with_max_pixels(img.to_rgb8(), vcfg, max_pixels)
+}
+
+/// Patch-preprocess an already-decoded RGB image. Split out of
+/// [`preprocess_image_with_max_pixels`] for callers that transform the
+/// image before patching (the /v1/ocr pipeline applies Chandra's
+/// min-dim upscale + scale_to_fit first) — avoids a PNG re-encode
+/// round-trip through the data-URI path.
+pub fn preprocess_rgb_with_max_pixels(
+    img: image::RgbImage,
+    vcfg: &VisionConfig,
+    max_pixels: Option<usize>,
+) -> Result<(Vec<f32>, usize, usize)> {
     let (orig_w, orig_h) = (img.width(), img.height());
 
     let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;

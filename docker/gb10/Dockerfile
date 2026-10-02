@@ -70,6 +70,17 @@ RUN apt-get update -qq && \
     dpkg --compare-versions "$NCCL_VER" ge "2.28" || \
       { echo "ERROR: NCCL $NCCL_VER < 2.28 — symmetric memory APIs unavailable" >&2; exit 1; }
 
+# libpdfium for the /v1/ocr PDF rendering path (ocr/input.rs,
+# pdfium-render binds it at runtime via dlopen — same rasterizer the
+# Chandra reference uses through pypdfium2). bblanchon/pdfium-binaries
+# is the canonical prebuilt distribution of Google's pdfium.
+RUN apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates && \
+    curl -sL https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz \
+      | tar xz -C /tmp && \
+    mv /tmp/lib/libpdfium.so /usr/lib/libpdfium.so && \
+    rm -rf /tmp/lib /tmp/include /tmp/bin /tmp/LICENSE /tmp/VERSION && \
+    apt-get purge -y -qq curl && apt-get autoremove -y -qq && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /build/target/release/spark /usr/local/bin/spark
 COPY --from=builder /build/jinja-templates/ /jinja-templates/
 COPY LICENSE /LICENSE
