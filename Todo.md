@@ -395,22 +395,36 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
       `/v1/stats` zeigt beide resident (arena 20.4 GiB + sidecar
       26.7 GiB); KV-Pool des Chat-Modells dabei 16.5 GB (Reserve-Regel
       „halber Pool", WARN im Log).
+      ERLEDIGT (2026-10-02 nachmittags):
+      - Fairness — GELÖST (Commit e915a70): der Sidecar rendert auf
+        einem EIGENEN non-blocking CUDA-Stream
+        (`AtlasCudaBackend::use_private_stream`, least priority);
+        vorher serialisierte die geteilte Registry-Stream-FIFO jede
+        Chat-Decode-Launch hinter der kompletten DiT-Kette. Gemessen:
+        Chat während 1024²/40-Generierung 9.8/11.9/18.3 s bei 7.3 s
+        Baseline (vorher 112 s); Generierung 108 s (solo ~94 s).
+        Hinweis: least priority (0) == default priority des
+        Registry-Streams (Range 0..-5) — echter Dispatch-Vorrang
+        entstünde erst, wenn der Scheduler-Stream Richtung -5
+        angehoben wird (Option, nicht verdrahtet).
+      - 2048x2048 GEMESSEN: 40 Schritte in 1041.8 s (~26 s/Schritt vs
+        2.2 s/Schritt bei 1024²) — der speichergebundene Row-Softmax
+        (16384 Tokens, N×S×32 Heads × 32 Layer) dominiert wie
+        prognostiziert. Funktional korrekt (Preflight verlangt 6.9 GiB
+        + 4 GiB Marge; neben 27B-Arena+KV nur mit verkleinertem
+        KV-Pool möglich, sonst korrektes 503). Für praktikable 2048²-
+        Latenz bleibt der fusionierte Flash-Attention-Kernel der
+        nächste Performance-Schritt.
       OFFEN:
-      - 2048x2048 ist funktional abgedeckt (Limits/Preflight), aber noch
-        nicht gemessen; der Row-Softmax ist dort speichergebunden
-        (N×S×32 Heads × 32 Layer) — ein fusionierter Flash-Attention-
-        Kernel wäre der nächste Performance-Schritt.
       - Speicher-Befund (2026-10-02): der NVIDIA-Treiber hält den
         Gerätespeicher beendeter Prozesse bzw. entladener KV-Pools
-        minutenlang in einem Pool — in `MemAvailable` „belegt", für neue
-        CUDA-Allokationen aber wiederverwendbar. Das ist die
-        „co-tenants"-Zeile im KV-Budget-Log; Budget, Reserve und
-        Preflight rechnen dadurch konservativ (Details Doku.md §3.2).
-      - Fairness: Sidecar und Scheduler teilen sich GPU und Default-
-        Stream. Während einer Generierung brauchte eine kurze Chat-
-        Antwort 112 s statt 4.8 s, die Generierung selbst 125 s statt
-        94 s. Kandidaten: eigener Stream + Yield zwischen DiT-Blöcken
-        oder Chat-Vorrang am Sidecar-Lock.
+        in einem Pool — in `MemAvailable` „belegt", für neue
+        CUDA-Allokationen aber wiederverwendbar; nach einem Kill unter
+        Last auch 15–20 min (nach sauberem TERM-Shutdown ~1–2 min).
+        Das ist die „co-tenants"-Zeile im KV-Budget-Log; Budget,
+        Reserve und Preflight rechnen dadurch konservativ (Details
+        Doku.md §3.2).
+      - Flash-Attention-Kernel für den DiT (2048²-Latenz, s. o.).
       - `tests/run_all_models.py`-Einhängung (Docker-Release-Matrix).
 - [ ] **3.2d Lizenz-Hinweis:** Qwen Research License (nicht Apache-2.0) —
       vor Produktivnutzung klären; betrifft auch das Publishing im
