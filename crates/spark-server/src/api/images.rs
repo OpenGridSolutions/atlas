@@ -152,10 +152,15 @@ async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
                     "{}/{}/{}",
                     set.target.arch, set.target.model, set.target.quant
                 );
-                let backend = spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
+                let mut backend = spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
                     &key,
                     &set.modules,
                 )?;
+                // Fairness: the sidecar renders on its OWN stream so a
+                // 40-step generation no longer FIFO-starves chat decode
+                // launches on the shared registry stream (measured 112 s
+                // for a 4.8 s chat reply before this).
+                backend.use_private_stream()?;
                 use spark_runtime::gpu::GpuBackend;
                 backend.bind_to_thread()?;
                 ensure_free_memory(

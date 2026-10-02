@@ -56,6 +56,8 @@ unsafe extern "C" {
     fn cuCtxGetCurrent(pctx: *mut u64) -> i32;
     pub(super) fn cuCtxSetCurrent(ctx: u64) -> i32;
     pub(super) fn cuStreamCreate(phStream: *mut u64, flags: u32) -> i32;
+    fn cuStreamCreateWithPriority(phStream: *mut u64, flags: u32, priority: i32) -> i32;
+    fn cuCtxGetStreamPriorityRange(leastPriority: *mut i32, greatestPriority: *mut i32) -> i32;
     // Page-locked host memory for efficient async transfers
     pub(super) fn cuMemAllocHost_v2(pp: *mut *mut c_void, bytesize: usize) -> i32;
     pub(super) fn cuMemFreeHost(p: *mut c_void) -> i32;
@@ -361,6 +363,50 @@ impl AtlasCudaBackend {
             cuda_ctx,
             target_key: Some(target_key.to_string()),
         })
+    }
+
+    /// Switch this handle onto its OWN non-blocking CUDA stream instead of
+    /// the registry's shared one. Everything routed through the handle —
+    /// kernel launches, async memcpys, memsets, `synchronize()` — then runs
+    /// on that stream, and the hardware interleaves it with the scheduler's
+    /// stream instead of FIFO-serializing behind it.
+    ///
+    /// This is the sidecar fairness fix (Todo 3.2): with one shared stream,
+    /// a 40-step DiT generation enqueues minutes of kernels ahead of every
+    /// chat decode launch (measured: a 4.8 s chat reply took 112 s during a
+    /// 1024² generation). On a private stream the chat kernels only ever
+    /// wait for the single DiT kernel currently executing.
+    ///
+    /// Call once, right after construction and before any work is enqueued
+    /// through the handle. The stream is never destroyed — intended for
+    /// process-lifetime sidecars (a handle dropped early leaks one stream
+    /// handle, nothing else).
+    pub fn use_private_stream(&mut self) -> Result<()> {
+        // Least priority (numerically largest): pending sidecar blocks are
+        // dispatched AFTER pending scheduler blocks, so chat decode kernels
+        // jump the line when SMs free up mid-generation. (No preemption of
+        // running blocks — this orders the dispatch queue only.)
+        let (mut least, mut greatest) = (0i32, 0i32);
+        let status = unsafe { cuCtxGetStreamPriorityRange(&mut least, &mut greatest) };
+        if status != 0 {
+            bail!("cuCtxGetStreamPriorityRange failed: status {status}");
+        }
+        let mut stream: u64 = 0;
+        // CU_STREAM_NON_BLOCKING = 1 (no implicit sync with legacy stream 0)
+        let status = unsafe { cuStreamCreateWithPriority(&mut stream, 1, least) };
+        if status != 0 {
+            bail!("cuStreamCreateWithPriority (private sidecar stream) failed: status {status}");
+        }
+        tracing::info!(
+            "Backend handle{} switched to private CUDA stream {stream:#x} \
+             (priority {least}, range {least}..{greatest})",
+            self.target_key
+                .as_deref()
+                .map(|k| format!(" ({k})"))
+                .unwrap_or_default(),
+        );
+        self.default_stream = stream;
+        Ok(())
     }
 
     /// True if `ptr` lies inside a protected (arena-owned) range.
