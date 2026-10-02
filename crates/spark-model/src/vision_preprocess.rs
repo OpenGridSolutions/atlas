@@ -152,7 +152,32 @@ pub fn preprocess_rgb_with_max_pixels(
     // Resize with CatmullRom — closest BICUBIC match in the `image` crate,
     // matching HF's `Qwen2VLImageProcessor` which uses PIL resample=3 (BICUBIC).
     let img = image::imageops::resize(&img, tw, th, image::imageops::FilterType::CatmullRom);
+    patchify_rgb(&img, vcfg)
+}
 
+/// Patchify a grid-aligned RGB image WITHOUT any resize. Unlike
+/// [`preprocess_rgb_with_max_pixels`] this skips `target_size…` and its
+/// Atlas-specific OCR pixel floor (MIN_PIXELS), so a caller that already
+/// resized to the exact target (the /v1/images/edits condition path and
+/// its golden harness, which must match HF's processor output for the
+/// pre-sized image byte-for-byte in layout) gets the grid it asked for.
+pub fn preprocess_rgb_exact(
+    img: &image::RgbImage,
+    vcfg: &VisionConfig,
+) -> Result<(Vec<f32>, usize, usize)> {
+    let grid_unit = (vcfg.patch_size * vcfg.spatial_merge_size) as u32;
+    anyhow::ensure!(
+        img.width().is_multiple_of(grid_unit) && img.height().is_multiple_of(grid_unit),
+        "preprocess_rgb_exact: {}x{} not aligned to the {}px grid",
+        img.width(),
+        img.height(),
+        grid_unit,
+    );
+    patchify_rgb(img, vcfg)
+}
+
+fn patchify_rgb(img: &image::RgbImage, vcfg: &VisionConfig) -> Result<(Vec<f32>, usize, usize)> {
+    let (tw, th) = (img.width(), img.height());
     let ps = vcfg.patch_size;
     let tp = vcfg.temporal_patch_size;
     let grid_h = (th as usize) / ps;

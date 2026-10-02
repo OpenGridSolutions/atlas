@@ -136,8 +136,16 @@ impl VisionEncoder {
                 &format!("block{block_idx:02}"),
                 stream,
             )?;
+            // HF taps AFTER the block whose 0-indexed layer_num equals the
+            // deepstack index (`if layer_num in deepstack_visual_indexes`,
+            // then merge) — i.e. after blocks 8/16/24 have run, which is
+            // the 9th/17th/25th block. The previous `block_idx + 1 ==`
+            // condition tapped one block early; harmless for chat serving
+            // (the taps are LLM-unused there) but wrong for the Qwen-Image
+            // edit path, where the deepstack features feed the first three
+            // decoder layers (caught by the edit golden test).
             if let Some((ds_idx, &ds_block)) = next_ds
-                && block_idx + 1 == ds_block
+                && block_idx == ds_block
             {
                 // snapshot buf_h1 → buf_h2 (out-of-place merger; residual stream
                 // into the next block stays intact), then merge each image's slice.

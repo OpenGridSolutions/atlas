@@ -112,6 +112,17 @@ struct EditStack {
     vae_enc: VaeEncoder,
 }
 
+/// One condition block for [`QwenImage::denoise_edit_host`], host-side:
+/// normalized `[lat_h*lat_w, 64]` latents plus the image's pad span in
+/// the (system-dropped) VLM row space.
+pub struct HostCond<'a> {
+    pub vlm_start: usize,
+    pub vlm_len: usize,
+    pub lat_h: usize,
+    pub lat_w: usize,
+    pub latents: &'a [f32],
+}
+
 pub struct GenParams {
     pub width: usize,
     pub height: usize,
@@ -450,6 +461,130 @@ impl QwenImage {
             prompt,
             tp,
             &[],
+            lat_h,
+            lat_w,
+            latents,
+            &sigmas,
+            trace,
+            |_| {},
+        )
+    }
+
+    /// Text tower hidden states WITH condition images (edit path),
+    /// `[tokens, 4096]` pre-final-norm, host f32. Needs
+    /// [`Self::ensure_edit_stack`].
+    pub fn text_hidden_vl(&self, tokens: &[u32], images: &[EditImage]) -> Result<Vec<f32>> {
+        let edit = self
+            .edit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edit stack not loaded"))?;
+        let g = self.gpu.as_ref();
+        let mut pool = Pool::new(g);
+        let vit_images: Vec<(&[f32], usize, usize)> = images
+            .iter()
+            .map(|i| (i.vit_pixels.as_slice(), i.grid_h, i.grid_w))
+            .collect();
+        let vl = text::VlConditioning {
+            tower: &edit.vision,
+            images: vit_images,
+            spans: images.iter().map(|i| i.span).collect(),
+        };
+        let h = self
+            .text
+            .forward(g, &self.ops, &mut pool, tokens, Some(&vl))?;
+        let mut raw = vec![0u8; tokens.len() * TE_HIDDEN * 2];
+        g.copy_d2h(h, &mut raw)?;
+        Ok(st::bf16_bytes_to_f32s(&raw))
+    }
+
+    /// Vision-tower features for the golden harness: `(final, deepstack)`
+    /// with `final` the merged `[Σmp, 4096]` splice features and
+    /// `deepstack[k]` the tap-k features, host f32. Needs
+    /// [`Self::ensure_edit_stack`].
+    pub fn vision_features_host(&self, images: &[EditImage]) -> Result<(Vec<f32>, Vec<Vec<f32>>)> {
+        let edit = self
+            .edit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edit stack not loaded"))?;
+        let g = self.gpu.as_ref();
+        let vit_images: Vec<(&[f32], usize, usize)> = images
+            .iter()
+            .map(|i| (i.vit_pixels.as_slice(), i.grid_h, i.grid_w))
+            .collect();
+        let (feats, total) = edit.vision.forward(&vit_images, g, g.default_stream())?;
+        g.synchronize(g.default_stream())?;
+        let read = |p: spark_runtime::gpu::DevicePtr, rows: usize| -> Result<Vec<f32>> {
+            let mut raw = vec![0u8; rows * TE_HIDDEN * 2];
+            g.copy_d2h(p, &mut raw)?;
+            Ok(st::bf16_bytes_to_f32s(&raw))
+        };
+        let mut final_out = Vec::new();
+        let mut ds_out = vec![Vec::new(); edit.vision.deepstack_taps()];
+        for f in &feats {
+            final_out.extend(read(edit.vision.final_ptr(f), f.merged_p)?);
+            for (k, out) in ds_out.iter_mut().enumerate() {
+                out.extend(read(edit.vision.deepstack_ptr(k, total, f), f.merged_p)?);
+            }
+        }
+        Ok((final_out, ds_out))
+    }
+
+    /// VAE-encode one condition image (`[h*w, 4]` f32 RGBA in [-1, 1]) to
+    /// normalized mode latents `[lat_h*lat_w * 64]`, host f32. Needs
+    /// [`Self::ensure_edit_stack`].
+    pub fn encode_cond_host(
+        &self,
+        vae_pixels: &[f32],
+        height: usize,
+        width: usize,
+    ) -> Result<Vec<f32>> {
+        let edit = self
+            .edit
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("edit stack not loaded"))?;
+        edit.vae_enc
+            .encode(self.gpu.as_ref(), &self.ops, vae_pixels, height, width)
+    }
+
+    /// Edit sampler over caller-supplied prompt embeddings (VLM rows incl.
+    /// image slots) and condition latents — isolates the DiT stage for the
+    /// golden harness.
+    #[allow(clippy::too_many_arguments)]
+    pub fn denoise_edit_host(
+        &self,
+        prompt_embeds: &[f32],
+        cond: &[HostCond<'_>],
+        lat_h: usize,
+        lat_w: usize,
+        latents: &mut [f32],
+        steps: usize,
+        trace: Option<&mut Trace>,
+    ) -> Result<()> {
+        let g = self.gpu.as_ref();
+        let tv = prompt_embeds.len() / TE_HIDDEN;
+        let mut pool = Pool::new(g);
+        let prompt = pool.upload(&st::f32s_to_bf16_bytes(prompt_embeds))?;
+        let mut cond_dev = Vec::with_capacity(cond.len());
+        for c in cond {
+            ensure!(
+                c.latents.len() == c.lat_h * c.lat_w * LATENT_CH,
+                "condition latents shape mismatch"
+            );
+            cond_dev.push(dit::CondLatents {
+                latents: pool.upload(&st::f32s_to_bf16_bytes(c.latents))?,
+                lat_h: c.lat_h,
+                lat_w: c.lat_w,
+                vlm_start: c.vlm_start,
+                vlm_len: c.vlm_len,
+            });
+        }
+        let sigmas = sched::sigmas(steps, lat_h * lat_w);
+        self.dit.denoise(
+            g,
+            &self.ops,
+            prompt,
+            tv,
+            &cond_dev,
             lat_h,
             lat_w,
             latents,

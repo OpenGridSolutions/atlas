@@ -42,7 +42,7 @@ pub struct VisionEncoder {
     pub pos_embed: DevicePtr,          // [2304, 1152] BF16 (untouched, kept for reference)
     pub blocks: Vec<ViTBlock>,         // 27 blocks
     pub deepstack: Vec<MergerLayer>,   // 3 deepstack mergers
-    pub deepstack_indexes: Vec<usize>, // [8, 16, 24] (1-indexed, after Nth block)
+    pub deepstack_indexes: Vec<usize>, // [8, 16, 24] (0-indexed block whose OUTPUT is tapped)
     pub merger: MergerLayer,           // final merger (after block 27)
     // kernel handles
     k_gemm: KernelHandle, // vision_gemm_bias: C[M,N] = A[M,K]@B[N,K]^T + bias

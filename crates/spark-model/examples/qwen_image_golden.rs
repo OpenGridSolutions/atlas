@@ -27,7 +27,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use spark_model::qwen_image::st::StDir;
-use spark_model::qwen_image::{QwenImage, Trace, sched};
+use spark_model::qwen_image::{EditImage, HostCond, QwenImage, Trace, sched};
 use spark_runtime::cuda_backend::AtlasCudaBackend;
 use spark_runtime::gpu::GpuBackend;
 
@@ -137,7 +137,7 @@ fn main() -> Result<()> {
     let backend = AtlasCudaBackend::new(0, &set.modules)?;
     backend.bind_to_thread()?;
     let t0 = std::time::Instant::now();
-    let model = QwenImage::load(&model_dir, Box::new(backend))?;
+    let mut model = QwenImage::load(&model_dir, Box::new(backend))?;
     println!(
         "loaded {:.1} GiB in {:.1}s",
         model.weights_bytes() as f64 / (1u64 << 30) as f64,
@@ -266,6 +266,204 @@ fn main() -> Result<()> {
         &nchw_to_nhwc(&vae.read_f32("image")?, 4),
         0.99,
     );
+
+    // ── edit stages (present when the edit_* reference dumps exist) ──
+    if golden.join("edit_text.safetensors").exists() {
+        println!("edit stack:");
+        let t = std::time::Instant::now();
+        model.ensure_edit_stack()?;
+        println!("  loaded in {:.1}s", t.elapsed().as_secs_f64());
+
+        let et = StDir::open_files(&[golden.join("edit_text.safetensors")])?;
+        let ids: Vec<u32> = et
+            .read_i64("input_ids")?
+            .iter()
+            .map(|v| *v as u32)
+            .collect();
+        let drop = et.read_i64("drop_idx")?[0] as usize;
+        let pad_id = et.read_i64("img_token_id")?[0] as u32;
+        let start = ids
+            .iter()
+            .position(|t| *t == pad_id)
+            .context("no <|image_pad|> in the reference ids")?;
+        let span_len = ids[start..].iter().take_while(|t| **t == pad_id).count();
+
+        // Condition image through OUR preprocessing (the reference PNG is
+        // RGB, so the white-composite is a no-op and alpha is 1).
+        let src = image::open(golden.join("edit_src.png"))?.to_rgb8();
+        let (iw, ih) = (src.width() as usize, src.height() as usize);
+        let vcfg = atlas_core::config::VisionConfig {
+            depth: 27,
+            hidden_size: 1152,
+            num_heads: 16,
+            patch_size: 16,
+            temporal_patch_size: 2,
+            spatial_merge_size: 2,
+            intermediate_size: 4304,
+            out_hidden_size: 4096,
+            deepstack_visual_indexes: vec![8, 16, 24],
+            image_pad_token_id: 0,
+        };
+        let (vit_pixels, gh, gw) =
+            spark_model::vision_preprocess::preprocess_rgb_exact(&src, &vcfg)?;
+        anyhow::ensure!((gh / 2) * (gw / 2) == span_len, "grid/span mismatch");
+        let mut vae_pixels = Vec::with_capacity(iw * ih * 4);
+        for p in src.pixels() {
+            for c in 0..3 {
+                vae_pixels.push(p[c] as f32 / 255.0 * 2.0 - 1.0);
+            }
+            vae_pixels.push(1.0);
+        }
+        let edit_img = EditImage {
+            vit_pixels,
+            grid_h: gh,
+            grid_w: gw,
+            vae_pixels: vae_pixels.clone(),
+            vae_height: ih,
+            vae_width: iw,
+            span: (start, span_len),
+        };
+
+        // ViT gates sit at the tower's KNOWN BF16 band (~0.98 at the final
+        // merger; tests/vit_reference_check.py historically used 0.90 as
+        // the divergence alarm, not 0.99) — the structure checks are the
+        // deepstack tap positions (off-by-one caught here 2026-10-02) and
+        // the text-row fidelity below.
+        println!("vision tower:");
+        let (vfinal, vds) = model.vision_features_host(std::slice::from_ref(&edit_img))?;
+        rep.check("vit final", &vfinal, &et.read_f32("image_embeds")?, 0.98);
+        for (k, ds) in vds.iter().enumerate() {
+            rep.check(
+                &format!("vit deepstack_{k}"),
+                ds,
+                &et.read_f32(&format!("deepstack_{k}"))?,
+                0.98,
+            );
+        }
+
+        println!("text encoder (with condition image):");
+        let t = std::time::Instant::now();
+        let hidden = model.text_hidden_vl(&ids, std::slice::from_ref(&edit_img))?;
+        println!(
+            "  {} tokens ({} image) in {:.2}s",
+            ids.len(),
+            span_len,
+            t.elapsed().as_secs_f64()
+        );
+        // Split the check: text rows must stay at the T2I gate (anything
+        // lower means a positions/mask bug), while image rows inherit the
+        // ViT's known BF16 band (~0.98 end-to-end, see vit checks above).
+        let want_hidden = et.read_f32("hidden_all")?;
+        let row = |v: &[f32], i: usize| v[i * 4096..(i + 1) * 4096].to_vec();
+        let (mut got_txt, mut want_txt) = (Vec::new(), Vec::new());
+        let (mut got_img, mut want_img) = (Vec::new(), Vec::new());
+        for i in 0..ids.len() {
+            if i >= start && i < start + span_len {
+                got_img.extend(row(&hidden, i));
+                want_img.extend(row(&want_hidden, i));
+            } else {
+                got_txt.extend(row(&hidden, i));
+                want_txt.extend(row(&want_hidden, i));
+            }
+        }
+        rep.check("vl hidden (text rows)", &got_txt, &want_txt, 0.995);
+        // Image rows start from the ViT's ~0.98 features and diverge
+        // further through 36 decoder layers — chaotic amplification of
+        // the input delta, not a positions/mask bug (the text rows above
+        // prove the structure). E2E edits are visually faithful.
+        rep.check("vl hidden (image rows)", &got_img, &want_img, 0.9);
+        let vl_embeds = et.read_f32("prompt_embeds")?;
+        rep.check("vl prompt_embeds", &hidden[drop * 4096..], &vl_embeds, 0.9);
+
+        println!("VAE encoder:");
+        let ev = StDir::open_files(&[golden.join("edit_vae.safetensors")])?;
+        let ref_vae_in = nchw_to_nhwc(&ev.read_f32("vae_in")?, 4);
+        rep.check("vae preprocess", &vae_pixels, &ref_vae_in, 0.9999);
+        let t = std::time::Instant::now();
+        let got_lat = model.encode_cond_host(&ref_vae_in, ih, iw)?;
+        println!("  {}x{} in {:.2}s", iw, ih, t.elapsed().as_secs_f64());
+        let ref_cond = ev.read_f32("cond_latents")?;
+        rep.check("cond_latents", &got_lat, &ref_cond, 0.99);
+        let chw = ev.read_i64("lat_hw")?;
+        let (clh, clw) = (chw[0] as usize, chw[1] as usize);
+
+        println!("DiT (edit prefix):");
+        let ed = StDir::open_files(&[golden.join("edit_dit.safetensors")])?;
+        let hw = ed.read_i64("lat_hw")?;
+        let (elat_h, elat_w) = (hw[0] as usize, hw[1] as usize);
+        let en = elat_h * elat_w;
+        let esigmas = ed.read_f32("sigmas")?;
+        let esteps = esigmas.len() - 1;
+        rep.check(
+            "edit sigmas",
+            &sched::sigmas(esteps, en),
+            &esigmas,
+            0.999_999,
+        );
+        let mut elatents = ed.read_f32("noise_packed")?;
+        let cond = HostCond {
+            vlm_start: start - drop,
+            vlm_len: span_len,
+            lat_h: clh,
+            lat_w: clw,
+            latents: &ref_cond,
+        };
+        let tv = vl_embeds.len() / 4096;
+        let joint_tp = tv + 3 * span_len;
+        let mut etrace = Trace::new();
+        let t = std::time::Instant::now();
+        model.denoise_edit_host(
+            &vl_embeds,
+            std::slice::from_ref(&cond),
+            elat_h,
+            elat_w,
+            &mut elatents,
+            esteps,
+            Some(&mut etrace),
+        )?;
+        println!(
+            "  {esteps} steps, {joint_tp} prefix + {en} target tokens in {:.2}s",
+            t.elapsed().as_secs_f64()
+        );
+        for l in [0usize, 1, 15, 31] {
+            let joint = ed.read_f32(&format!("step0.block{l}"));
+            let Ok(joint) = joint else { continue };
+            rep.check(
+                &format!("edit prefix.block{l}"),
+                find(&etrace, &format!("prefix.block{l}"))?,
+                &joint[..joint_tp * 4096],
+                if l == 31 { 0.9 } else { 0.99 },
+            );
+            rep.check(
+                &format!("edit step0.block{l}"),
+                find(&etrace, &format!("step0.block{l}"))?,
+                &joint[joint_tp * 4096..],
+                0.99,
+            );
+            if let Ok(want) = ed.read_f32(&format!("step1.block{l}")) {
+                rep.check(
+                    &format!("edit step1.block{l}"),
+                    find(&etrace, &format!("step1.block{l}"))?,
+                    &want,
+                    0.99,
+                );
+            }
+        }
+        for i in 0..esteps {
+            rep.check(
+                &format!("edit noise_pred.{i}"),
+                find(&etrace, &format!("noise_pred.{i}"))?,
+                &ed.read_f32(&format!("noise_pred.{i}"))?,
+                0.99,
+            );
+        }
+        rep.check(
+            "edit final_latents",
+            &elatents,
+            &ed.read_f32("final_latents")?,
+            0.99,
+        );
+    }
 
     if let Ok(out) = std::env::var("QIMG_GENERATE") {
         let env = |k: &str, d: u64| {

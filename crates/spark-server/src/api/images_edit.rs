@@ -155,7 +155,7 @@ fn prepare_image(
         rgb.put_pixel(x, y, image::Rgb([mix(p[0]), mix(p[1]), mix(p[2])]));
     }
     let (vit_pixels, grid_h, grid_w) =
-        spark_model::vision_preprocess::preprocess_rgb_with_max_pixels(rgb, vcfg, None)
+        spark_model::vision_preprocess::preprocess_rgb_exact(&rgb, vcfg)
             .map_err(|e| format!("vision preprocess failed: {e:#}"))?;
     if (grid_h * 16, grid_w * 16) != (ih, iw) {
         return Err(format!(
