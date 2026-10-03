@@ -470,12 +470,23 @@ pub(super) async fn completions_stream(
 /// GET /v1/models — every registered model (boot model + preseed list) in
 /// OpenAI shape, so multi-model clients can discover the swap targets
 /// (Task 6 Phase 4.1). Single-model servers list exactly the active model,
-/// as before.
+/// as before. Sidecar-served models (transcribe, image) are appended —
+/// they live outside the arena registry, but "is it configured on this
+/// server?" must be answerable from this endpoint.
 pub async fn list_models(State(state): State<Arc<AppState>>) -> Json<ModelListResponse> {
-    let ids: Vec<String> = match state.hotswap.as_ref() {
+    let mut ids: Vec<String> = match state.hotswap.as_ref() {
         Some(ctx) => ctx.registry.iter().map(|m| m.model_id.clone()).collect(),
         None => vec![state.runtime().model_name.clone()],
     };
+    for sidecar in state
+        .transcribe_models
+        .iter()
+        .chain(state.image_models.iter())
+    {
+        if !ids.contains(sidecar) {
+            ids.push(sidecar.clone());
+        }
+    }
     Json(ModelListResponse {
         object: "list".to_string(),
         data: ids
@@ -498,7 +509,8 @@ pub async fn get_model(
     let known = match state.hotswap.as_ref() {
         Some(ctx) => ctx.registered(&model_id).is_some(),
         None => model_id == state.runtime().model_name,
-    };
+    } || state.transcribe_models.contains(&model_id)
+        || state.image_models.contains(&model_id);
     if known {
         Json(serde_json::json!({
             "id": model_id,
