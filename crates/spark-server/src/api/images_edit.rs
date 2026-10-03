@@ -242,40 +242,11 @@ pub async fn edits(State(state): State<Arc<AppState>>, req: Request) -> Response
             raw_images.len()
         ));
     }
-    let Some(default_model) = state.image_models.first() else {
-        return openai_error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "Image API is not enabled: no image model configured — add one to \
-             ATLAS_PRESEED_IMAGE (supported: Qwen/Qwen-Image-2.1)"
-                .into(),
-        );
-    };
-    let model_id = if fields.model.is_empty() {
-        default_model.clone()
-    } else {
-        fields.model.clone()
-    };
-    if !state.image_models.contains(&model_id) {
-        if let Some(reg) = state
-            .hotswap
-            .as_ref()
-            .and_then(|ctx| ctx.registered(&model_id).cloned())
-        {
-            return bad_request(format!(
-                "model '{model_id}' is categorized as {} and not available on \
-                 /v1/images/edits; use {} instead",
-                reg.category.as_str(),
-                reg.category.endpoint(),
-            ));
-        }
-        return openai_error_response(
-            StatusCode::NOT_FOUND,
-            format!(
-                "model '{model_id}' is not an image model; configured image models: {:?}",
-                state.image_models,
-            ),
-        );
-    }
+    let model_id =
+        match super::images::resolve_image_model(&state, &fields.model, "/v1/images/edits") {
+            Ok(id) => id,
+            Err(resp) => return *resp,
+        };
 
     let n = fields.n.unwrap_or(1);
     if !(1..=super::images::MAX_IMAGES).contains(&n) {

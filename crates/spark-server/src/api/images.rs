@@ -318,6 +318,63 @@ pub(super) fn bad_request(msg: String) -> Response {
     openai_error_response(StatusCode::BAD_REQUEST, msg)
 }
 
+/// Resolve the request's model id against the image registrations.
+/// An explicitly requested model that is unknown on this server answers
+/// the canonical 404 `model_not_found` (the shape of the chat endpoint's
+/// lazy-swap gate) — also when NO image model is configured at all; a
+/// known model of another category gets the 400 category hint. The 501
+/// "not enabled" hint is reserved for requests that leave `model` empty
+/// on a server without an image model, where 404 would mislead.
+pub(super) fn resolve_image_model(
+    state: &AppState,
+    requested: &str,
+    endpoint: &str,
+) -> Result<String, Box<Response>> {
+    if requested.is_empty() {
+        return match state.image_models.first() {
+            Some(m) => Ok(m.clone()),
+            None => Err(Box::new(openai_error_response(
+                StatusCode::NOT_IMPLEMENTED,
+                "Image API is not enabled: no image model configured — add one to \
+                 ATLAS_PRESEED_IMAGE (supported: Qwen/Qwen-Image-2.1)"
+                    .into(),
+            ))),
+        };
+    }
+    if state.image_models.iter().any(|m| m == requested) {
+        return Ok(requested.to_string());
+    }
+    if let Some(reg) = state
+        .hotswap
+        .as_ref()
+        .and_then(|ctx| ctx.registered(requested).cloned())
+    {
+        return Err(Box::new(bad_request(format!(
+            "model '{requested}' is categorized as {} and not available on \
+             {endpoint}; use {} instead",
+            reg.category.as_str(),
+            reg.category.endpoint(),
+        ))));
+    }
+    let available: Vec<&str> = state.image_models.iter().map(String::as_str).collect();
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "model '{requested}' is not available on {endpoint}; configured \
+                 image models: [{}]",
+                available.join(", ")
+            ),
+            "type": "invalid_request_error",
+            "param": "model",
+            "code": "model_not_found",
+        },
+        "available_models": available,
+    });
+    Err(Box::new(
+        (StatusCode::NOT_FOUND, Json(body)).into_response(),
+    ))
+}
+
 /// A failed load / generation: 503 when the memory preflight refused it
 /// (retryable once memory is free), 500 otherwise.
 pub(super) fn failure(what: &str, e: &anyhow::Error) -> Response {
@@ -342,41 +399,10 @@ pub async fn generations(
             ));
         }
     };
-    let Some(default_model) = state.image_models.first() else {
-        return openai_error_response(
-            StatusCode::NOT_IMPLEMENTED,
-            "Image API is not enabled: no image model configured — add one to \
-             ATLAS_PRESEED_IMAGE (supported: Qwen/Qwen-Image-2.1)"
-                .into(),
-        );
+    let model_id = match resolve_image_model(&state, &req.model, "/v1/images/generations") {
+        Ok(id) => id,
+        Err(resp) => return *resp,
     };
-    // Category check (Plan.md Phase K), mirroring the transcribe sidecar.
-    let model_id = if req.model.is_empty() {
-        default_model.clone()
-    } else {
-        req.model.clone()
-    };
-    if !state.image_models.contains(&model_id) {
-        if let Some(reg) = state
-            .hotswap
-            .as_ref()
-            .and_then(|ctx| ctx.registered(&model_id).cloned())
-        {
-            return bad_request(format!(
-                "model '{model_id}' is categorized as {} and not available on \
-                 /v1/images/generations; use {} instead",
-                reg.category.as_str(),
-                reg.category.endpoint(),
-            ));
-        }
-        return openai_error_response(
-            StatusCode::NOT_FOUND,
-            format!(
-                "model '{model_id}' is not an image model; configured image models: {:?}",
-                state.image_models,
-            ),
-        );
-    }
 
     if req.prompt.trim().is_empty() {
         return bad_request("'prompt' is required".into());
