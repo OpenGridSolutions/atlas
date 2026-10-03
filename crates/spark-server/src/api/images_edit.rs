@@ -376,6 +376,21 @@ pub async fn edits(State(state): State<Arc<AppState>>, req: Request) -> Response
     let sc2 = sc.clone();
     let fmt = output_format.clone();
     let edit_images: Vec<EditImage> = prepared.into_iter().map(|p| p.edit).collect();
+    {
+        let cond_tokens: usize = edit_images.iter().map(|i| i.span.1 * 4).sum();
+        let stack_overhead = if sc.pipeline.lock().await.edit_ready() {
+            0
+        } else {
+            super::images::gib_bytes(EDIT_STACK_GIB)
+        };
+        super::images::maybe_evict_for(
+            &state,
+            QwenImage::working_bytes(width, height, tokens.len() + 3 * cond_tokens / 4)
+                + stack_overhead,
+            "this edit",
+        )
+        .await;
+    }
     let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(u64, Vec<u8>)>> {
         let mut pipeline = sc2.pipeline.blocking_lock();
         pipeline.gpu_backend().bind_to_thread()?;

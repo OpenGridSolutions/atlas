@@ -118,6 +118,38 @@ pub(super) fn ensure_free_memory(
     Ok(())
 }
 
+/// Best-effort eviction BEFORE a generation's authoritative memory gate:
+/// when `need` + margin exceeds `MemAvailable` and an arena model is
+/// resident, unload it — it lazy-reloads on its next request. Large
+/// sizes (2048² needs ~7.4 GiB working memory, VAE decode dominating)
+/// otherwise 503 whenever a chat model's KV pool sits on the box, which
+/// is exactly the "swap models automatically" case the sidecar load
+/// already handles. Unlike the cross-process driver-pool situation,
+/// MemAvailable reflects an in-process unload immediately, so the
+/// ensure_free_memory gate inside the worker re-checks honestly.
+pub(super) async fn maybe_evict_for(state: &AppState, need: usize, what: &str) {
+    let Some(ctx) = state.hotswap.as_ref() else {
+        return;
+    };
+    let Some(free) = spark_runtime::meminfo::read().map(|m| m.mem_available) else {
+        return;
+    };
+    if free >= need + gib_bytes(FREE_MARGIN_GIB) {
+        return;
+    }
+    let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
+    tracing::warn!(
+        "{what} needs {:.1} GiB + {FREE_MARGIN_GIB:.0} GiB margin but {:.1} GiB is available — \
+         evicting the arena model to make room (it lazy-reloads on its next request)",
+        gib(need),
+        gib(free),
+    );
+    match super::lazy_swap::unload_active(ctx).await {
+        Ok(_) => {}
+        Err(e) => tracing::warn!("arena eviction for {what} failed: {e:#}"),
+    }
+}
+
 /// Memory the KV-budget sizing must leave free while the sidecar is
 /// configured but not resident (`ATLAS_IMAGE_RESERVE_GB` overrides the
 /// weights + working-memory default).
@@ -528,6 +560,13 @@ pub async fn generations(
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64)
     });
+
+    maybe_evict_for(
+        &state,
+        QwenImage::working_bytes(width, height, tokens.len()),
+        "this image size",
+    )
+    .await;
 
     let sc2 = sc.clone();
     let fmt = output_format.clone();

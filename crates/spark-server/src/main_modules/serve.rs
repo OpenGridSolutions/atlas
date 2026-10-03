@@ -813,9 +813,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             // boot reserve (4.6 GB) stood in for the 27B swap target's real
             // ~8.7 GB, and the KV pool clamp handed the difference to KV.
             let inference_reserve = {
-                let free_now = gpu.free_memory().unwrap_or(usize::MAX);
-                let r = serve_phases::preflight_reserve(&reload_args, &config, free_now)
-                    .context("inference-reserve preflight failed for swap target")?;
+                // Only the reserve VALUE is wanted here — free_mem=MAX skips
+                // preflight_reserve's fit bail, which reads free memory and
+                // false-negatives right after an eviction while the driver
+                // pool still holds the unloaded model's pages (it refused
+                // the lazy reload after the 2026-10-03 image eviction at
+                // "8.69 GB free" with ~40 GB pool-held). Whether things fit
+                // is decided by the KV budget's pinnable clamp and, finally,
+                // by the allocations themselves.
+                let r = serve_phases::preflight_reserve(&reload_args, &config, usize::MAX)
+                    .context("inference-reserve computation failed for swap target")?;
                 if r.inference_reserve != inference_reserve {
                     tracing::info!(
                         "Swap target inference reserve: {:.2} GiB (boot model's was {:.2} GiB)",
