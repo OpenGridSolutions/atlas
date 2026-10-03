@@ -271,6 +271,32 @@ pub(crate) fn post_load_memory_audit(
     if available_free < total_reserve {
         let avail_gb = available_free as f64 / (1024.0 * 1024.0 * 1024.0);
         let need_gb = total_reserve as f64 / (1024.0 * 1024.0 * 1024.0);
+        let msg = format!(
+            "Insufficient GPU memory for inference buffers. \
+             After loading {:.2} GB of weights, only {:.2} GB remains \
+             but {:.2} GB is needed for SSM state pool ({} slots × {} layers) + scratch buffers.",
+            weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
+            avail_gb,
+            need_gb,
+            args.max_batch_size,
+            config.num_ssm_layers(),
+        );
+        // Same escape hatch as the weight loader's pre-flight: on GB10 the
+        // free readings cannot see the driver pool's reclaimable pages for
+        // minutes after a restart, so this audit false-negatives on a
+        // quick stop→start cycle even though the buffer allocations will
+        // succeed by reusing the pool (the 2026-10-03 serve.sh restart
+        // aborted here at "2.56 GB remains" with ~85 GB pool-held). The
+        // allocations that follow fail loudly themselves if memory truly
+        // is short.
+        if spark_runtime::weights::skip_oom_preflight() {
+            tracing::warn!(
+                "{msg} Continuing anyway (ATLAS_SKIP_OOM_PREFLIGHT) — free readings \
+                 under-report after a restart while the driver pool still holds the \
+                 previous run's pages; allocation failures remain fatal.",
+            );
+            return Ok(());
+        }
         let hint = if args.max_batch_size > 1 {
             format!(
                 " Reduce --max-batch-size (currently {}) or --max-seq-len (currently {}).",
@@ -282,17 +308,7 @@ pub(crate) fn post_load_memory_audit(
                 args.max_seq_len
             )
         };
-        anyhow::bail!(
-            "Insufficient GPU memory for inference buffers. \
-             After loading {:.2} GB of weights, only {:.2} GB remains \
-             but {:.2} GB is needed for SSM state pool ({} slots × {} layers) + scratch buffers.{}",
-            weight_bytes as f64 / (1024.0 * 1024.0 * 1024.0),
-            avail_gb,
-            need_gb,
-            args.max_batch_size,
-            config.num_ssm_layers(),
-            hint,
-        );
+        anyhow::bail!("{msg}{hint}");
     }
     if gdn_two_phase_bytes > 0 {
         tracing::info!(

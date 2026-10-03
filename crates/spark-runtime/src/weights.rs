@@ -39,7 +39,7 @@ pub(crate) fn evict_page_cache(_file: &std::fs::File) {
 /// safety nets: [`check_oom_guard`] runs after every shard (unconditionally —
 /// including after the managed-memory fallback engages), and per-tensor
 /// allocation failures fall back to `cuMemAllocManaged`.
-pub(crate) fn skip_oom_preflight() -> bool {
+pub fn skip_oom_preflight() -> bool {
     std::env::var("ATLAS_SKIP_OOM_PREFLIGHT")
         .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
         .unwrap_or(false)
