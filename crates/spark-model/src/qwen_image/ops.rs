@@ -18,6 +18,7 @@ pub(crate) struct Ops {
     copy_prefix: KernelHandle,
     softmax_rows: KernelHandle,
     scatter_head: KernelHandle,
+    flash_attn: KernelHandle,
     gated_add: KernelHandle,
     silu_mul: KernelHandle,
     gelu_tanh: KernelHandle,
@@ -32,6 +33,9 @@ pub(crate) struct Ops {
     /// Route the large projection GEMMs through cuBLASLt (default) instead
     /// of the in-tree pipelined kernel (`ATLAS_IMAGE_NO_CUBLAS=1`).
     use_cublas: bool,
+    /// Force the GEMM-SDPA path even for unmasked full attention
+    /// (`ATLAS_IMAGE_NO_FLASH=1`).
+    no_flash: bool,
     /// The sidecar's own cuBLASLt workspace: it runs on its own thread next
     /// to the scheduler, so it must not share the process-wide one.
     cublas_ws: DevicePtr,
@@ -49,7 +53,9 @@ pub(crate) fn pad_keys(n: usize) -> usize {
     n.div_ceil(16) * 16
 }
 
-/// Buffers for one GEMM-SDPA attention call.
+/// Buffers for one attention call. `scores`, `probs` and `o_stage` are
+/// GEMM-SDPA scratch; on the flash-attention path (see
+/// [`Ops::flash_attention`]) they are unused and may stay NULL.
 pub(crate) struct AttnBufs {
     /// [Hq][nq][D] bf16
     pub qh: DevicePtr,
@@ -79,6 +85,7 @@ impl Ops {
             copy_prefix: k("qimg_copy_prefix")?,
             softmax_rows: k("qimg_softmax_rows")?,
             scatter_head: k("qimg_scatter_head")?,
+            flash_attn: k("qimg_flash_attn")?,
             gated_add: k("qimg_gated_add")?,
             silu_mul: k("qimg_silu_mul")?,
             gelu_tanh: k("qimg_gelu_tanh")?,
@@ -91,6 +98,7 @@ impl Ops {
             dup_shortcut_add: k("qimg_dup_shortcut_add")?,
             vae_qkv_split: k("qimg_vae_qkv_split")?,
             use_cublas: std::env::var("ATLAS_IMAGE_NO_CUBLAS").map_or(true, |v| v != "1"),
+            no_flash: std::env::var("ATLAS_IMAGE_NO_FLASH").is_ok_and(|v| v == "1"),
             cublas_ws,
         })
     }
@@ -313,8 +321,19 @@ impl Ops {
             .launch(g.default_stream())
     }
 
-    /// GEMM-SDPA over prepared head-major buffers; writes `o[nq, hq*d]`.
+    /// True when `attention` with NULL limits takes the fused
+    /// flash-attention kernel instead of GEMM-SDPA (MHA, D = 128 —
+    /// the DiT target pass). The caller may then leave the `scores`,
+    /// `probs` and `o_stage` buffers unallocated.
+    pub fn flash_attention(&self, hq: usize, hkv: usize, d: usize) -> bool {
+        !self.no_flash && hq == hkv && d == 128
+    }
+
+    /// SDPA over prepared head-major buffers; writes `o[nq, hq*d]`.
     /// Row r attends keys `[0, limits[r])` (`limits` NULL → all `nk_valid`).
+    /// Unmasked full attention dispatches to `qimg_flash_attn` when
+    /// [`Self::flash_attention`] holds; everything else runs the per-head
+    /// GEMM-SDPA loop (QKᵀ f32 → softmax rows → P·V → scatter).
     #[allow(clippy::too_many_arguments)]
     pub fn attention(
         &self,
@@ -331,6 +350,21 @@ impl Ops {
     ) -> Result<()> {
         let stream = g.default_stream();
         let scale = 1.0 / (d as f32).sqrt();
+        if limits.is_null() && self.flash_attention(hq, hkv, d) {
+            return KernelLaunch::new(g, self.flash_attn)
+                .grid([hq as u32, (nq as u32).div_ceil(64), 1])
+                .block([256, 1, 1])
+                .arg_ptr(b.qh)
+                .arg_ptr(b.kh)
+                .arg_ptr(b.vt)
+                .arg_ptr(o)
+                .arg_u32(nq as u32)
+                .arg_u32(nk_valid as u32)
+                .arg_u32(nk_pad as u32)
+                .arg_u32(hq as u32)
+                .arg_f32(scale)
+                .launch(stream);
+        }
         let group = hq / hkv;
         for h in 0..hq {
             let q = b.qh.offset(h * nq * d * 2);

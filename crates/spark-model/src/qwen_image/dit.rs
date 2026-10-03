@@ -399,13 +399,26 @@ impl Dit {
         let ff_a = pool.alloc(n * FFN * 2)?;
         let ff_b = pool.alloc(n * FFN * 2)?;
         let pred = pool.alloc(n * LATENT_CH * 4)?;
+        // The target pass is unmasked full attention: on the flash path the
+        // GEMM-SDPA scratch (n*s_pad scores/probs — 1.6 GiB at 2048²) is
+        // never touched and stays unallocated.
+        let flash = ops.flash_attention(HEADS, HEADS, HEAD_DIM);
+        let (scores, probs, o_stage) = if flash {
+            (DevicePtr::NULL, DevicePtr::NULL, DevicePtr::NULL)
+        } else {
+            (
+                pool.alloc(n * s_pad * 4)?,
+                pool.alloc(n * s_pad * 2)?,
+                pool.alloc(n * HEAD_DIM * 2)?,
+            )
+        };
         let bufs = AttnBufs {
             qh: pool.alloc(n * hd * 2)?,
             kh: pool.alloc_zeroed(s_pad * hd * 2)?,
             vt: pool.alloc_zeroed(s_pad * hd * 2)?,
-            scores: pool.alloc(n * s_pad * 4)?,
-            probs: pool.alloc(n * s_pad * 2)?,
-            o_stage: pool.alloc(n * HEAD_DIM * 2)?,
+            scores,
+            probs,
+            o_stage,
         };
 
         for step in 0..sigmas.len() - 1 {

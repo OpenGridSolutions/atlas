@@ -444,6 +444,33 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
         KV-Pool möglich, sonst korrektes 503). Für praktikable 2048²-
         Latenz bleibt der fusionierte Flash-Attention-Kernel der
         nächste Performance-Schritt.
+      ERLEDIGT (2026-10-03):
+      - Flash-Attention-Kernel für den DiT-Target-Pass
+        (`qimg_flash_attn` in qwen_image.cu): Tensor-Core-FA2
+        (mma.sync m16n8k16 BF16, cp.async, Online-Softmax in
+        Registern), adaptiert aus common/inferspark_prefill_h128.cu
+        (BR=64-Variante) auf die head-major Sidecar-Buffer — Q/K
+        direkt aus qh/kh, V aus dem transponierten vt (smem-Tile
+        bleibt transponiert [128][40]: gmem-Loads 16-Byte-kontig
+        entlang k, PV-B-Fragmente als EIN aligned 32-bit-Read,
+        bankkonfliktfrei), O direkt interleaved [n][H*128]
+        (scatter_head entfällt). K single-buffered (Prefetch nach
+        der Post-Softmax-Barriere, überlappt PV) → ~41 KB smem,
+        2 CTAs/SM. Dispatch in `Ops::attention` bei limits==NULL &&
+        MHA && D=128 (genau der Target-Pass; Präfix-/Text-Encoder-
+        Pfade mit Row-Limits bleiben GEMM-SDPA). Kill-Switch
+        `ATLAS_IMAGE_NO_FLASH=1`. Die GEMM-SDPA-Scratch (f32-Scores
+        + bf16-Probs, 1.6 GiB bei 2048²) entfällt auf dem Flash-Pfad
+        komplett (dit.rs alloziert konditional, working_bytes
+        angepasst → Preflight braucht entsprechend weniger).
+        GEMESSEN (warm, solo, neben 27B-Arena): 1024²/40 = 58.7 s
+        (vorher ~94 s, ~1.3 statt 2.2 s/Schritt); 2048²/40 = 451.7 s
+        (vorher 1041.8 s, ~10.9 statt 26 s/Schritt, 2.3×). Jetzt
+        compute-bound (~371 TFLOP/Schritt: 229 GEMMs + 142
+        Attention) — weitere Gewinne bräuchten niedrigere Präzision,
+        nicht bessere Attention. Numerik: qwen_image_golden komplett
+        PASS (T2I-Regression + alle Edit-Stufen, inkl. Partial-Tile-
+        Pfade bei kv_len=276); image_smoke 13/13.
       OFFEN:
       - Speicher-Befund (2026-10-02): der NVIDIA-Treiber hält den
         Gerätespeicher beendeter Prozesse bzw. entladener KV-Pools
@@ -453,7 +480,6 @@ Whisper-Sidecar-Muster statt im Generative-Scheduler.
         Das ist die „co-tenants"-Zeile im KV-Budget-Log; Budget,
         Reserve und Preflight rechnen dadurch konservativ (Details
         Doku.md §3.2).
-      - Flash-Attention-Kernel für den DiT (2048²-Latenz, s. o.).
       - `tests/run_all_models.py`-Einhängung (Docker-Release-Matrix).
 - [ ] **3.2d Lizenz-Hinweis:** Qwen Research License (nicht Apache-2.0) —
       vor Produktivnutzung klären; betrifft auch das Publishing im

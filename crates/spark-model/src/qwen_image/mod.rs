@@ -229,10 +229,16 @@ impl QwenImage {
         let (height, lat_h) = Self::snap(height);
         let n = lat_h * lat_w;
         let keys = ops::pad_keys(n + prompt_tokens);
-        // DiT: attention scores (f32) + probabilities (bf16), eleven
-        // hidden-sized buffers (residual, norm, q/kv, head-major Q/K/V, …)
-        // and the two MLP activations.
-        let dit = n * keys * 6 + 11 * n * 4096 * 2 + 2 * n * 12288 * 2;
+        // DiT: eleven hidden-sized buffers (residual, norm, q/kv, head-major
+        // Q/K/V, …) and the two MLP activations. The GEMM-SDPA scratch
+        // (f32 scores + bf16 probabilities) only exists when the
+        // flash-attention target pass is disabled.
+        let sdpa = if std::env::var("ATLAS_IMAGE_NO_FLASH").is_ok_and(|v| v == "1") {
+            n * keys * 6
+        } else {
+            0
+        };
+        let dit = sdpa + 11 * n * 4096 * 2 + 2 * n * 12288 * 2;
         // VAE: the widest stage holds the 2×-upsampled 288-channel map, its
         // convolution output and the half-resolution block input, plus one
         // im2col band.

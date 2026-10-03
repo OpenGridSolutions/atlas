@@ -475,3 +475,404 @@ void qimg_vae_avg_down(
     }
     out[lin] = f32_to_bf16(bf16_to_f32(out[lin]) + acc / (float)group);
 }
+
+// ── Flash attention (DiT target pass) ────────────────────────────────────────
+//
+// Fused Tensor-Core SDPA (Flash Attention v2, mma.sync m16n8k16 BF16) for the
+// DiT's full-attention target rows, adapted from
+// common/inferspark_prefill_h128.cu (BR=64 variant) to the sidecar's
+// head-major attention buffers:
+//   Q  [H][q_len][128]      qimg_norm_rope_heads output, rows tight
+//   K  [H][kv_stride][128]  kh — rows [kv_len, kv_stride) are zeroed padding
+//   Vt [H][128][kv_stride]  qimg_v_transpose output, same padding guarantee
+//   O  [q_len][H*128]       written at column head*128 (scatter fused)
+// Every query row attends keys [0, kv_len) — no masks; the prefix pass keeps
+// the GEMM-SDPA path for its per-row limits. kv_stride is a multiple of 16
+// (pad_keys), so the 8-element cp.async chunks never straddle the padding
+// edge and reads up to kv_stride stay in bounds.
+//
+// Per CTA: 64 query rows of one head, 8 warps (256 threads), ~41 KB smem
+// (2 CTAs/SM on GB10's 99 KB). Differences from the template:
+//   * K is single-buffered: the next tile's load is issued after the
+//     post-softmax barrier — no QK^T reader left — and overlaps with PV,
+//     so the prefetch pipeline is unchanged.
+//   * V tiles are kept TRANSPOSED in smem ([128][40]): the gmem loads stay
+//     16-byte-contiguous along k, the PV B-fragment becomes one aligned
+//     32-bit read ({V[k][d], V[k+1][d]} adjacent), and the stride of 40
+//     u16 (20 words) gives a conflict-free bank pattern across a warp.
+//
+// QK^T: warps 0-3 own 16 query rows each; PV: warp pairs (w, w+4) share
+// rows and split the 128 output columns. ldmatrix is avoided throughout
+// (broken on GB10) — fragments are assembled with manual smem reads.
+// grid = (H, ceil(q_len/64), 1), block = (256,1,1)
+
+#define QFA_BR 64
+#define QFA_BC 32
+#define QFA_D 128
+#define QFA_DPAD (QFA_D + 8)        // K/Q row stride: 272 B, 16-byte aligned
+#define QFA_VSTRIDE (QFA_BC + 8)    // Vt row stride: 80 B, 16-byte aligned
+#define QFA_PSTRIDE (QFA_BC + 8)
+#define QFA_NT 8                    // PV n-tiles per warp: (128/8)/2
+
+extern "C" __global__
+void qimg_flash_attn(
+    const __nv_bfloat16* __restrict__ Q,
+    const __nv_bfloat16* __restrict__ K,
+    const __nv_bfloat16* __restrict__ Vt,
+    __nv_bfloat16* __restrict__ O,
+    const unsigned int q_len,
+    const unsigned int kv_len,
+    const unsigned int kv_stride,
+    const unsigned int heads,
+    const float inv_sqrt_d)
+{
+    const unsigned int head = blockIdx.x;
+    const unsigned int tid = threadIdx.x;
+    const unsigned int warp_id = tid / 32;
+    const unsigned int lane_id = tid % 32;
+
+    const unsigned int q_start = blockIdx.y * QFA_BR;
+    if (q_start >= q_len) return;
+    const unsigned int q_rows = min(QFA_BR, q_len - q_start);
+
+    const __nv_bfloat16* Qh = Q + (size_t)head * q_len * QFA_D;
+    const __nv_bfloat16* Kh = K + (size_t)head * kv_stride * QFA_D;
+    const __nv_bfloat16* Vh = Vt + (size_t)head * QFA_D * kv_stride;
+    __nv_bfloat16* Oh = O + (size_t)head * QFA_D;
+    const unsigned int o_stride = heads * QFA_D;
+
+    __shared__ __nv_bfloat16 smem_Q[QFA_BR][QFA_DPAD];
+    __shared__ __nv_bfloat16 smem_K[QFA_BC][QFA_DPAD];
+    __shared__ __nv_bfloat16 smem_Vt[QFA_D][QFA_VSTRIDE];
+    __shared__ __nv_bfloat16 smem_P[QFA_BR][QFA_PSTRIDE];
+    __shared__ float smem_ml[QFA_BR][2];   // [row][0]=m, [row][1]=l
+
+    const unsigned int group_id = lane_id >> 2;
+    const unsigned int tid_in_group = lane_id & 3;
+
+    const unsigned int qk_warp_m = warp_id * 16;        // warps 0-3
+    const unsigned int pv_warp_m = (warp_id & 3) * 16;  // all 8 warps
+    const unsigned int pv_n_start = (warp_id >> 2) * QFA_NT;
+
+    float acc_o[QFA_NT][4];
+    #pragma unroll
+    for (int i = 0; i < QFA_NT; i++) {
+        acc_o[i][0] = 0.0f; acc_o[i][1] = 0.0f;
+        acc_o[i][2] = 0.0f; acc_o[i][3] = 0.0f;
+    }
+
+    // Per-row online softmax state (each thread owns 2 rows)
+    float m_r0 = -1e30f, m_r1 = -1e30f;
+    float l_r0 = 0.0f, l_r1 = 0.0f;
+
+    const unsigned int num_kv_blocks = (kv_len + QFA_BC - 1) / QFA_BC;
+
+    // === Merged Q + K[0] load (single cp.async commit group) ===
+    {
+        const unsigned int cpr = QFA_D / 8;  // 16 chunks per row
+
+        for (unsigned int idx = tid; idx < QFA_BR * cpr; idx += 256) {
+            unsigned int row = idx / cpr;
+            unsigned int col = (idx % cpr) * 8;
+            unsigned int q_row = q_start + row;
+            unsigned int smem_addr = __cvta_generic_to_shared(&smem_Q[row][col]);
+            if (q_row < q_len) {
+                const void* gmem = (const void*)&Qh[(size_t)q_row * QFA_D + col];
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
+            } else {
+                *((uint4*)&smem_Q[row][col]) = make_uint4(0, 0, 0, 0);
+            }
+        }
+
+        for (unsigned int idx = tid; idx < QFA_BC * cpr; idx += 256) {
+            unsigned int row = idx / cpr;
+            unsigned int col = (idx % cpr) * 8;
+            unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[row][col]);
+            if (row < kv_stride) {
+                const void* gmem = (const void*)&Kh[(size_t)row * QFA_D + col];
+                asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
+            } else {
+                *((uint4*)&smem_K[row][col]) = make_uint4(0, 0, 0, 0);
+            }
+        }
+
+        asm volatile("cp.async.commit_group;");
+        asm volatile("cp.async.wait_group 0;");
+    }
+    __syncthreads();
+
+    for (unsigned int kv_block = 0; kv_block < num_kv_blocks; kv_block++) {
+        unsigned int kv_start = kv_block * QFA_BC;
+        unsigned int kv_tile = min(QFA_BC, kv_len - kv_start);
+
+        // === Async V tile load, transposed (overlaps with QK^T below) ===
+        {
+            for (unsigned int idx = tid; idx < QFA_D * (QFA_BC / 8); idx += 256) {
+                unsigned int d = idx / (QFA_BC / 8);
+                unsigned int kcol = (idx % (QFA_BC / 8)) * 8;
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_Vt[d][kcol]);
+                if (kv_start + kcol < kv_stride) {
+                    const void* gmem = (const void*)&Vh[(size_t)d * kv_stride + kv_start + kcol];
+                    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
+                } else {
+                    *((uint4*)&smem_Vt[d][kcol]) = make_uint4(0, 0, 0, 0);
+                }
+            }
+            asm volatile("cp.async.commit_group;");
+        }
+
+        // === QK^T (warps 0-3, each 16 M-rows) ===
+        float acc_s[4][4];
+        if (warp_id < 4) {
+            #pragma unroll
+            for (int i = 0; i < 4; i++) {
+                acc_s[i][0] = 0.0f; acc_s[i][1] = 0.0f;
+                acc_s[i][2] = 0.0f; acc_s[i][3] = 0.0f;
+            }
+
+            const unsigned short* sQ = (const unsigned short*)smem_Q;
+            const unsigned short* sK = (const unsigned short*)smem_K;
+
+            #pragma unroll
+            for (unsigned int ks = 0; ks < (QFA_D / 16); ks++) {
+                unsigned int k_off = ks * 16;
+                unsigned int ar0 = qk_warp_m + group_id;
+                unsigned int ar1 = ar0 + 8;
+                unsigned int ac0 = k_off + tid_in_group * 2;
+                unsigned int ac1 = ac0 + 8;
+
+                unsigned int a0 = *(const unsigned int*)&sQ[ar0 * QFA_DPAD + ac0];
+                unsigned int a1 = *(const unsigned int*)&sQ[ar1 * QFA_DPAD + ac0];
+                unsigned int a2 = *(const unsigned int*)&sQ[ar0 * QFA_DPAD + ac1];
+                unsigned int a3 = *(const unsigned int*)&sQ[ar1 * QFA_DPAD + ac1];
+
+                #pragma unroll
+                for (int nt = 0; nt < 4; nt++) {
+                    unsigned int n_col = nt * 8 + group_id;
+                    unsigned int k0 = k_off + tid_in_group * 2;
+                    unsigned int k1 = k0 + 8;
+                    unsigned int b0 = ((unsigned int)sK[n_col * QFA_DPAD + k0 + 1] << 16) |
+                                      (unsigned int)sK[n_col * QFA_DPAD + k0];
+                    unsigned int b1 = ((unsigned int)sK[n_col * QFA_DPAD + k1 + 1] << 16) |
+                                      (unsigned int)sK[n_col * QFA_DPAD + k1];
+
+                    asm volatile(
+                        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                        "{%0, %1, %2, %3}, "
+                        "{%4, %5, %6, %7}, "
+                        "{%8, %9}, "
+                        "{%10, %11, %12, %13};"
+                        : "=f"(acc_s[nt][0]), "=f"(acc_s[nt][1]),
+                          "=f"(acc_s[nt][2]), "=f"(acc_s[nt][3])
+                        : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+                          "r"(b0), "r"(b1),
+                          "f"(acc_s[nt][0]), "f"(acc_s[nt][1]),
+                          "f"(acc_s[nt][2]), "f"(acc_s[nt][3])
+                    );
+                }
+            }
+
+            // === Register-based softmax ===
+            unsigned int row0 = qk_warp_m + group_id;
+            unsigned int row1 = row0 + 8;
+
+            #pragma unroll
+            for (int nt = 0; nt < 4; nt++) {
+                acc_s[nt][0] *= inv_sqrt_d;
+                acc_s[nt][1] *= inv_sqrt_d;
+                acc_s[nt][2] *= inv_sqrt_d;
+                acc_s[nt][3] *= inv_sqrt_d;
+
+                unsigned int col0 = nt * 8 + tid_in_group * 2;
+                unsigned int col1 = col0 + 1;
+                if (col0 >= kv_tile) { acc_s[nt][0] = -1e30f; acc_s[nt][2] = -1e30f; }
+                if (col1 >= kv_tile) { acc_s[nt][1] = -1e30f; acc_s[nt][3] = -1e30f; }
+                if (row0 >= q_rows) { acc_s[nt][0] = -1e30f; acc_s[nt][1] = -1e30f; }
+                if (row1 >= q_rows) { acc_s[nt][2] = -1e30f; acc_s[nt][3] = -1e30f; }
+            }
+
+            float rmax0 = -1e30f, rmax1 = -1e30f;
+            #pragma unroll
+            for (int nt = 0; nt < 4; nt++) {
+                rmax0 = fmaxf(rmax0, fmaxf(acc_s[nt][0], acc_s[nt][1]));
+                rmax1 = fmaxf(rmax1, fmaxf(acc_s[nt][2], acc_s[nt][3]));
+            }
+            rmax0 = fmaxf(rmax0, __shfl_xor_sync(0xFFFFFFFF, rmax0, 1));
+            rmax0 = fmaxf(rmax0, __shfl_xor_sync(0xFFFFFFFF, rmax0, 2));
+            rmax1 = fmaxf(rmax1, __shfl_xor_sync(0xFFFFFFFF, rmax1, 1));
+            rmax1 = fmaxf(rmax1, __shfl_xor_sync(0xFFFFFFFF, rmax1, 2));
+
+            float m_new0 = fmaxf(m_r0, rmax0);
+            float exp_old0 = __expf(m_r0 - m_new0);
+            l_r0 *= exp_old0;
+            #pragma unroll
+            for (int i = 0; i < QFA_NT; i++) {
+                acc_o[i][0] *= exp_old0; acc_o[i][1] *= exp_old0;
+            }
+            m_r0 = m_new0;
+
+            float m_new1 = fmaxf(m_r1, rmax1);
+            float exp_old1 = __expf(m_r1 - m_new1);
+            l_r1 *= exp_old1;
+            #pragma unroll
+            for (int i = 0; i < QFA_NT; i++) {
+                acc_o[i][2] *= exp_old1; acc_o[i][3] *= exp_old1;
+            }
+            m_r1 = m_new1;
+
+            float sum0 = 0.0f, sum1 = 0.0f;
+            #pragma unroll
+            for (int nt = 0; nt < 4; nt++) {
+                float p00 = __expf(acc_s[nt][0] - m_r0);
+                float p01 = __expf(acc_s[nt][1] - m_r0);
+                float p10 = __expf(acc_s[nt][2] - m_r1);
+                float p11 = __expf(acc_s[nt][3] - m_r1);
+                sum0 += p00 + p01;
+                sum1 += p10 + p11;
+
+                unsigned int col0 = nt * 8 + tid_in_group * 2;
+                smem_P[row0][col0]     = __float2bfloat16(p00);
+                smem_P[row0][col0 + 1] = __float2bfloat16(p01);
+                smem_P[row1][col0]     = __float2bfloat16(p10);
+                smem_P[row1][col0 + 1] = __float2bfloat16(p11);
+            }
+
+            sum0 += __shfl_xor_sync(0xFFFFFFFF, sum0, 1);
+            sum0 += __shfl_xor_sync(0xFFFFFFFF, sum0, 2);
+            sum1 += __shfl_xor_sync(0xFFFFFFFF, sum1, 1);
+            sum1 += __shfl_xor_sync(0xFFFFFFFF, sum1, 2);
+            l_r0 += sum0;
+            l_r1 += sum1;
+
+            if (tid_in_group == 0) {
+                smem_ml[row0][0] = m_r0; smem_ml[row0][1] = l_r0;
+                smem_ml[row1][0] = m_r1; smem_ml[row1][1] = l_r1;
+            }
+        }
+
+        // Wait for the V tile (was loading during QK^T + softmax)
+        asm volatile("cp.async.wait_group 0;");
+        __syncthreads();
+
+        // Warps 4-7: rescale accumulators to the current m
+        if (warp_id >= 4) {
+            unsigned int row0 = pv_warp_m + group_id;
+            unsigned int row1 = row0 + 8;
+            float cur_m0 = smem_ml[row0][0];
+            float cur_m1 = smem_ml[row1][0];
+            float exp_r0 = __expf(m_r0 - cur_m0);
+            float exp_r1 = __expf(m_r1 - cur_m1);
+            #pragma unroll
+            for (int i = 0; i < QFA_NT; i++) {
+                acc_o[i][0] *= exp_r0; acc_o[i][1] *= exp_r0;
+                acc_o[i][2] *= exp_r1; acc_o[i][3] *= exp_r1;
+            }
+            m_r0 = cur_m0; m_r1 = cur_m1;
+        }
+
+        // === Preload K[i+1] (single buffer: QK^T readers are past the
+        // barrier above; the load overlaps with PV below) ===
+        if (kv_block + 1 < num_kv_blocks) {
+            unsigned int next = (kv_block + 1) * QFA_BC;
+            const unsigned int cpr = QFA_D / 8;
+            for (unsigned int idx = tid; idx < QFA_BC * cpr; idx += 256) {
+                unsigned int row = idx / cpr;
+                unsigned int col = (idx % cpr) * 8;
+                unsigned int k_row = next + row;
+                unsigned int smem_addr = __cvta_generic_to_shared(&smem_K[row][col]);
+                if (k_row < kv_stride) {
+                    const void* gmem = (const void*)&Kh[(size_t)k_row * QFA_D + col];
+                    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" :: "r"(smem_addr), "l"(gmem));
+                } else {
+                    *((uint4*)&smem_K[row][col]) = make_uint4(0, 0, 0, 0);
+                }
+            }
+            asm volatile("cp.async.commit_group;");
+        }
+
+        // === PV MMA (all 8 warps, 8 n-tiles each) ===
+        {
+            const unsigned short* sP = (const unsigned short*)smem_P;
+            const unsigned short* sV = (const unsigned short*)smem_Vt;
+
+            #pragma unroll
+            for (unsigned int ks = 0; ks < 2; ks++) {
+                unsigned int k_off = ks * 16;
+                unsigned int ar0 = pv_warp_m + group_id;
+                unsigned int ar1 = ar0 + 8;
+                unsigned int ac0 = k_off + tid_in_group * 2;
+                unsigned int ac1 = ac0 + 8;
+
+                unsigned int a0 = *(const unsigned int*)&sP[ar0 * QFA_PSTRIDE + ac0];
+                unsigned int a1 = *(const unsigned int*)&sP[ar1 * QFA_PSTRIDE + ac0];
+                unsigned int a2 = *(const unsigned int*)&sP[ar0 * QFA_PSTRIDE + ac1];
+                unsigned int a3 = *(const unsigned int*)&sP[ar1 * QFA_PSTRIDE + ac1];
+
+                #pragma unroll
+                for (int nt = 0; nt < QFA_NT; nt++) {
+                    unsigned int n_col = (pv_n_start + nt) * 8 + group_id;
+                    unsigned int k0 = k_off + tid_in_group * 2;
+                    unsigned int k1 = k0 + 8;
+
+                    // smem_Vt[n_col][k], k contiguous: {V[k][n], V[k+1][n]}
+                    // is one aligned 32-bit read.
+                    unsigned int b0 = *(const unsigned int*)&sV[n_col * QFA_VSTRIDE + k0];
+                    unsigned int b1 = *(const unsigned int*)&sV[n_col * QFA_VSTRIDE + k1];
+
+                    asm volatile(
+                        "mma.sync.aligned.m16n8k16.row.col.f32.bf16.bf16.f32 "
+                        "{%0, %1, %2, %3}, "
+                        "{%4, %5, %6, %7}, "
+                        "{%8, %9}, "
+                        "{%10, %11, %12, %13};"
+                        : "=f"(acc_o[nt][0]), "=f"(acc_o[nt][1]),
+                          "=f"(acc_o[nt][2]), "=f"(acc_o[nt][3])
+                        : "r"(a0), "r"(a1), "r"(a2), "r"(a3),
+                          "r"(b0), "r"(b1),
+                          "f"(acc_o[nt][0]), "f"(acc_o[nt][1]),
+                          "f"(acc_o[nt][2]), "f"(acc_o[nt][3])
+                    );
+                }
+            }
+        }
+
+        // Wait for the K[i+1] prefetch before the next QK^T
+        if (kv_block + 1 < num_kv_blocks) {
+            asm volatile("cp.async.wait_group 0;");
+        }
+        __syncthreads();
+    }
+
+    // === Final normalization and store ===
+    {
+        unsigned int row0 = pv_warp_m + group_id;
+        unsigned int row1 = row0 + 8;
+
+        float inv_l0, inv_l1;
+        if (warp_id < 4) {
+            inv_l0 = (l_r0 > 0.0f) ? (1.0f / l_r0) : 0.0f;
+            inv_l1 = (l_r1 > 0.0f) ? (1.0f / l_r1) : 0.0f;
+        } else {
+            float l0 = smem_ml[row0][1];
+            float l1 = smem_ml[row1][1];
+            inv_l0 = (l0 > 0.0f) ? (1.0f / l0) : 0.0f;
+            inv_l1 = (l1 > 0.0f) ? (1.0f / l1) : 0.0f;
+        }
+
+        #pragma unroll
+        for (int nt = 0; nt < QFA_NT; nt++) {
+            unsigned int col0 = (pv_n_start + nt) * 8 + tid_in_group * 2;
+
+            if (row0 < q_rows) {
+                unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(acc_o[nt][0] * inv_l0));
+                unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(acc_o[nt][1] * inv_l0));
+                *(unsigned int*)&Oh[(size_t)(q_start + row0) * o_stride + col0] = lo | (hi << 16);
+            }
+            if (row1 < q_rows) {
+                unsigned int lo = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(acc_o[nt][2] * inv_l1));
+                unsigned int hi = (unsigned int)__bfloat16_as_ushort(__float2bfloat16(acc_o[nt][3] * inv_l1));
+                *(unsigned int*)&Oh[(size_t)(q_start + row1) * o_stride + col0] = lo | (hi << 16);
+            }
+        }
+    }
+}
