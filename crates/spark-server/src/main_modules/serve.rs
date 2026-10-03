@@ -806,6 +806,25 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                     .context("kv-cache kernel preflight failed for swap target")?;
                 }
             }
+            // The inference reserve (SSM pools + snapshots + GDN prefill
+            // buffers + CUDA headroom) is MODEL-dependent — state sizes and
+            // GDN dims differ per checkpoint. Reusing the boot model's value
+            // under-reserved the 2026-10-03 deployment OOM kill: the 80B
+            // boot reserve (4.6 GB) stood in for the 27B swap target's real
+            // ~8.7 GB, and the KV pool clamp handed the difference to KV.
+            let inference_reserve = {
+                let free_now = gpu.free_memory().unwrap_or(usize::MAX);
+                let r = serve_phases::preflight_reserve(&reload_args, &config, free_now)
+                    .context("inference-reserve preflight failed for swap target")?;
+                if r.inference_reserve != inference_reserve {
+                    tracing::info!(
+                        "Swap target inference reserve: {:.2} GiB (boot model's was {:.2} GiB)",
+                        r.inference_reserve as f64 / (1u64 << 30) as f64,
+                        inference_reserve as f64 / (1u64 << 30) as f64,
+                    );
+                }
+                r.inference_reserve
+            };
             // Track the rebuild's derived-buffer allocations for the next
             // unload (same window as the boot build).
             gpu.set_alloc_tracking(true);

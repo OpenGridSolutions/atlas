@@ -11,9 +11,12 @@
 //! params, loop-watchdog flag, TSCG) — call it only while the scheduler is
 //! parked (state != Running), never while requests are decoding.
 //!
-//! Boot-fixed, args-scale values (max_batch_tokens, inference_reserve,
-//! prefill budget, speculative flags) are deliberately NOT recomputed —
-//! they are scheduler-level and stay at their boot values across swaps.
+//! Boot-fixed, args-scale values (max_batch_tokens, prefill budget,
+//! speculative flags) are deliberately NOT recomputed — they are
+//! scheduler-level and stay at their boot values across swaps. The
+//! inference reserve is NOT one of them: it depends on the target's SSM
+//! state sizes and GDN dims, so the reloader recomputes it per swap
+//! (reusing the boot value under-reserved the 2026-10-03 OOM kill).
 
 use std::path::PathBuf;
 

@@ -11,7 +11,8 @@
 //!   else auto: atlas_own = baseline − free_now, sanity-gated
 //!   total_budget = total × utilization
 //!   kv = pinned override OR (total_budget − used − inference_reserve),
-//!        both clamped to (free_now − inference_reserve)
+//!        both clamped to (pinnable_free − inference_reserve) — swap-free
+//!        space is excluded from the clamp, KV pages are pinned
 //!   a pending sidecar reserve (Todo 3.2b) comes off both the budget and
 //!   the physical clamp — memory a configured sidecar has yet to allocate —
 //!   but never takes more than half of the pool the model would get
@@ -48,6 +49,14 @@ pub(crate) struct BudgetInputs {
     pub inference_reserve: usize,
     /// --kv-pool-gb in bytes (deterministic hot-swap sizing).
     pub kv_pool_override: Option<usize>,
+    /// `MemAvailable` WITHOUT SwapFree, when /proc/meminfo is readable.
+    /// The physical clamp uses this instead of `actual_free`: KV pool
+    /// pages are GPU-touched and pinned on UMA, so swap space is no room
+    /// for them — counting it handed the 2026-10-03 deployment ~7.7 GB
+    /// of phantom headroom and the host OOM-killed the server at the
+    /// first prefill. `actual_free` keeps the swap-inclusive basis for
+    /// the baseline delta (both readings share it).
+    pub pinnable_free: Option<usize>,
     /// `gpu::sidecar_pending_reserve_bytes()` — memory a configured sidecar
     /// (Qwen-Image) will still allocate outside the arena and the KV pool.
     pub sidecar_reserve: usize,
@@ -92,8 +101,9 @@ pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
     };
 
     let total_budget = (i.total_mem as f64 * i.gpu_memory_utilization) as usize;
+    let pinnable_free = i.pinnable_free.unwrap_or(actual_free).min(actual_free);
     let pool = |sidecar: usize| {
-        let physical_cap = actual_free
+        let physical_cap = pinnable_free
             .saturating_sub(i.inference_reserve)
             .saturating_sub(sidecar);
         match i.kv_pool_override {
@@ -144,6 +154,7 @@ mod tests {
             inference_reserve: gib(2.6),
             kv_pool_override: None,
             sidecar_reserve: 0,
+            pinnable_free: None,
         }
     }
 
@@ -288,5 +299,73 @@ mod tests {
         let r = compute(&i);
         assert_eq!(r.source, UsedSource::Raw);
         assert_eq!(r.used_so_far, gib(119.7) - gib(60.0));
+    }
+
+    /// The 2026-10-03 deployment OOM kill, verbatim from the serve log:
+    /// lazy swap to the 27B next to the resident 26.7 GB image sidecar.
+    /// baseline 74.8 (re-armed post-unload, BEFORE the sidecar loaded),
+    /// free-now 52.7 = MemAvailable 45.0 + SwapFree 7.7, boot model's
+    /// inference reserve 4.6 GB standing in for the target's real 8.7 GB,
+    /// sidecar post-load reserve 7.0 GB.
+    fn oom_scene() -> BudgetInputs {
+        BudgetInputs {
+            total_mem: gib(119.7),
+            actual_free: gib(52.7),
+            baseline_free: Some(gib(74.8)),
+            manual_external_reserve: None,
+            gpu_memory_utilization: 0.90,
+            inference_reserve: gib(4.6),
+            kv_pool_override: None,
+            sidecar_reserve: gib(7.0),
+            pinnable_free: None,
+        }
+    }
+
+    #[test]
+    fn oom_replay_swap_inclusive_clamp_oversubscribes() {
+        // Pre-fix: the clamp counts SwapFree → 52.7 − 4.6 − 7.0 = 41.1 GB
+        // KV. With the real sibling allocations (~11.9 GB vs the 4.6
+        // reserve) that exceeded MemAvailable and the host OOM-killed the
+        // server at the first prefill.
+        let r = compute(&oom_scene());
+        assert!(
+            (as_gib(r.kv_budget) - 41.1).abs() < 0.05,
+            "{}",
+            as_gib(r.kv_budget)
+        );
+        let real_siblings = gib(11.9);
+        assert!(
+            r.kv_budget + real_siblings > gib(45.0),
+            "did not oversubscribe"
+        );
+    }
+
+    #[test]
+    fn oom_fix_pinnable_clamp_and_target_reserve_fit() {
+        // Post-fix: the clamp uses MemAvailable only (45.0) and the swap
+        // path recomputes the TARGET model's reserve (8.7 GB) → KV
+        // 45.0 − 8.7 − 7.0 = 29.3 GB; KV + real siblings fit MemAvailable
+        // with headroom.
+        let mut i = oom_scene();
+        i.pinnable_free = Some(gib(45.0));
+        i.inference_reserve = gib(8.7);
+        let r = compute(&i);
+        assert!(
+            (as_gib(r.kv_budget) - 29.3).abs() < 0.05,
+            "{}",
+            as_gib(r.kv_budget)
+        );
+        let real_siblings = gib(11.9);
+        assert!(r.kv_budget + real_siblings < gib(45.0));
+    }
+
+    #[test]
+    fn pinnable_free_never_raises_the_cap() {
+        // meminfo hiccup reporting more than the swap-inclusive reading:
+        // the clamp must not widen beyond actual_free.
+        let mut i = oom_scene();
+        i.pinnable_free = Some(gib(200.0));
+        let r = compute(&i);
+        assert!((as_gib(r.kv_budget) - 41.1).abs() < 0.05);
     }
 }

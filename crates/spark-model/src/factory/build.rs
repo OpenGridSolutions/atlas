@@ -306,6 +306,7 @@ pub fn build_model(
         inference_reserve,
         kv_pool_override: kv_pool_bytes_override,
         sidecar_reserve: spark_runtime::gpu::sidecar_pending_reserve_bytes(),
+        pinnable_free: spark_runtime::meminfo::read().map(|m| m.mem_available),
     };
     let budget = super::kv_budget::compute(&budget_inputs);
     if budget.sidecar_reserved < budget_inputs.sidecar_reserve {
