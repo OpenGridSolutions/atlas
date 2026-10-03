@@ -335,8 +335,13 @@ impl AtlasCudaBackend {
     /// unloaded); kernel lookups through this handle resolve that target's
     /// modules. Same CUDA context and default stream as every other handle.
     ///
-    /// The calling thread must have the CUDA context current (the swap
-    /// runs on the scheduler thread, which binds it).
+    /// Context-less callers (e.g. a sidecar init on a fresh
+    /// `spawn_blocking` thread) get the process-wide context bound on
+    /// demand — contexts may be current on any number of threads, so this
+    /// never disturbs the scheduler thread's binding. Relying on the
+    /// calling thread to already have it bound was a latent flake: tokio
+    /// blocking threads only had one when the pool happened to reuse a
+    /// thread that bound it earlier.
     pub fn new_for_target(
         target_key: &str,
         ptx_modules: &[(&'static str, &'static [u8])],
@@ -355,8 +360,18 @@ impl AtlasCudaBackend {
         let default_stream = registry.raw_stream();
         let mut cuda_ctx: u64 = 0;
         let status = unsafe { cuCtxGetCurrent(&mut cuda_ctx) };
-        if status != 0 || cuda_ctx == 0 {
-            bail!("cuCtxGetCurrent failed: status {status}, ctx {cuda_ctx:#x}");
+        if status != 0 {
+            bail!("cuCtxGetCurrent failed: status {status}");
+        }
+        if cuda_ctx == 0 {
+            cuda_ctx = STATS_CTX.load(std::sync::atomic::Ordering::Relaxed);
+            if cuda_ctx == 0 {
+                bail!("no CUDA context on this thread and none stored — boot first");
+            }
+            let status = unsafe { cuCtxSetCurrent(cuda_ctx) };
+            if status != 0 {
+                bail!("cuCtxSetCurrent(process context) failed: status {status}");
+            }
         }
         Ok(Self {
             default_stream,
