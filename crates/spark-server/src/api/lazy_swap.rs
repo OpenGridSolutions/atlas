@@ -221,6 +221,41 @@ async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
     }
 }
 
+/// Drain and unload the active arena model; the lazy-swap machinery
+/// reloads it on its next request. Serialized against swaps and admin
+/// operations by `admin_lock`. Returns `true` when a model was actually
+/// unloaded, `false` when the arena was already empty. Used by the image
+/// sidecar's memory-pressure eviction.
+pub async fn unload_active(ctx: &Arc<HotswapCtx>) -> anyhow::Result<bool> {
+    let _admin = ctx.admin_lock.lock().await;
+    match ctx.state() {
+        SwapState::NoModel => return Ok(false),
+        SwapState::Running => {}
+        other => anyhow::bail!(
+            "cannot evict the arena model: state is '{}' (a swap is in flight)",
+            other.as_str()
+        ),
+    }
+    ctx.set_state(SwapState::Draining);
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    ctx.scheduler
+        .push_control(crate::scheduler::ControlMsg::Unload { reply: reply_tx });
+    match tokio::time::timeout(std::time::Duration::from_secs(60), reply_rx).await {
+        Ok(Ok(Ok(_stats))) => {}
+        Ok(Ok(Err(e))) => anyhow::bail!("unload failed: {e:#}"),
+        Ok(Err(_)) => anyhow::bail!("unload reply channel dropped (scheduler died?)"),
+        Err(_) => anyhow::bail!("unload timed out after 60 s"),
+    }
+    // The scheduler flips to NoModel just after replying.
+    for _ in 0..100 {
+        if ctx.state() == SwapState::NoModel {
+            return Ok(true);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("arena did not reach 'unloaded' after the unload reply")
+}
+
 /// The Phase-K category 400: names the model's actual category, the
 /// endpoint that refused it, and the endpoint that serves it. Never a
 /// silent fallback.

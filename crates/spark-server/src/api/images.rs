@@ -130,7 +130,40 @@ pub fn pending_reserve_bytes() -> usize {
     gib_bytes(gib)
 }
 
-pub(super) async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
+/// Load the sidecar for the handlers. When the memory preflight refuses
+/// the load and an arena model is resident, evict it — the lazy-swap
+/// machinery reloads it on its next request, by then with the small
+/// post-load reserve — and retry ONCE without the preflight: the GB10
+/// driver pool hands freshly freed allocations to new CUDA allocations
+/// immediately while `MemAvailable` lags minutes behind, so a re-check
+/// would false-negative. The loader's per-shard OOM guard remains as the
+/// safety net.
+pub(super) async fn sidecar_with_eviction(
+    state: &AppState,
+    model_id: &str,
+) -> anyhow::Result<Arc<Sidecar>> {
+    let first = sidecar(model_id, false).await;
+    let Err(e) = first else {
+        return first;
+    };
+    let memory_bound = format!("{e:#}").contains("not enough free memory");
+    let Some(ctx) = state.hotswap.as_ref().filter(|_| memory_bound) else {
+        return Err(e);
+    };
+    tracing::warn!(
+        "image sidecar load refused by the memory preflight ({e:#}); evicting arena \
+         model '{}' to make room (it lazy-reloads on its next request)",
+        ctx.active_model().model_id,
+    );
+    if !super::lazy_swap::unload_active(ctx).await? {
+        // Arena was already empty — eviction cannot free anything, the
+        // preflight verdict stands.
+        return Err(e);
+    }
+    sidecar(model_id, true).await
+}
+
+pub(super) async fn sidecar(model_id: &str, skip_preflight: bool) -> anyhow::Result<Arc<Sidecar>> {
     let id = model_id.to_string();
     SIDECAR
         .get_or_try_init(|| async {
@@ -163,12 +196,20 @@ pub(super) async fn sidecar(model_id: &str) -> anyhow::Result<Arc<Sidecar>> {
                 backend.use_private_stream()?;
                 use spark_runtime::gpu::GpuBackend;
                 backend.bind_to_thread()?;
-                ensure_free_memory(
-                    &backend,
-                    gib_bytes(WEIGHTS_RESERVE_GIB)
-                        + QwenImage::working_bytes(DEFAULT_SIDE, DEFAULT_SIDE, 0),
-                    "to load the image pipeline",
-                )?;
+                if skip_preflight {
+                    tracing::info!(
+                        "image sidecar: skipping the MemAvailable preflight after arena \
+                         eviction (freed allocations are CUDA-reusable before MemAvailable \
+                         reflects them)"
+                    );
+                } else {
+                    ensure_free_memory(
+                        &backend,
+                        gib_bytes(WEIGHTS_RESERVE_GIB)
+                            + QwenImage::working_bytes(DEFAULT_SIDE, DEFAULT_SIDE, 0),
+                        "to load the image pipeline",
+                    )?;
+                }
                 let pipeline = QwenImage::load(&model_dir, Box::new(backend))?;
                 SIDECAR_WEIGHTS_BYTES.store(
                     pipeline.weights_bytes(),
@@ -456,7 +497,7 @@ pub async fn generations(
         Err(e) => return bad_request(e),
     };
 
-    let sc = match sidecar(&model_id).await {
+    let sc = match sidecar_with_eviction(&state, &model_id).await {
         Ok(s) => s,
         Err(e) => return failure("image sidecar init failed", &e),
     };

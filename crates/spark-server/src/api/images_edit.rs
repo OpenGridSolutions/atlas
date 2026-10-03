@@ -29,7 +29,7 @@ use spark_model::qwen_image::{self, EditImage, GenParams, QwenImage};
 use super::compact::openai_error_response;
 use super::images::{
     Background, DEFAULT_STEPS, MAX_PROMPT_TOKENS, MAX_STEPS, Sidecar, bad_request, check_dims,
-    dims_for_aspect, encode_image, ensure_free_memory, failure, parse_size, sidecar,
+    dims_for_aspect, encode_image, ensure_free_memory, failure, parse_size, sidecar_with_eviction,
 };
 use crate::main_modules::AppState;
 
@@ -313,7 +313,7 @@ pub async fn edits(State(state): State<Arc<AppState>>, req: Request) -> Response
         Err(e) => return bad_request(e),
     };
 
-    let sc: Arc<Sidecar> = match sidecar(&model_id).await {
+    let sc: Arc<Sidecar> = match sidecar_with_eviction(&state, &model_id).await {
         Ok(s) => s,
         Err(e) => return failure("image sidecar init failed", &e),
     };
