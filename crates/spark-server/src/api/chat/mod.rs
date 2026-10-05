@@ -74,7 +74,7 @@ pub async fn chat_completions(
     // active one BEFORE the per-request ModelRuntime snapshot inside
     // `chat_completions_inner` — otherwise this request would render with
     // the previous model's tokenizer.
-    let swap_ms = match super::lazy_swap::ensure_model_active(
+    match super::lazy_swap::prepare_model_gate(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
@@ -82,12 +82,32 @@ pub async fn chat_completions(
     )
     .await
     {
-        Ok(ms) => ms,
-        Err(resp) => return resp,
-    };
-
-    let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
-    super::lazy_swap::attach_swap_header(resp, swap_ms)
+        Ok(super::lazy_swap::GatePass::Ready(ms)) => {
+            let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+            super::lazy_swap::attach_swap_header(resp, ms)
+        }
+        Ok(super::lazy_swap::GatePass::Wait(ticket)) if req.stream => {
+            // WAIT-1/2/5: answer 200 + SSE immediately; the real handler
+            // runs once the dispatcher grants the ticket.
+            let keepalive = state.sse_keepalive;
+            super::queued_sse::respond(
+                ticket,
+                keepalive,
+                Box::pin(
+                    async move { chat_completions_inner(state, req_ctx, req, dump_seq).await },
+                ),
+            )
+        }
+        Ok(super::lazy_swap::GatePass::Wait(ticket)) => match ticket.wait().await {
+            crate::arena_sched::TicketOutcome::Granted => {
+                let ms = ticket.waited().as_millis() as u64;
+                let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+                super::lazy_swap::attach_swap_header(resp, Some(ms))
+            }
+            outcome => super::lazy_swap::wait_outcome_response(outcome, &req.model),
+        },
+        Err(resp) => resp,
+    }
 }
 
 /// Internal entry for the parsed-request path. Called by

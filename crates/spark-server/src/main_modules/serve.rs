@@ -1192,6 +1192,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         auto_compact_threshold: args.auto_compact,
         model_ready: model_ready.clone(),
         arena: arena_dispatcher,
+        sse_keepalive: std::time::Duration::from_secs(args.sse_keepalive_interval_s.max(1)),
+        nonstream_max_wait: std::time::Duration::from_secs(args.nonstream_max_wait_s.max(1)),
         request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,
         default_chat_template_kwargs: args

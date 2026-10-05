@@ -94,6 +94,10 @@ pub struct AppState {
     /// lazy multi-model mode is off — the gate then falls back to the
     /// legacy synchronous swap.
     pub arena: Option<std::sync::Arc<crate::arena_sched::ArenaDispatcher>>,
+    /// WAIT-2: keep-alive cadence for queued SSE streams.
+    pub sse_keepalive: std::time::Duration,
+    /// WAIT-3/4: hard queue-wait bound for non-streaming requests.
+    pub nonstream_max_wait: std::time::Duration,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Global kill switch for thinking / reasoning output. When true,

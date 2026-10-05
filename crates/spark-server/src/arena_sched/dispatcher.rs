@@ -167,6 +167,26 @@ impl ArenaDispatcher {
         decide(&active, &candidates, &self.cfg.decision)
     }
 
+    /// WAIT-3: coarse queue-wait estimate for `target` — the hysteresis
+    /// remainder of the resident model plus the target's T_swap. Zero
+    /// when the target is resident and no swap is in flight.
+    pub fn estimate_wait_secs(&self, target: &str) -> f64 {
+        let loaded = self.loaded_model();
+        if loaded.as_deref() == Some(target) && !self.swap_in_progress() {
+            return 0.0;
+        }
+        let est = crate::swap_costs::estimate(target, self.snapshot_bytes(target));
+        let t_swap = est.total(0.0).as_secs_f64();
+        let residency_hold = match loaded {
+            Some(_) => {
+                let resident = self.hotswap.active_since.lock().elapsed().as_secs_f64();
+                (self.cfg.decision.min_residency_factor * t_swap - resident).max(0.0)
+            }
+            None => 0.0,
+        };
+        residency_hold + t_swap
+    }
+
     fn snapshot_bytes(&self, model_id: &str) -> Option<u64> {
         let reg = self.hotswap.registered(model_id)?;
         std::fs::metadata(self.hotswap.snapshot_path_for(model_id, &reg.model_hash))

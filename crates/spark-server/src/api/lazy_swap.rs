@@ -31,21 +31,53 @@ use crate::main_modules::hotswap::{HotswapCtx, LazyPhase, ModelCategory, SwapSta
 /// Response-header name carrying the swap latency a request paid.
 pub const SWAP_HEADER: &str = "x-atlas-model-swap";
 
+/// Gate verdict of [`prepare_model_gate`]: either proceed now, or hold a
+/// queue ticket whose grant the caller must await (streaming handlers
+/// open their SSE response first — WAIT-1).
+pub enum GatePass {
+    Ready(Option<u64>),
+    Wait(crate::arena_sched::Ticket),
+}
+
 /// Ensure `requested` is the active model AND belongs to the endpoint's
-/// category (Plan.md Phase K), swapping to it if needed. Returns
-/// `Ok(None)` (pass-through), `Ok(Some(ms))` (this request triggered a
-/// swap that took `ms`), or `Err(response)` to short-circuit.
+/// category, swapping/queueing as needed. Returns `Ok(None)`
+/// (pass-through), `Ok(Some(ms))` (this request waited `ms` for the
+/// model), or `Err(response)` to short-circuit.
 pub async fn ensure_model_active(
     state: &Arc<AppState>,
     requested: &str,
     required: ModelCategory,
     streaming: bool,
 ) -> Result<Option<u64>, Response> {
+    match prepare_model_gate(state, requested, required, streaming).await? {
+        GatePass::Ready(ms) => Ok(ms),
+        GatePass::Wait(ticket) => match ticket.wait().await {
+            crate::arena_sched::TicketOutcome::Granted => {
+                Ok(Some(ticket.waited().as_millis() as u64))
+            }
+            crate::arena_sched::TicketOutcome::Expired => Err(wait_expired(requested)),
+            crate::arena_sched::TicketOutcome::Rejected => Err(swap_error(format!(
+                "model '{requested}' failed to load; the previous model was restored"
+            ))),
+        },
+    }
+}
+
+/// Validation + fast path + (with the dispatcher) ticket registration —
+/// everything that answers INSTANTLY. The potentially long wait is the
+/// returned ticket; without a dispatcher the legacy synchronous swap
+/// runs here and the result is `Ready`.
+pub async fn prepare_model_gate(
+    state: &Arc<AppState>,
+    requested: &str,
+    required: ModelCategory,
+    streaming: bool,
+) -> Result<GatePass, Response> {
     let Some(ctx) = state.hotswap.as_ref() else {
-        return Ok(None);
+        return Ok(GatePass::Ready(None));
     };
     if !ctx.lazy_enabled || requested.is_empty() {
-        return Ok(None);
+        return Ok(GatePass::Ready(None));
     }
     // Category gate BEFORE the active-model fast path — a mis-categorized
     // request must 400 even when its model happens to be resident.
@@ -92,7 +124,15 @@ pub async fn ensure_model_active(
             && !dispatcher.swap_in_progress()
         {
             dispatcher.queues.note_arrival(requested);
-            return Ok(None);
+            return Ok(GatePass::Ready(None));
+        }
+        // WAIT-3: a non-streaming client whose estimated wait already
+        // exceeds its hard bound gets the 503 BEFORE enqueueing.
+        if !streaming {
+            let est = dispatcher.estimate_wait_secs(requested);
+            if est > state.nonstream_max_wait.as_secs_f64() {
+                return Err(wait_estimate_exceeded(requested, est));
+            }
         }
         // Priority tier wiring lands with --trust-proxy-headers; until
         // then every queued request is normal-tier.
@@ -121,20 +161,12 @@ pub async fn ensure_model_active(
             }
         };
         dispatcher.poke();
-        return match ticket.wait().await {
-            crate::arena_sched::TicketOutcome::Granted => {
-                Ok(Some(ticket.waited().as_millis() as u64))
-            }
-            crate::arena_sched::TicketOutcome::Expired => Err(wait_expired(requested)),
-            crate::arena_sched::TicketOutcome::Rejected => Err(swap_error(format!(
-                "model '{requested}' failed to load; the previous model was restored"
-            ))),
-        };
+        return Ok(GatePass::Wait(ticket));
     }
 
     // Fast path: right model, ready to serve.
     if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
-        return Ok(None);
+        return Ok(GatePass::Ready(None));
     }
 
     // ── Legacy synchronous swap (no dispatcher): Idle | Swapping{to} ──
@@ -151,7 +183,7 @@ pub async fn ensure_model_active(
         // Re-check the fast path each round — a waited-on swap may have
         // just installed our target.
         if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
-            return Ok(None);
+            return Ok(GatePass::Ready(None));
         }
         enum Action {
             Claim(Arc<tokio::sync::Notify>),
@@ -186,7 +218,7 @@ pub async fn ensure_model_active(
                     "Lazy swap: request for '{requested}' triggered a model swap (from \
                      '{from}') — {ms} ms paid by this request"
                 );
-                return Ok(Some(ms));
+                return Ok(GatePass::Ready(Some(ms)));
             }
             Action::Wait(done) => {
                 // Notify is only an accelerator: a bounded timeout guards
@@ -329,6 +361,44 @@ fn category_mismatch(requested: &str, actual: ModelCategory, required: ModelCate
         "model_endpoint": actual.endpoint(),
     });
     (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
+}
+
+/// Map a non-granted ticket outcome onto its HTTP error response.
+pub(crate) fn wait_outcome_response(
+    outcome: crate::arena_sched::TicketOutcome,
+    requested: &str,
+) -> Response {
+    match outcome {
+        crate::arena_sched::TicketOutcome::Expired => wait_expired(requested),
+        _ => swap_error(format!(
+            "model '{requested}' failed to load; the previous model was restored"
+        )),
+    }
+}
+
+/// WAIT-3: predicted wait already exceeds the non-streaming bound.
+fn wait_estimate_exceeded(requested: &str, est_secs: f64) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "model '{requested}' is not resident and the estimated wait \
+                 ({est_secs:.0}s) exceeds the non-streaming bound; use streaming \
+                 or retry later"
+            ),
+            "type": "server_error",
+            "param": "model",
+            "code": "model_wait_too_long",
+        },
+    });
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(
+            axum::http::header::RETRY_AFTER,
+            format!("{:.0}", est_secs.clamp(5.0, 600.0)),
+        )],
+        axum::Json(body),
+    )
+        .into_response()
 }
 
 /// PRI-4 / WAIT-4 expiry: the queue wait bound was exceeded.

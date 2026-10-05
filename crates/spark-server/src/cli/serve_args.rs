@@ -647,6 +647,11 @@ pub struct ServeArgs {
     /// finish_reason="model_swap" (DRN-1; previously a fixed 2 s).
     #[arg(long, default_value_t = 2000)]
     pub drain_grace_ms: u64,
+
+    /// Keep-alive comment cadence for SSE streams waiting in an arena
+    /// queue (WAIT-2).
+    #[arg(long, default_value_t = 5)]
+    pub sse_keepalive_interval_s: u64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

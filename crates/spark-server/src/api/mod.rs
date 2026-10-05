@@ -46,6 +46,7 @@ pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod multimodal_input;
 pub mod ocr;
+pub mod queued_sse;
 pub mod rerank;
 pub mod responses;
 pub mod responses_stream;
