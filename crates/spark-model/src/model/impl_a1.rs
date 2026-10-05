@@ -146,6 +146,10 @@ impl TransformerModel {
             num_intermediates,
             gpu.as_ref(),
         )?);
+        // Capacity profile (MEM-9): fixed per-sequence SSM state bytes.
+        spark_runtime::kv_stats::publish_ssm_bytes_per_seq(
+            ssm_pool.num_ssm_layers * (ssm_pool.h_bytes + ssm_pool.conv_bytes),
+        );
 
         // SSM snapshot pool: Marconi prefix-cache slots + Phase-C
         // decode-rollback ring. The decode-rollback region is only sized

@@ -36,6 +36,8 @@ pub struct ArenaDispatcher {
     hotswap: Arc<HotswapCtx>,
     submit_notify: tokio::sync::Notify,
     swapping: AtomicBool,
+    /// Last decision + its inputs, for `/internal/state` (TEL-2/SCH-3).
+    last_decision: std::sync::Mutex<serde_json::Value>,
 }
 
 impl ArenaDispatcher {
@@ -50,6 +52,7 @@ impl ArenaDispatcher {
             hotswap,
             submit_notify: tokio::sync::Notify::new(),
             swapping: AtomicBool::new(false),
+            last_decision: std::sync::Mutex::new(serde_json::Value::Null),
         });
         let task = Arc::clone(&d);
         tokio::spawn(async move { task.run().await });
@@ -88,6 +91,16 @@ impl ArenaDispatcher {
                 if p + n > 0 {
                     tracing::debug!("arena-dispatcher: granted {p}+{n} waiters of resident '{m}'");
                 }
+            }
+
+            // PRI-6 gauges: live queue lengths per model and tier.
+            for (model, snap) in self.queues.snapshot_all() {
+                crate::metrics::QUEUE_LEN
+                    .with_label_values(&[model.as_str(), "priority"])
+                    .set(snap.priority_len as i64);
+                crate::metrics::QUEUE_LEN
+                    .with_label_values(&[model.as_str(), "normal"])
+                    .set(snap.normal_len as i64);
             }
 
             match self.evaluate(loaded.as_deref()) {
@@ -164,7 +177,56 @@ impl ArenaDispatcher {
             })
             .collect();
 
-        decide(&active, &candidates, &self.cfg.decision)
+        let decision = decide(&active, &candidates, &self.cfg.decision);
+        *self.last_decision.lock().expect("last decision") = serde_json::json!({
+            "decision": match &decision {
+                Decision::Stay => "stay".to_string(),
+                Decision::Swap { target, trigger, .. } =>
+                    format!("swap:{}:{}", target, trigger.as_str()),
+            },
+            "active": {
+                "model": loaded,
+                "n_active": active.n_active,
+                "n_queued": active.n_queued,
+                "lambda": active.lambda,
+                "resident_s": if loaded.is_some() { active.resident_secs } else { 0.0 },
+            },
+            "candidates": candidates.iter().map(|c| serde_json::json!({
+                "model": c.model_id,
+                "normal_queued": c.normal_queued,
+                "pressure_s": c.pressure_secs,
+                "oldest_wait_s": c.oldest_normal_wait_secs,
+                "t_swap_s": c.t_swap_secs,
+                "threshold_s": super::decision::threshold(&active, c.t_swap_secs, self.cfg.decision.kappa),
+            })).collect::<Vec<_>>(),
+        });
+        decision
+    }
+
+    /// `/internal/state` fragment: queues per model/tier + the last
+    /// decision with its inputs.
+    pub fn state_json(&self) -> serde_json::Value {
+        let queues: Vec<serde_json::Value> = self
+            .queues
+            .snapshot_all()
+            .into_iter()
+            .map(|(model, s)| {
+                serde_json::json!({
+                    "model": model,
+                    "priority_len": s.priority_len,
+                    "normal_len": s.normal_len,
+                    "pressure_s": s.normal_pressure_secs,
+                    "oldest_normal_wait_s": s.oldest_normal_wait_secs,
+                    "oldest_priority_wait_s": s.oldest_priority_wait_secs,
+                    "lambda": s.lambda,
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "swap_in_progress": self.swap_in_progress(),
+            "queues": queues,
+            "last_decision": self.last_decision.lock().expect("last decision").clone(),
+        })
     }
 
     /// WAIT-3: coarse queue-wait estimate for `target` — the hysteresis

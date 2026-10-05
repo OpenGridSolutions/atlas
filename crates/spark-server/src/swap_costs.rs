@@ -250,6 +250,15 @@ pub fn runtime_reserve_or(model_id: &str, estimate: usize) -> usize {
     }
 }
 
+/// `/internal/state`: all measured cost entries.
+pub fn entries_json() -> serde_json::Value {
+    with(|c| {
+        let g = c.entries.lock().expect("swap-costs lock");
+        serde_json::to_value(&g.entries).unwrap_or(serde_json::Value::Null)
+    })
+    .unwrap_or(serde_json::Value::Null)
+}
+
 /// Swap-cost estimate for the scheduler. `weights_bytes` feeds the
 /// MOD-7 fallback for never-measured models (snapshot file size).
 pub fn estimate(model_id: &str, weights_bytes: Option<u64>) -> SwapEstimate {

@@ -417,6 +417,11 @@ pub fn run(
             staging_in_flight = staging_in_flight.saturating_sub(1);
             match model.import_cached_blocks(&st.prompt, &mut st.chain, &st.payloads) {
                 Ok(covered) => {
+                    if covered > 0 {
+                        let bs = st.chain.block_size().max(1);
+                        crate::metrics::NVME_RESTORED_TOKENS_TOTAL
+                            .inc_by((st.payloads.len() * bs) as u64);
+                    }
                     if covered == 0 && !st.payloads.is_empty() {
                         // Pool pressure or RAM-match drift — don't re-stage
                         // this wave; the request prefills normally.

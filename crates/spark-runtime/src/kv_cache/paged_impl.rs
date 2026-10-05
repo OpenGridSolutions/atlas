@@ -67,6 +67,10 @@ impl PagedKvCache {
         // /v1/stats residency counters (Plan.md Phase S): exact device
         // bytes this pool holds + block counts, cleared again on drop.
         crate::kv_stats::publish_pool(num_blocks, total_bytes);
+        crate::kv_stats::publish_pool_geometry(
+            config.block_size,
+            total_bytes.checked_div(num_blocks).unwrap_or(0),
+        );
 
         Ok(Self {
             layers,

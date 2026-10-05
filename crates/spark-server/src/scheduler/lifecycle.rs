@@ -78,6 +78,9 @@ pub fn finish_sequence_with_reason(
         0.0
     };
     let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;
+    if n > 0 && tps.is_finite() {
+        crate::metrics::TOKENS_PER_SECOND.observe(tps);
+    }
     tracing::info!("Done: {n} tokens ({reason}) {tps:.1} tok/s, TTFT={ttft_ms:.1}ms");
     // ATLAS_MEM_DEBUG: snapshot the block holdings before the release so
     // on_finish can report released/freed/kept-by-cache. Only measured when

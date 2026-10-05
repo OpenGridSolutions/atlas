@@ -167,6 +167,7 @@ pub(crate) async fn require_auth_middleware(
     // are management operations and must respect --require-auth (plan §2).
     let needs_auth = path.starts_with("/v1/")
         || path.starts_with("/admin")
+        || path.starts_with("/internal")
         || path == "/tokenize"
         || path == "/detokenize";
     if !needs_auth {

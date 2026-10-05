@@ -153,7 +153,10 @@ impl KvTier {
         let mut out = Vec::new();
         for (i, key) in keys.iter().enumerate() {
             match store.get(key, Kind::Kv) {
-                Some(rec) => out.push((start_block + i, rec.payload)),
+                Some(rec) => {
+                    crate::metrics::NVME_READ_BYTES_TOTAL.inc_by(rec.payload.len() as u64);
+                    out.push((start_block + i, rec.payload));
+                }
                 None => break,
             }
         }
@@ -317,6 +320,7 @@ impl KvTier {
     }
 
     fn submit(&self, job: WriteJob) {
+        crate::metrics::NVME_WRITE_BYTES_TOTAL.inc_by(job.payload.len() as u64);
         if let Some(rejected) = self.writer.enqueue(job) {
             let mut retry = self.retry.lock().expect("retry lock");
             let bytes = rejected.payload.len() as u64;

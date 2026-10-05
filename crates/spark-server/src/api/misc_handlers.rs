@@ -143,6 +143,25 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
+    // TEL-2: swap lifecycle states. `draining`/`swapping` answer 200 —
+    // the server is alive and queueing; readiness gating for traffic is
+    // the dispatcher's job, not the health check's.
+    if let Some(ctx) = state.hotswap.as_ref() {
+        use crate::main_modules::hotswap::SwapState;
+        match ctx.state() {
+            SwapState::Draining => {
+                return Json(serde_json::json!({"status": "draining"})).into_response();
+            }
+            SwapState::Loading => {
+                return Json(serde_json::json!({"status": "swapping"})).into_response();
+            }
+            SwapState::NoModel if ctx.lazy_enabled => {
+                // Preseeded idle arena: requests lazy-load on demand.
+                return Json(serde_json::json!({"status": "ready", "model": null})).into_response();
+            }
+            _ => {}
+        }
+    }
     if state.model_ready.load(std::sync::atomic::Ordering::Relaxed) {
         Json(serde_json::json!({"status": "ready", "model": &state.runtime().model_name}))
             .into_response()

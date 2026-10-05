@@ -16,6 +16,9 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static TOTAL_BLOCKS: AtomicUsize = AtomicUsize::new(0);
+static BLOCK_SIZE_TOKENS: AtomicUsize = AtomicUsize::new(0);
+static BYTES_PER_BLOCK: AtomicUsize = AtomicUsize::new(0);
+static SSM_BYTES_PER_SEQ: AtomicUsize = AtomicUsize::new(0);
 static FREE_BLOCKS: AtomicUsize = AtomicUsize::new(0);
 static POOL_BYTES: AtomicUsize = AtomicUsize::new(0);
 // What the LAST KV-budget computation saw (factory::build): the free-now
@@ -44,6 +47,27 @@ pub fn publish_pool(total_blocks: usize, pool_bytes: usize) {
 }
 
 /// Called after every `free_blocks` mutation with the current length.
+/// Pool geometry for the capacity profile (MEM-9): tokens per block and
+/// all-layer bytes per block.
+pub fn publish_pool_geometry(block_size_tokens: usize, bytes_per_block: usize) {
+    BLOCK_SIZE_TOKENS.store(block_size_tokens, Ordering::Relaxed);
+    BYTES_PER_BLOCK.store(bytes_per_block, Ordering::Relaxed);
+}
+
+/// Fixed per-sequence SSM state bytes (S_ssm, 0 for attention-only).
+pub fn publish_ssm_bytes_per_seq(bytes: usize) {
+    SSM_BYTES_PER_SEQ.store(bytes, Ordering::Relaxed);
+}
+
+/// `(block_size_tokens, bytes_per_block, ssm_bytes_per_seq)`.
+pub fn pool_geometry() -> (usize, usize, usize) {
+    (
+        BLOCK_SIZE_TOKENS.load(Ordering::Relaxed),
+        BYTES_PER_BLOCK.load(Ordering::Relaxed),
+        SSM_BYTES_PER_SEQ.load(Ordering::Relaxed),
+    )
+}
+
 pub fn set_free_blocks(n: usize) {
     FREE_BLOCKS.store(n, Ordering::Relaxed);
 }

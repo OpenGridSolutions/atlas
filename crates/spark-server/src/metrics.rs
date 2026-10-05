@@ -126,3 +126,54 @@ lazy_static! {
             &["detector"]
         ).unwrap();
 }
+
+// ── NVMe tier + pressure scheduler metrics (TEL-6, PRI-6) ──
+lazy_static::lazy_static! {
+    /// Decode throughput per finished request (tokens/s).
+    pub static ref TOKENS_PER_SECOND: prometheus::Histogram = prometheus::register_histogram!(
+        "atlas_tokens_per_second",
+        "Decode tokens per second per finished request",
+        vec![1.0, 2.0, 5.0, 10.0, 20.0, 40.0, 80.0, 160.0, 320.0]
+    )
+    .unwrap();
+
+    /// Queue wait before a model grant, per model and tier (PRI-6).
+    pub static ref QUEUE_WAIT_SECONDS: prometheus::HistogramVec =
+        prometheus::register_histogram_vec!(
+            "atlas_queue_wait_seconds",
+            "Arena queue wait until grant",
+            &["model", "tier"],
+            vec![0.05, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 60.0, 120.0, 300.0]
+        )
+        .unwrap();
+
+    /// Live queue lengths per model and tier (PRI-6).
+    pub static ref QUEUE_LEN: prometheus::IntGaugeVec = prometheus::register_int_gauge_vec!(
+        "atlas_queue_len",
+        "Arena queue length",
+        &["model", "tier"]
+    )
+    .unwrap();
+
+    /// Bytes handed to the NVMe block-store write queue (TEL-6).
+    pub static ref NVME_WRITE_BYTES_TOTAL: IntCounter = register_int_counter!(
+        "atlas_nvme_write_bytes_total",
+        "Payload bytes enqueued to the NVMe block store"
+    )
+    .unwrap();
+
+    /// Bytes read back from the NVMe block store (TEL-6).
+    pub static ref NVME_READ_BYTES_TOTAL: IntCounter = register_int_counter!(
+        "atlas_nvme_read_bytes_total",
+        "Payload bytes restored from the NVMe block store"
+    )
+    .unwrap();
+
+    /// Tokens whose KV entered the RAM cache from the NVMe store — the
+    /// numerator of the restore hit rate (÷ atlas_prompt_tokens_total).
+    pub static ref NVME_RESTORED_TOKENS_TOTAL: IntCounter = register_int_counter!(
+        "atlas_nvme_restored_tokens_total",
+        "Prompt tokens restored from the NVMe tier into the RAM cache"
+    )
+    .unwrap();
+}

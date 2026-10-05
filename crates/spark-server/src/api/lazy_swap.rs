@@ -54,6 +54,9 @@ pub async fn ensure_model_active(
         GatePass::Ready(ms) => Ok(ms),
         GatePass::Wait(ticket) => match ticket.wait().await {
             crate::arena_sched::TicketOutcome::Granted => {
+                crate::metrics::QUEUE_WAIT_SECONDS
+                    .with_label_values(&[requested, if priority { "priority" } else { "normal" }])
+                    .observe(ticket.waited().as_secs_f64());
                 Ok(Some(ticket.waited().as_millis() as u64))
             }
             crate::arena_sched::TicketOutcome::Expired => Err(wait_expired(requested)),
