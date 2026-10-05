@@ -103,17 +103,17 @@ impl ArenaQueues {
         req: InferenceRequest,
         priority: bool,
         streaming: bool,
-    ) -> Result<(), (InferenceRequest, SubmitError)> {
+    ) -> Result<(), Box<(InferenceRequest, SubmitError)>> {
         let now = Instant::now();
         let mut g = self.inner.lock().expect("arena queues lock");
         let q = g.entry(model.to_string()).or_default();
         if q.len() >= self.max_queue_length {
-            return Err((
+            return Err(Box::new((
                 req,
                 SubmitError::QueueFull {
                     retry_after_secs: 5,
                 },
-            ));
+            )));
         }
         q.observe_arrival(now, self.ewma_alpha);
         let item = QueuedRequest {
@@ -321,7 +321,10 @@ mod tests {
             .map_err(|_| ())
             .unwrap();
         let err = q.submit("m", dummy_req(), false, false);
-        assert!(matches!(err, Err((_, SubmitError::QueueFull { .. }))));
+        assert!(matches!(
+            err.map_err(|b| b.1),
+            Err(SubmitError::QueueFull { .. })
+        ));
         // Other models are unaffected.
         q.submit("other", dummy_req(), false, false)
             .map_err(|_| ())
