@@ -295,7 +295,6 @@ impl TransformerModel {
         } else {
             tokens.len()
         };
-        let cache_tokens = &tokens[..cache_tokens_len];
         let cache_block_table = &seq.block_table[..cache_blocks.min(seq.block_table.len())];
         let cache_disk_block_ids = if seq.disk_block_ids.is_empty() {
             &seq.disk_block_ids[..]
@@ -321,12 +320,12 @@ impl TransformerModel {
         } else if cap_applied {
             // Cap forced — never attach the full-length snapshot to a
             // truncated tree (would be unreachable + leak a pool slot).
-            if !self.tokens_have_vision_pad(cache_tokens) {
+            {
+                let keys = seq.block_keys.view(tokens, cache_tokens_len);
                 let acquired = self.prefix_cache.insert(
-                    cache_tokens,
+                    &keys,
                     cache_block_table,
                     cache_disk_block_ids,
-                    bs,
                     seq.cached_prefix_tokens.min(cache_tokens_len),
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
@@ -375,7 +374,9 @@ impl TransformerModel {
                 }
             };
             if let Some(snap_id) = snap_result {
-                if self.tokens_have_vision_pad(tokens) {
+                if !seq.block_keys.is_cacheable() {
+                    // Media without digests: free the snapshot instead of
+                    // leaking its slot (the radix insert would no-op).
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     tracing::info!(
@@ -391,11 +392,11 @@ impl TransformerModel {
                     // (lm_head reads it without mutating).
                     self.ssm_snapshots
                         .save_hidden(snap_id, normed, self.gpu.as_ref(), stream)?;
+                    let keys = seq.block_keys.view(tokens, tokens.len());
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
-                        tokens,
+                        &keys,
                         &seq.block_table,
                         &seq.disk_block_ids,
-                        bs,
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
@@ -405,22 +406,22 @@ impl TransformerModel {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else {
+                let keys = seq.block_keys.view(tokens, tokens.len());
                 let acquired = self.prefix_cache.insert(
-                    tokens,
+                    &keys,
                     &seq.block_table,
                     &seq.disk_block_ids,
-                    bs,
                     seq.cached_prefix_tokens,
                 );
                 super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else {
+            let keys = seq.block_keys.view(tokens, tokens.len());
             let acquired = self.prefix_cache.insert(
-                tokens,
+                &keys,
                 &seq.block_table,
                 &seq.disk_block_ids,
-                bs,
                 seq.cached_prefix_tokens,
             );
             super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);

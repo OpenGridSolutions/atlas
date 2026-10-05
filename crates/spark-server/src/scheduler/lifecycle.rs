@@ -89,7 +89,7 @@ pub fn finish_sequence_with_reason(
     // Cache the full sequence (prompt + generated) in the prefix cache.
     // Must happen BEFORE free_sequence() so block indices are still valid.
     // Enables multi-turn sessions to reuse KV cache for prior assistant responses.
-    model.cache_sequence(&a.seq);
+    model.cache_sequence(&mut a.seq);
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("free_sequence: {e:#}");
     }
@@ -218,9 +218,13 @@ pub fn swap_out_sequence(
     let slot_idx = a.seq.slot_idx as u32;
     model.free_sequence(&mut a.seq)?;
     let _ = model.ep_broadcast_cmd_for_seq(slot_idx, 0xFFFFFFF1);
+    // Keep the key chain (free_sequence already released its cache refs);
+    // the resumed sequence needs the same identity, media digests included.
+    let block_keys = std::mem::take(&mut a.seq.block_keys);
 
     Ok(SwappedSeq {
         tokens,
+        block_keys,
         session_hash: a.session_hash,
         seq_len,
         num_blocks,
@@ -302,6 +306,7 @@ pub fn resume_swapped_seq(
 
     // Restore CPU-side metadata.
     seq.tokens = s.tokens;
+    seq.block_keys = s.block_keys;
     seq.seq_len = s.seq_len;
 
     // ATLAS_MEM_DEBUG: fresh guard (fresh ID, resumed=true) — the pre-swap

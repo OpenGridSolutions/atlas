@@ -4,9 +4,12 @@
 //!
 //! Snapshots are keyed by (session_hash, token_count, prefix_hash) so the
 //! same prompt across requests can hit a cached SSM state without going
-//! through the radix tree.
+//! through the radix tree. `prefix_hash` is the folded chain key at the
+//! snapshot boundary ([`crate::block_keys::BlockKey::fold_u64`]) — it
+//! covers token IDs AND media digests, so a vision prompt's snapshot can
+//! never be resurrected for a different image (issue #58).
 
-use super::hash_token_prefix;
+use crate::block_keys::BlockKeysView;
 
 pub(super) struct SnapshotEntry {
     snapshot_id: usize,
@@ -74,7 +77,7 @@ impl SsmSnapshotIndex {
     /// Find deepest snapshot matching session within matched_tokens range.
     pub(super) fn lookup(
         &mut self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         matched_tokens: usize,
         session_hash: u64,
     ) -> Option<(usize, usize)> {
@@ -90,7 +93,7 @@ impl SsmSnapshotIndex {
             if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
                 continue;
             }
-            let h = hash_token_prefix(tokens, entry.token_count);
+            let h = keys.key_at(entry.token_count).fold_u64();
             if h != entry.prefix_hash {
                 continue;
             }

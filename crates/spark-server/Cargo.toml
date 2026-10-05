@@ -44,6 +44,7 @@ spark-model = { path = "../spark-model", default-features = false }
 spark-comm = { path = "../spark-comm", default-features = false }
 spark-storage = { path = "../spark-storage", default-features = false }
 anyhow = { workspace = true }
+blake3 = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

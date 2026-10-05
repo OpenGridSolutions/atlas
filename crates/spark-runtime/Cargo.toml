@@ -121,6 +121,7 @@ half = "2"
 parking_lot = { workspace = true }
 postcard = { version = "1", features = ["alloc"] }
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
+blake3 = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

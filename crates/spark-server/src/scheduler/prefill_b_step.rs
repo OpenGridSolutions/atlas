@@ -116,6 +116,11 @@ pub fn prefill_request(
         }
     };
     seq.session_hash = req_session_hash;
+    // Chained block keys (KV-3/KV-4) — see prefill_a_step.
+    {
+        let media_digests = crate::api::inference_impl::media_digests_of(&image_pixels);
+        model.init_block_keys(&mut seq, &prompt_tokens, &media_digests);
+    }
 
     // Guard: free SSM slot on any error after allocation (Bug #16).
     // (first token, probed logits, pooled hidden) — multiclass 1.3.

@@ -2,14 +2,17 @@
 
 //! Radix tree prefix cache for KV block reuse.
 //!
-//! Token sequences are chunked at `block_size` granularity. Each node in
-//! the tree corresponds to one KV cache block. Lookup walks the tree
-//! matching block-aligned chunks, returning cached physical block indices.
+//! Nodes are keyed by chained 128-bit block keys ([`crate::block_keys`]):
+//! one node per sealed KV block, children addressed by the child block's
+//! chain key. Because the key covers the entire causal prefix INCLUDING
+//! media digests, key equality implies content equality — vision prompts
+//! are cacheable without the former pad-token bypass (issue #58).
 //!
 //! Thread-safe via `Mutex<RadixTreeInner>`.
 
 use parking_lot::Mutex;
 
+use crate::block_keys::BlockKeysView;
 use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
@@ -20,18 +23,6 @@ mod tests;
 
 use inner::RadixTreeInner;
 use snapshot::SsmSnapshotIndex;
-
-/// FNV-1a-ish stable hash for the first `count` tokens — used to key
-/// snapshots independently of the radix tree (allows the same prefix
-/// hash to be reproduced across requests).
-pub(crate) fn hash_token_prefix(tokens: &[u32], count: usize) -> u64 {
-    let mut h: u64 = 0xcbf29ce484222325; // FNV-1a basis
-    for &t in &tokens[..count] {
-        h ^= t as u64;
-        h = h.wrapping_mul(0x100000001b3);
-    }
-    h
-}
 
 /// Thread-safe radix tree prefix cache.
 ///
@@ -59,13 +50,22 @@ impl RadixTree {
 }
 
 impl PrefixCache for RadixTree {
-    fn lookup(&self, tokens: &[u32], block_size: usize, session_hash: u64) -> PrefixMatch {
+    fn lookup(&self, keys: &BlockKeysView<'_>, session_hash: u64) -> PrefixMatch {
+        // Uncacheable chain (media without digests / uninitialised):
+        // behave as a miss WITHOUT polluting hit/miss counters — these
+        // sequences are outside the cache's universe by design.
+        if !keys.cacheable() {
+            return PrefixMatch::empty();
+        }
+        let block_size = keys.block_size();
+        let tail_len = keys.total_tokens() % block_size;
         // Phase 1: walk tree (lock inner, then release)
         let (matched_blocks, matched_disk_block_ids, matched_tokens) = {
             let mut inner = self.inner.lock();
-            let (blocks, disk, matched) = inner.walk(tokens, block_size);
+            let (blocks, disk, matched) =
+                inner.walk(keys.full_keys(), keys.tail_key(), tail_len, block_size);
             if matched > 0 {
-                inner.inc_refs(tokens, block_size, matched);
+                inner.inc_refs(keys.full_keys(), matched / block_size);
                 crate::prefix_cache::record_cache_hit(matched);
             } else {
                 crate::prefix_cache::record_cache_miss();
@@ -75,7 +75,7 @@ impl PrefixCache for RadixTree {
         // Phase 2: snapshot lookup (lock snapshot_index, inner NOT held)
         let (ssm_snapshot, ssm_snapshot_tokens) = if matched_tokens > 0 {
             let mut idx = self.snapshot_index.lock();
-            match idx.lookup(tokens, matched_tokens, session_hash) {
+            match idx.lookup(keys, matched_tokens, session_hash) {
                 Some((snap_id, tok_count)) => (Some(snap_id), tok_count),
                 None => (None, 0),
             }
@@ -100,72 +100,92 @@ impl PrefixCache for RadixTree {
         }
     }
 
-    fn peek_matched_tokens(&self, tokens: &[u32], block_size: usize) -> usize {
-        self.inner.lock().walk(tokens, block_size).2
+    fn peek_matched_tokens(&self, keys: &BlockKeysView<'_>) -> usize {
+        if !keys.cacheable() {
+            return 0;
+        }
+        let block_size = keys.block_size();
+        let tail_len = keys.total_tokens() % block_size;
+        self.inner
+            .lock()
+            .walk(keys.full_keys(), keys.tail_key(), tail_len, block_size)
+            .2
     }
 
     fn insert(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         block_table: &[u32],
         disk_block_ids: &[u32],
-        block_size: usize,
         matched_tokens: usize,
     ) -> Vec<u32> {
+        if !keys.cacheable() {
+            return Vec::new();
+        }
         self.inner.lock().insert(
-            tokens,
+            keys.full_keys(),
+            keys.tail_key(),
             block_table,
             disk_block_ids,
-            block_size,
+            keys.block_size(),
             matched_tokens,
         )
     }
 
     fn insert_with_snapshot(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         block_table: &[u32],
         disk_block_ids: &[u32],
-        block_size: usize,
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
     ) -> (Option<usize>, Vec<u32>) {
+        if !keys.cacheable() {
+            return (None, Vec::new());
+        }
         // Phase 1: insert tree nodes (lock inner, then release)
         let newly_acquired = self.inner.lock().insert(
-            tokens,
+            keys.full_keys(),
+            keys.tail_key(),
             block_table,
             disk_block_ids,
-            block_size,
+            keys.block_size(),
             matched_tokens,
         );
         // Phase 2: register snapshot in index (lock snapshot_index, inner NOT held)
-        let prefix_hash = hash_token_prefix(tokens, tokens.len());
+        let prefix_hash = keys.key_at(keys.total_tokens()).fold_u64();
         let mut idx = self.snapshot_index.lock();
-        let displaced = idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len());
+        let displaced = idx.insert(prefix_hash, snapshot_id, session_hash, keys.total_tokens());
         (displaced, newly_acquired)
     }
 
     fn insert_intermediate_snapshot(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         _block_table: &[u32],
         _disk_block_ids: &[u32],
-        _block_size: usize,
         snapshot_id: usize,
         session_hash: u64,
         _matched_tokens: usize,
     ) -> Option<usize> {
+        if !keys.cacheable() {
+            return None;
+        }
         // Intermediate snapshots go directly into the index with the correct
-        // token boundary (tokens.len()). Tree nodes are already inserted by
-        // a prior `insert()` call, which handled the ref_count bookkeeping.
-        let prefix_hash = hash_token_prefix(tokens, tokens.len());
+        // token boundary (keys.total_tokens()). Tree nodes are already
+        // inserted by a prior `insert()` call, which handled the ref_count
+        // bookkeeping.
+        let prefix_hash = keys.key_at(keys.total_tokens()).fold_u64();
         let mut idx = self.snapshot_index.lock();
-        idx.insert(prefix_hash, snapshot_id, session_hash, tokens.len())
+        idx.insert(prefix_hash, snapshot_id, session_hash, keys.total_tokens())
     }
 
-    fn release(&self, tokens: &[u32], block_size: usize) {
-        self.inner.lock().dec_refs(tokens, block_size);
+    fn release(&self, keys: &BlockKeysView<'_>) {
+        if !keys.cacheable() {
+            return;
+        }
+        self.inner.lock().dec_refs(keys.full_keys());
     }
 
     fn evict(&self, num_blocks: usize) -> EvictedBlocks {

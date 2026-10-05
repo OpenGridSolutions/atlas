@@ -47,6 +47,16 @@ impl InferenceRequest {
         }
     }
 
+    /// BLAKE3 digest per preprocessed image (KV-4). Hashes the patchified
+    /// pixel data plus the grid — a pure function of the raw media bytes
+    /// and every preprocessing parameter (resize, crop, patch/merge
+    /// size), so a change in either yields a different digest. Consumed
+    /// by `Model::init_block_keys` so the chained block keys diverge at
+    /// the first media block (issue #58).
+    pub fn media_digests(&self) -> Vec<spark_runtime::block_keys::MediaDigest> {
+        media_digests_of(self.image_pixels_ref())
+    }
+
     /// Whether this request carries preprocessed image embeddings.
     pub fn has_image_pixels(&self) -> bool {
         match self {
@@ -72,6 +82,10 @@ impl InferenceRequest {
             InferenceRequest::Streaming { image_pixels, .. } => image_pixels.as_slice(),
         }
     }
+
+    /// See [`InferenceRequest::media_digests`].
+    #[allow(dead_code)]
+    fn _media_digests_doc_anchor() {}
 
     /// Per-request stop tokens, consumed by the scheduler.
     pub fn take_stop_tokens(&mut self) -> Vec<u32> {
@@ -411,4 +425,25 @@ pub(crate) fn extract_thinking(
     } else {
         (None, text.to_string())
     }
+}
+
+/// BLAKE3 digest per preprocessed image — see
+/// [`InferenceRequest::media_digests`].
+pub fn media_digests_of(
+    images: &[(Vec<f32>, usize, usize)],
+) -> Vec<spark_runtime::block_keys::MediaDigest> {
+    images
+        .iter()
+        .map(|(pixels, grid_h, grid_w)| {
+            let mut h = blake3::Hasher::new();
+            h.update(&(*grid_h as u64).to_le_bytes());
+            h.update(&(*grid_w as u64).to_le_bytes());
+            // SAFETY: plain f32 buffer reinterpreted as bytes for hashing.
+            let bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4)
+            };
+            h.update(bytes);
+            *h.finalize().as_bytes()
+        })
+        .collect()
 }

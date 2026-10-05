@@ -136,6 +136,10 @@ pub fn start_chunked_prefill(
         }
     };
     seq.session_hash = req_session_hash;
+    // Chained block keys (KV-3/KV-4): digests of the request's images make
+    // vision prompts cacheable; text prompts get a pure token chain.
+    let media_digests = crate::api::inference_impl::media_digests_of(&image_pixels);
+    model.init_block_keys(&mut seq, &prompt_tokens, &media_digests);
 
     // Deferred co-dispatch: setup + EP broadcast, then return InProgress at
     // chunk 0 WITHOUT prefilling — the batched step packs >=2 streams into one

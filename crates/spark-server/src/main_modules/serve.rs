@@ -449,6 +449,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     gpu.set_alloc_tracking(true);
     let model = serve_phases::build_model(
         &args,
+        &boot_model_id,
         &config,
         &store,
         gpu,
@@ -839,6 +840,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let model = match serve_phases::build_model(
                 &reload_args,
+                &prep.model_id,
                 &config,
                 &store,
                 gpu,

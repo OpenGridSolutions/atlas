@@ -175,6 +175,7 @@ impl TransformerModel {
         let num_attn_layers = self.config.num_attention_layers();
         Ok(SequenceState {
             tokens: Vec::new(),
+            block_keys: Default::default(),
             block_table: Vec::new(),
             seq_len: 0,
             layer_states,

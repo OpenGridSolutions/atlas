@@ -22,12 +22,10 @@ impl TransformerModel {
         kv_cache: &mut PagedKvCache,
         stream: u64,
     ) -> Result<(usize, bool)> {
-        let bs = kv_cache.block_size();
         if chunk_start == 0 {
-            let mut prefix_match = if self.tokens_have_vision_pad(tokens) {
-                spark_runtime::prefix_cache::PrefixMatch::empty()
-            } else {
-                self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+            let mut prefix_match = {
+                let keys = seq.block_keys.view(tokens, tokens.len());
+                self.prefix_cache.lookup(&keys, seq.session_hash)
             };
             // F83 (2026-04-30): on EP>1, head and worker have
             // independent local prefix caches whose match counts can
@@ -54,11 +52,13 @@ impl TransformerModel {
                 let local = prefix_match.matched_tokens as u32;
                 let agreed = self.ep_min_u32(local)? as usize;
                 if agreed < prefix_match.matched_tokens {
-                    self.prefix_cache.release(tokens, bs);
+                    {
+                        let keys = seq.block_keys.view(tokens, tokens.len());
+                        self.prefix_cache.release(&keys);
+                    }
                     if agreed > 0 {
-                        prefix_match =
-                            self.prefix_cache
-                                .lookup(&tokens[..agreed], bs, seq.session_hash);
+                        let keys = seq.block_keys.view(tokens, agreed);
+                        prefix_match = self.prefix_cache.lookup(&keys, seq.session_hash);
                     } else {
                         prefix_match = spark_runtime::prefix_cache::PrefixMatch::empty();
                     }

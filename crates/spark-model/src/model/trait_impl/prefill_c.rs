@@ -155,10 +155,11 @@ impl TransformerModel {
 
         // ── 2. Prefix cache lookup + block allocation for full sequence ──
         let bs = kv_cache.block_size();
-        let prefix_match = if self.tokens_have_vision_pad(tokens) {
-            spark_runtime::prefix_cache::PrefixMatch::empty()
-        } else {
-            self.prefix_cache.lookup(tokens, bs, seq.session_hash)
+        // Chained-key lookup (KV-3): media digests are in the keys, so
+        // vision prompts are cacheable without the former pad-token gate.
+        let prefix_match = {
+            let keys = seq.block_keys.view(tokens, tokens.len());
+            self.prefix_cache.lookup(&keys, seq.session_hash)
         };
         let matched = prefix_match.matched_tokens;
         seq.cached_prefix_tokens = matched;

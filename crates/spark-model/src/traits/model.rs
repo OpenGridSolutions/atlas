@@ -225,6 +225,25 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// Install the per-model block-key seed `k_0 = H(model_hash ‖ layout_hash)`
+    /// (KV-3/KV-5). Called once by the server after `build_model`; the
+    /// default is a no-op (mock models keep the inert zero seed).
+    fn set_block_key_seed(&mut self, _seed: spark_runtime::block_keys::BlockKey) {}
+
+    /// Initialise the sequence's chained block keys (KV-3) for `prompt_tokens`.
+    /// `media_digests` are the BLAKE3 digests of the prompt's images in
+    /// order (one per placeholder run); an image prompt without digests
+    /// yields an uncacheable chain — same behaviour as the former
+    /// vision-pad cache bypass. Default: no-op (inert chain — the
+    /// sequence stays invisible to the prefix cache).
+    fn init_block_keys(
+        &self,
+        _seq: &mut SequenceState,
+        _prompt_tokens: &[u32],
+        _media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) {
+    }
+
     /// Copy logits from device to host buffer (for CPU-side sampling).
     ///
     /// `logits_ptr` points to `[vocab_size]` BF16 values on device.
@@ -352,7 +371,7 @@ pub trait Model: Send + Sync {
     /// Insert the full token sequence (prompt + generated) into the prefix
     /// cache. Call BEFORE `free_sequence()` (block indices must still be
     /// valid). Benefits multi-turn agentic sessions that resend full history.
-    fn cache_sequence(&self, seq: &SequenceState);
+    fn cache_sequence(&self, seq: &mut SequenceState);
 
     /// #155 iter3: during decode, save a block-aligned Marconi SSM snapshot
     /// at checkpoint-interval boundaries so the NEXT turn's warm prefix-cache

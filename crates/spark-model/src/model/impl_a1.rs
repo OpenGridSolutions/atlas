@@ -450,6 +450,7 @@ impl TransformerModel {
             verify4_graph: Mutex::new(std::collections::HashMap::new()),
             verify_kgamma_graph: Mutex::new(std::collections::HashMap::new()),
             prefix_cache,
+            block_key_seed: spark_runtime::block_keys::BlockKey::ZERO,
             secondary_stream,
             secondary_event,
             snapshot_event,

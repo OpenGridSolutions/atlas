@@ -167,6 +167,17 @@ impl Model for TransformerModel {
     fn alloc_sequence(&self) -> Result<SequenceState> {
         self.alloc_sequence_dispatch()
     }
+    fn set_block_key_seed(&mut self, seed: spark_runtime::block_keys::BlockKey) {
+        self.block_key_seed = seed;
+    }
+    fn init_block_keys(
+        &self,
+        seq: &mut SequenceState,
+        prompt_tokens: &[u32],
+        media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) {
+        self.init_block_keys_dispatch(seq, prompt_tokens, media_digests)
+    }
     fn copy_logits_to_host(&self, logits_ptr: DevicePtr, dst: &mut [u8]) -> Result<()> {
         self.copy_logits_to_host_dispatch(logits_ptr, dst)
     }
@@ -235,7 +246,7 @@ impl Model for TransformerModel {
     fn decode_draft(&self, token: u32, seq: &mut SequenceState, stream: u64) -> Result<DevicePtr> {
         self.decode_draft_dispatch(token, seq, stream)
     }
-    fn cache_sequence(&self, seq: &SequenceState) {
+    fn cache_sequence(&self, seq: &mut SequenceState) {
         self.cache_sequence_dispatch(seq)
     }
     fn decode_marconi_checkpoint(&self, seq: &mut SequenceState) {

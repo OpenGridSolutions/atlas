@@ -4,13 +4,19 @@
 //!
 //! When multiple requests share a common prompt prefix, previously-computed
 //! KV cache blocks can be reused instead of re-running prefill. The cache
-//! is indexed by token sequences at block granularity via a radix tree.
+//! is indexed by chained 128-bit block keys ([`crate::block_keys`]) at
+//! block granularity via a radix tree. The keys fold in the media digests
+//! of vision prompts, so two prompts with the same token IDs but different
+//! images never share a block (issue #58 — this replaces the former
+//! vision-pad cache bypass).
 //!
 //! Two implementations:
 //! - `NoPrefixCaching`: no-ops (zero overhead when disabled)
 //! - `RadixTree` (see `crate::radix_tree`): full radix tree with LRU eviction
 
 use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::block_keys::BlockKeysView;
 
 // ── Global prefix cache counters (one RadixTree per server) ──
 
@@ -57,7 +63,7 @@ impl EvictedBlocks {
     }
 }
 
-/// Result of looking up a token sequence in the prefix cache.
+/// Result of looking up a key chain in the prefix cache.
 #[derive(Debug, Clone)]
 pub struct PrefixMatch {
     /// Physical KV cache block indices to reuse (in order).
@@ -68,7 +74,8 @@ pub struct PrefixMatch {
     /// before treating them as live (the cache itself does not
     /// retain disk-side refs — see `RadixTree::lookup` for the bump).
     pub matched_disk_block_ids: Vec<u32>,
-    /// Number of tokens matched (always block-aligned).
+    /// Number of tokens matched. Block-aligned, except when the view's
+    /// exact tail key also matched (then it equals the view length).
     pub matched_tokens: usize,
     /// SSM state snapshot ID at the deepest matched node (Marconi caching).
     /// When `Some`, the caller can restore SSM h_state + conv_state from
@@ -105,6 +112,12 @@ impl PrefixMatch {
 /// (e.g., `Mutex`) for thread safety. This allows the prefix cache to be
 /// shared between the model (prefill) and scheduler (free_sequence) without
 /// requiring `&mut self`.
+///
+/// Every method that identifies blocks takes a [`BlockKeysView`] — the
+/// chained-key view over the sequence's tokens. A view whose
+/// `cacheable()` is false (media placeholders without digests, or an
+/// uninitialised chain) MUST behave as a miss/no-op; `RadixTree`
+/// enforces this internally so callers need no vision gates.
 pub trait PrefixCache: Send + Sync {
     /// Whether this implementation is active (i.e., a real cache that
     /// actually inserts/holds refs). `NoPrefixCaching` returns false;
@@ -116,26 +129,27 @@ pub trait PrefixCache: Send + Sync {
         true
     }
 
-    /// Look up a token sequence and return cached KV blocks for the
-    /// longest matching prefix (block-aligned).
+    /// Look up a key chain and return cached KV blocks for the longest
+    /// matching prefix (block-aligned, plus an optional exact-tail hit).
     ///
     /// Increments ref_count on matched nodes so they survive eviction
     /// while the sequence is active. `session_hash` is used for SSM
     /// snapshot isolation (0 = legacy/no session tracking).
-    fn lookup(&self, tokens: &[u32], block_size: usize, session_hash: u64) -> PrefixMatch;
+    fn lookup(&self, keys: &BlockKeysView<'_>, session_hash: u64) -> PrefixMatch;
 
-    /// Read-only longest-prefix probe: number of tokens (block-aligned)
-    /// `lookup` would match, WITHOUT taking refs, touching LRU state, or
-    /// counting a hit/miss. Used by the prefill tail-checkpoint split to
-    /// detect conversation reuse before deciding to pay the extra pass.
-    fn peek_matched_tokens(&self, _tokens: &[u32], _block_size: usize) -> usize {
+    /// Read-only longest-prefix probe: number of tokens `lookup` would
+    /// match, WITHOUT taking refs, touching LRU state, or counting a
+    /// hit/miss. Used by the prefill tail-checkpoint split to detect
+    /// conversation reuse before deciding to pay the extra pass.
+    fn peek_matched_tokens(&self, _keys: &BlockKeysView<'_>) -> usize {
         0
     }
 
     /// Insert a completed prefill's blocks into the cache.
     ///
     /// `block_table[i]` is the physical block for tokens
-    /// `[i*block_size .. (i+1)*block_size]`.
+    /// `[i*block_size .. (i+1)*block_size]` — identified by
+    /// `keys.full_keys()[i]`.
     ///
     /// `disk_block_ids` parallels `block_table` for `--high-speed-swap`
     /// (Phase 6.1.e). Empty when HSS is not in use; same length as
@@ -153,18 +167,17 @@ pub trait PrefixCache: Send + Sync {
     /// returned vec — re-incing them would leak the cache's refcount.
     ///
     /// `matched_tokens` is the number of tokens the inserting sequence
-    /// already acquired via `lookup()`'s `inc_refs` (0 for a cache-miss
-    /// request). Tokens past this offset are "seq-owned" — the inserting
-    /// sequence's eventual `release()` will decrement them — so `insert`
-    /// must bump their ref_count to keep the cache's own reference alive
-    /// after the release. See the release/lookup dance at the top of
-    /// `radix_tree.rs`.
+    /// already acquired via `lookup()`'s `inc_refs` (those nodes' ref_count
+    /// was bumped by walk and will be balanced by the eventual `release`).
+    /// Tokens past this offset are "seq-owned" — the inserting sequence's
+    /// eventual `release()` will decrement them — so `insert` must bump
+    /// their ref_count to keep the cache's own reference alive after the
+    /// release. See the release/lookup dance at the top of `radix_tree.rs`.
     fn insert(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         block_table: &[u32],
         disk_block_ids: &[u32],
-        block_size: usize,
         matched_tokens: usize,
     ) -> Vec<u32>;
 
@@ -181,10 +194,9 @@ pub trait PrefixCache: Send + Sync {
     #[allow(clippy::too_many_arguments)]
     fn insert_with_snapshot(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         block_table: &[u32],
         disk_block_ids: &[u32],
-        block_size: usize,
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
@@ -192,18 +204,17 @@ pub trait PrefixCache: Send + Sync {
 
     /// Insert an SSM snapshot at an intermediate token boundary.
     ///
-    /// `tokens` is the token sequence up to and including the snapshot point.
-    /// `block_table` contains the physical block indices for those tokens.
-    /// `session_hash` tags the snapshot for session-scoped isolation.
-    /// `matched_tokens` has the same semantics as in `insert`.
+    /// `keys` covers the token sequence up to and including the snapshot
+    /// point. `block_table` contains the physical block indices for those
+    /// tokens. `session_hash` tags the snapshot for session-scoped
+    /// isolation. `matched_tokens` has the same semantics as in `insert`.
     /// Returns the displaced snapshot ID if an existing entry was overwritten.
     #[allow(clippy::too_many_arguments)]
     fn insert_intermediate_snapshot(
         &self,
-        tokens: &[u32],
+        keys: &BlockKeysView<'_>,
         block_table: &[u32],
         disk_block_ids: &[u32],
-        block_size: usize,
         snapshot_id: usize,
         session_hash: u64,
         matched_tokens: usize,
@@ -212,8 +223,8 @@ pub trait PrefixCache: Send + Sync {
     /// Release ref_counts on blocks that were acquired via `lookup`.
     ///
     /// Called when a sequence finishes. Decrements ref_count on cache
-    /// nodes matching the token prefix, making them eligible for eviction.
-    fn release(&self, tokens: &[u32], block_size: usize);
+    /// nodes along the key chain, making them eligible for eviction.
+    fn release(&self, keys: &BlockKeysView<'_>);
 
     /// Evict up to `num_blocks` cached blocks, returning their physical
     /// indices and parallel disk-block IDs (Phase 6.1.e).
@@ -244,16 +255,15 @@ impl PrefixCache for NoPrefixCaching {
         false
     }
 
-    fn lookup(&self, _tokens: &[u32], _block_size: usize, _session_hash: u64) -> PrefixMatch {
+    fn lookup(&self, _keys: &BlockKeysView<'_>, _session_hash: u64) -> PrefixMatch {
         PrefixMatch::empty()
     }
 
     fn insert(
         &self,
-        _tokens: &[u32],
+        _keys: &BlockKeysView<'_>,
         _block_table: &[u32],
         _disk_block_ids: &[u32],
-        _block_size: usize,
         _matched_tokens: usize,
     ) -> Vec<u32> {
         Vec::new()
@@ -261,10 +271,9 @@ impl PrefixCache for NoPrefixCaching {
 
     fn insert_with_snapshot(
         &self,
-        _tokens: &[u32],
+        _keys: &BlockKeysView<'_>,
         _block_table: &[u32],
         _disk_block_ids: &[u32],
-        _block_size: usize,
         _snapshot_id: usize,
         _session_hash: u64,
         _matched_tokens: usize,
@@ -274,10 +283,9 @@ impl PrefixCache for NoPrefixCaching {
 
     fn insert_intermediate_snapshot(
         &self,
-        _tokens: &[u32],
+        _keys: &BlockKeysView<'_>,
         _block_table: &[u32],
         _disk_block_ids: &[u32],
-        _block_size: usize,
         _snapshot_id: usize,
         _session_hash: u64,
         _matched_tokens: usize,
@@ -285,7 +293,7 @@ impl PrefixCache for NoPrefixCaching {
         None
     }
 
-    fn release(&self, _tokens: &[u32], _block_size: usize) {}
+    fn release(&self, _keys: &BlockKeysView<'_>) {}
 
     fn evict(&self, _num_blocks: usize) -> EvictedBlocks {
         EvictedBlocks::default()
@@ -307,6 +315,7 @@ impl PrefixCache for NoPrefixCaching {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block_keys::{BlockKeyChain, seed};
 
     #[test]
     fn test_prefix_match_empty() {
@@ -320,16 +329,18 @@ mod tests {
     fn test_no_prefix_caching_is_noop() {
         let cache = NoPrefixCaching;
         let tokens = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let chain = BlockKeyChain::new(seed(b"m", &[0u8; 32]), 4, &tokens, 0, &[]);
         let block_table = vec![0, 1];
         let disk_block_ids: Vec<u32> = vec![];
 
-        let m = cache.lookup(&tokens, 4, 0);
+        let view = chain.view(&tokens, 8);
+        let m = cache.lookup(&view, 0);
         assert!(m.is_empty());
 
         // These should not panic
-        let new_acq = cache.insert(&tokens, &block_table, &disk_block_ids, 4, 0);
+        let new_acq = cache.insert(&view, &block_table, &disk_block_ids, 0);
         assert!(new_acq.is_empty());
-        cache.release(&tokens, 4);
+        cache.release(&view);
 
         let evicted = cache.evict(10);
         assert!(evicted.is_empty());

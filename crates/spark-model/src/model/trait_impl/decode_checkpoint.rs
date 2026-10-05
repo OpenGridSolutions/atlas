@@ -76,9 +76,11 @@ impl TransformerModel {
         }
         // Cadence/log only — NOT the registered coverage (see snap_tokens below).
         let end_token = end_block * bs;
-        // The registered prefix is the FULL token slice, so vision-pad must be
-        // checked over the full slice too.
-        if self.tokens_have_vision_pad(&seq.tokens) {
+        // The registered prefix is the FULL token slice; keep the key chain
+        // extended over it. An uncacheable chain (media without digests)
+        // skips the checkpoint — the behaviour of the old vision-pad gate.
+        seq.block_keys.extend_to(&seq.tokens);
+        if !seq.block_keys.is_cacheable() {
             return;
         }
         // Order the default stream after any in-flight secondary-stream commit
@@ -137,7 +139,7 @@ impl TransformerModel {
         // are). On the non-MTP +1 stride tokens.len() == end_token at every
         // fire, so this is bit-identical to the old block-floored slice.
         let snap_tokens = seq.tokens.len();
-        let boundary_tokens = &seq.tokens[..snap_tokens];
+        let boundary_keys = seq.block_keys.view(&seq.tokens, snap_tokens);
         let boundary_blocks = &seq.block_table[..end_block];
         let boundary_disk: &[u32] = if seq.disk_block_ids.len() >= end_block {
             &seq.disk_block_ids[..end_block]
@@ -145,10 +147,9 @@ impl TransformerModel {
             &[]
         };
         let displaced = self.prefix_cache.insert_intermediate_snapshot(
-            boundary_tokens,
+            &boundary_keys,
             boundary_blocks,
             boundary_disk,
-            bs,
             snap_id,
             seq.session_hash,
             snap_tokens,

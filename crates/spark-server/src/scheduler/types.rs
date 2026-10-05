@@ -414,6 +414,10 @@ pub(super) fn consume_budget(remaining: &mut usize) -> bool {
 /// A sequence that has been swapped out to disk (KV + SSM state saved to file).
 pub(super) struct SwappedSeq {
     pub tokens: Vec<u32>,
+    /// Chained block keys (KV-3), preserved across disk spill so the
+    /// resumed sequence keeps its cache identity (incl. media digests,
+    /// which cannot be recomputed after image_pixels are consumed).
+    pub block_keys: spark_runtime::block_keys::BlockKeyChain,
     pub session_hash: u64,
     pub seq_len: usize,
     pub num_blocks: usize,

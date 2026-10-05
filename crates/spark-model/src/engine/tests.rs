@@ -143,6 +143,7 @@ impl Model for MockModel {
     fn alloc_sequence(&self) -> Result<SequenceState> {
         Ok(SequenceState {
             tokens: Vec::new(),
+            block_keys: Default::default(),
             block_table: Vec::new(),
             seq_len: 0,
             layer_states: Vec::new(),
@@ -234,7 +235,7 @@ impl Model for MockModel {
         self.decode(token, seq, stream)
     }
 
-    fn cache_sequence(&self, _seq: &SequenceState) {}
+    fn cache_sequence(&self, _seq: &mut SequenceState) {}
 
     fn free_sequence(&self, _seq: &mut SequenceState) -> Result<()> {
         Ok(())

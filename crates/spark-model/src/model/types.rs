@@ -137,6 +137,10 @@ pub struct TransformerModel {
     pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
     pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
+    /// Per-model seed `k_0 = H(model_hash ‖ layout_hash)` for the chained
+    /// block keys (KV-3/KV-5). Set once by `build_model` after
+    /// construction via `set_block_key_seed`.
+    pub(super) block_key_seed: spark_runtime::block_keys::BlockKey,
     /// Secondary CUDA stream for pipelining checkpoint D2D with MTP propose.
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).

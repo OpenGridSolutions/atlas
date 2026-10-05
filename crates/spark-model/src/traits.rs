@@ -73,6 +73,11 @@ pub struct ChunkedPrefillPageMetadata {
 pub struct SequenceState {
     /// Token IDs generated so far (including prompt).
     pub tokens: Vec<u32>,
+    /// Chained block keys identifying this sequence's KV blocks in the
+    /// prefix cache and the NVMe store (KV-3). Initialised by
+    /// `Model::init_block_keys` before prefill; the inert default makes
+    /// the sequence invisible to the cache (safe for mocks/legacy paths).
+    pub block_keys: spark_runtime::block_keys::BlockKeyChain,
     /// Block table for paged KV cache (indices into PagedKvCache).
     pub block_table: Vec<u32>,
     /// Current sequence length (prompt + generated).

@@ -29,7 +29,7 @@ impl TransformerModel {
         seq: &mut SequenceState,
         hidden: DevicePtr,
         h: u32,
-        bs: usize,
+        _bs: usize,
         total_len: usize,
         stream: u64,
     ) -> Result<DevicePtr> {
@@ -69,12 +69,13 @@ impl TransformerModel {
         )?;
         self.lm_head(normed, stream)?;
         // Prefix cache insert (no new snapshot needed — SSM state unchanged).
-        if !self.tokens_have_vision_pad(tokens) {
+        // Keyed by the chain (KV-3); an uncacheable chain no-ops inside.
+        {
+            let keys = seq.block_keys.view(tokens, tokens.len());
             let acquired = self.prefix_cache.insert(
-                tokens,
+                &keys,
                 &seq.block_table,
                 &seq.disk_block_ids,
-                bs,
                 seq.cached_prefix_tokens,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
@@ -82,17 +83,17 @@ impl TransformerModel {
         Ok(self.decode_logits_ptr())
     }
 
-    /// Same as [`Self::prefill_save_snapshot_and_insert`] but with the
-    /// vision-pad gate that the standard `prefill_dispatch` path uses:
-    /// when the prompt has vision-pad tokens, the SSM snapshot is image-
-    /// tainted and gets freed (radix block also skipped) so a different
-    /// image's token stream can't collide with this entry on lookup.
+    /// Same as [`Self::prefill_save_snapshot_and_insert`]. With chained
+    /// block keys (KV-3/KV-4) the media digests disambiguate images, so
+    /// vision prompts are admitted; only an UNCACHEABLE chain (digests
+    /// missing) frees the snapshot and skips the radix insert — the
+    /// behaviour of the former vision-pad gate.
     pub(super) fn prefill_save_snapshot_with_vision_gate(
         &self,
         tokens: &[u32],
         seq: &SequenceState,
         kv_cache: &mut PagedKvCache,
-        bs: usize,
+        _bs: usize,
         stream: u64,
     ) {
         if self.ssm_snapshots.is_enabled() {
@@ -132,17 +133,17 @@ impl TransformerModel {
                 if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                     tracing::warn!("prefill snapshot save: record snapshot event: {e}");
                 }
-                if self.tokens_have_vision_pad(tokens) {
-                    // Vision prefill: snapshot is image-tainted and the
-                    // token stream collides across distinct images, so do
-                    // not admit either the snapshot or the radix block.
+                if !seq.block_keys.is_cacheable() {
+                    // Media without digests: the chain cannot represent the
+                    // image content — free the snapshot instead of leaking
+                    // its slot (the radix insert would no-op anyway).
                     self.ssm_snapshots.free(snap_id);
                 } else {
+                    let keys = seq.block_keys.view(tokens, tokens.len());
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
-                        tokens,
+                        &keys,
                         &seq.block_table,
                         &seq.disk_block_ids,
-                        bs,
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
@@ -152,22 +153,22 @@ impl TransformerModel {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else {
+                let keys = seq.block_keys.view(tokens, tokens.len());
                 let acquired = self.prefix_cache.insert(
-                    tokens,
+                    &keys,
                     &seq.block_table,
                     &seq.disk_block_ids,
-                    bs,
                     seq.cached_prefix_tokens,
                 );
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else {
+            let keys = seq.block_keys.view(tokens, tokens.len());
             let acquired = self.prefix_cache.insert(
-                tokens,
+                &keys,
                 &seq.block_table,
                 &seq.disk_block_ids,
-                bs,
                 seq.cached_prefix_tokens,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
@@ -183,7 +184,7 @@ impl TransformerModel {
         tokens: &[u32],
         seq: &SequenceState,
         kv_cache: &mut PagedKvCache,
-        bs: usize,
+        _bs: usize,
         stream: u64,
     ) {
         if self.ssm_snapshots.is_enabled() {
@@ -227,15 +228,11 @@ impl TransformerModel {
                 if let Err(e) = self.record_snapshot_save_dispatch(stream) {
                     tracing::warn!("prefill snapshot save [twophase]: record snapshot event: {e}");
                 }
-                if self.tokens_have_vision_pad(tokens) {
-                    // Vision prefill: the SSM snapshot is image-tainted and
-                    // the token stream collides across distinct images (the
-                    // prefix-cache key hashes token IDs only, and image-pad
-                    // placeholders are identical regardless of pixel content),
-                    // so admitting this entry returns a stale image's result
-                    // on the next same-prompt request (issue #58). Free the
-                    // snapshot and skip the radix insert, matching the gated
-                    // standard path in `prefill_save_snapshot_with_vision_gate`.
+                if !seq.block_keys.is_cacheable() {
+                    // Media without digests (chain uncacheable): the key
+                    // chain cannot represent the image content (issue #58's
+                    // collision class). Free the snapshot instead of
+                    // leaking its slot; the radix insert would no-op.
                     self.ssm_snapshots.free(snap_id);
                 } else {
                     tracing::info!(
@@ -244,11 +241,11 @@ impl TransformerModel {
                         tokens.len(),
                         seq.block_table.len(),
                     );
+                    let keys = seq.block_keys.view(tokens, tokens.len());
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
-                        tokens,
+                        &keys,
                         &seq.block_table,
                         &seq.disk_block_ids,
-                        bs,
                         snap_id,
                         seq.session_hash,
                         seq.cached_prefix_tokens,
@@ -258,22 +255,22 @@ impl TransformerModel {
                         self.ssm_snapshots.free(old);
                     }
                 }
-            } else if !self.tokens_have_vision_pad(tokens) {
+            } else {
+                let keys = seq.block_keys.view(tokens, tokens.len());
                 let acquired = self.prefix_cache.insert(
-                    tokens,
+                    &keys,
                     &seq.block_table,
                     &seq.disk_block_ids,
-                    bs,
                     seq.cached_prefix_tokens,
                 );
                 super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
             }
-        } else if !self.tokens_have_vision_pad(tokens) {
+        } else {
+            let keys = seq.block_keys.view(tokens, tokens.len());
             let acquired = self.prefix_cache.insert(
-                tokens,
+                &keys,
                 &seq.block_table,
                 &seq.disk_block_ids,
-                bs,
                 seq.cached_prefix_tokens,
             );
             super::super::block_mgmt::cache_acquires_disk_refs(&acquired);

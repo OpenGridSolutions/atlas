@@ -32,19 +32,46 @@ impl TransformerModel {
         self.comm.as_deref()
     }
 
-    /// Per-vision-pad-token-id helper. Vision prompts splice ViT
-    /// embeddings into placeholder `<|image_pad|>` token positions; the
-    /// hashed token-ID stream therefore looks identical for two
-    /// distinct images of the same prompt, and naive prefix-cache reuse
-    /// would resurrect the FIRST image's KV/SSM blocks for the SECOND
-    /// image. Skip cache lookup AND insert whenever any `image_pad`
-    /// token is present in the prefill window.
-    pub(super) fn tokens_have_vision_pad(&self, tokens: &[u32]) -> bool {
-        let pad_id = match self.config.vision.as_ref().map(|v| v.image_pad_token_id) {
+    /// The `<|image_pad|>` token id for this model, or 0 when the model
+    /// has no vision tower (then no token is a media placeholder and the
+    /// key chain treats the prompt as pure text).
+    pub(super) fn vision_pad_token_id(&self) -> u32 {
+        if self.config.vision.is_none() {
+            return 0;
+        }
+        match self.config.vision.as_ref().map(|v| v.image_pad_token_id) {
             Some(id) if id != 0 => id,
             _ => crate::layers::vision_encoder::IMAGE_PAD_TOKEN_ID,
-        };
-        tokens.contains(&pad_id)
+        }
+    }
+
+    /// Whether the slice contains `<|image_pad|>` placeholder tokens.
+    /// NOT a cache gate anymore (the key chain covers media via digests,
+    /// KV-4) — still needed by compute-path guards that must not split a
+    /// pad run across chunk boundaries (tail-checkpoint split).
+    pub(super) fn tokens_have_vision_pad(&self, tokens: &[u32]) -> bool {
+        let pad_id = self.vision_pad_token_id();
+        pad_id != 0 && tokens.contains(&pad_id)
+    }
+
+    /// Build the sequence's chained block keys. Vision prompts whose
+    /// placeholder runs are covered by `media_digests` become cacheable
+    /// (KV-4); a digest/run mismatch yields an uncacheable chain — the
+    /// behaviour of the former vision-pad cache bypass (issue #58).
+    pub(super) fn init_block_keys_dispatch(
+        &self,
+        seq: &mut crate::traits::SequenceState,
+        prompt_tokens: &[u32],
+        media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) {
+        let block_size = self.kv_cache.lock().block_size();
+        seq.block_keys = spark_runtime::block_keys::BlockKeyChain::new(
+            self.block_key_seed,
+            block_size,
+            prompt_tokens,
+            self.vision_pad_token_id(),
+            media_digests,
+        );
     }
 
     /// Free pinned host memory on model destruction.

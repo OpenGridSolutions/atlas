@@ -111,7 +111,6 @@ impl TransformerModel {
             return Ok(());
         };
 
-        let boundary_tokens = &tokens[..end_token];
         // Phase 6.3 sliding-window: when HSS is engaged AND sliding has begun
         // (hss_window_start > 0), the front of the prefix is no longer
         // represented by physical HBM blocks — the rolling-window slice
@@ -123,11 +122,11 @@ impl TransformerModel {
             return Ok(());
         }
         let boundary_blocks = &seq.block_table[..end_block];
-        // Vision chunks: skip both the radix insert and the SSM snapshot
-        // attach — the placeholder token stream is identical for distinct
-        // images of the same prompt, so a future hit would resurrect the
-        // prior image's state.
-        if self.tokens_have_vision_pad(boundary_tokens) {
+        // Media without digests (uncacheable chain): skip both the radix
+        // insert and the SSM snapshot attach — the key chain cannot
+        // represent the image content, and the no-op insert would leak
+        // the snapshot slot.
+        if !seq.block_keys.is_cacheable() {
             self.ssm_snapshots.free(snap_id);
             return Ok(());
         }
@@ -143,19 +142,15 @@ impl TransformerModel {
         // block in this checkpoint, avoiding a double-bump that would leak
         // the cache's baseline ref by +1 per checkpointed block after the
         // eventual release().
-        let acquired = self.prefix_cache.insert(
-            boundary_tokens,
-            boundary_blocks,
-            boundary_disk,
-            bs,
-            end_token,
-        );
+        let keys = seq.block_keys.view(tokens, end_token);
+        let acquired = self
+            .prefix_cache
+            .insert(&keys, boundary_blocks, boundary_disk, end_token);
         super::super::super::block_mgmt::cache_acquires_disk_refs(&acquired);
         if let Some(old) = self.prefix_cache.insert_intermediate_snapshot(
-            boundary_tokens,
+            &keys,
             boundary_blocks,
             boundary_disk,
-            bs,
             snap_id,
             seq.session_hash,
             end_token,

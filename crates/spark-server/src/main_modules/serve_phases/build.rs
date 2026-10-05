@@ -27,9 +27,45 @@ pub(crate) fn build_prefix_cache(
     }
 }
 
+/// Per-model block-key seed `k_0 = H(model_identity ‖ layout_hash)`
+/// (KV-3/KV-5). The layout hash covers everything that changes the byte
+/// layout or numerical meaning of a cached KV block: block size, the
+/// default and per-layer KV dtypes, model geometry, and the RoPE
+/// configuration. Frozen FP8 KV scales join the hash at the NVMe-store
+/// layer (they are calibrated at runtime, after this seed is computed;
+/// within one process run they are constant, so the RAM cache is safe).
+///
+/// `model_identity` is the model id today — the NVMe store additionally
+/// binds entries to the snapshot's `model_version_hash`, which covers
+/// checkpoint revisions.
+fn compute_block_key_seed(
+    model_identity: &str,
+    block_size: usize,
+    config: &ModelConfig,
+    kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
+    layer_dtypes: &[spark_runtime::kv_cache::KvCacheDtype],
+) -> spark_runtime::block_keys::BlockKey {
+    let mut h = blake3::Hasher::new();
+    h.update(b"atlas-kv-layout-v1");
+    h.update(&(block_size as u64).to_le_bytes());
+    h.update(format!("{kv_dtype:?}").as_bytes());
+    for d in layer_dtypes {
+        h.update(format!("{d:?}").as_bytes());
+    }
+    h.update(config.model_type.as_bytes());
+    h.update(&(config.num_hidden_layers as u64).to_le_bytes());
+    h.update(&(config.num_attention_heads as u64).to_le_bytes());
+    h.update(&(config.num_key_value_heads as u64).to_le_bytes());
+    h.update(&(config.head_dim as u64).to_le_bytes());
+    h.update(&config.rope_theta.to_le_bytes());
+    h.update(&config.partial_rotary_factor.to_le_bytes());
+    spark_runtime::block_keys::seed(model_identity.as_bytes(), h.finalize().as_bytes())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn build_model(
     args: &cli::ServeArgs,
+    model_identity: &str,
     config: &ModelConfig,
     store: &spark_runtime::weights::WeightStore,
     gpu: Box<dyn spark_runtime::gpu::GpuBackend>,
@@ -71,7 +107,14 @@ pub(crate) fn build_model(
     let mtp_quant: spark_model::layers::MtpQuantization = mtp_quant_str
         .parse()
         .context("Invalid --mtp-quantization value")?;
-    spark_model::factory::build_model(
+    let seed = compute_block_key_seed(
+        model_identity,
+        args.block_size,
+        config,
+        kv_dtype,
+        &layer_dtypes,
+    );
+    let mut model = spark_model::factory::build_model(
         config.clone(),
         store,
         gpu,
@@ -102,7 +145,9 @@ pub(crate) fn build_model(
             .filter(|&gb| gb > 0.0)
             .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as usize),
     )
-    .context("Failed to build model")
+    .context("Failed to build model")?;
+    model.set_block_key_seed(seed);
+    Ok(model)
 }
 
 pub(crate) fn build_high_speed_swap_config(

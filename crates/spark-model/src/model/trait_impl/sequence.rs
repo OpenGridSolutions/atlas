@@ -28,7 +28,7 @@ use crate::traits::{ChunkedPrefillPageMetadata, Model, SequenceState};
 use crate::weight_map::{DenseWeight, MtpWeights, QuantizedWeight};
 
 impl TransformerModel {
-    pub(super) fn cache_sequence_dispatch(&self, seq: &SequenceState) {
+    pub(super) fn cache_sequence_dispatch(&self, seq: &mut SequenceState) {
         let bs = self.kv_cache.lock().block_size();
         // Only cache if the sequence has block-aligned content worth caching.
         // Sequences shorter than one block have no reusable KV blocks.
@@ -51,8 +51,12 @@ impl TransformerModel {
             // from cache eviction, leaking the seq's blocks every request.
             // Also skip when HSS sliding has occurred (front of block_table no
             // longer parallels tokens) and on vision prompts.
+            // Keep the key chain extended over the generated tokens; the
+            // chain covers media via digests, so vision sequences are
+            // admitted (an uncacheable chain no-ops inside the cache).
+            seq.block_keys.extend_to(&seq.tokens);
             if self.prefix_cache.is_active()
-                && !self.tokens_have_vision_pad(&seq.tokens)
+                && seq.block_keys.is_cacheable()
                 && seq.hss_window_start() == 0
             {
                 // #155: leaf snapshot at FULL length (prompt + generated) so
@@ -60,12 +64,12 @@ impl TransformerModel {
                 // ~nothing. Save logic + the secondary-stream ordering guard
                 // live in decode_checkpoint.rs (finish_leaf_snapshot).
                 let finish_snap = self.finish_leaf_snapshot(seq);
+                let keys = seq.block_keys.view(&seq.tokens, seq.tokens.len());
                 let acquired = if let Some(snap_id) = finish_snap {
                     let (displaced, acquired) = self.prefix_cache.insert_with_snapshot(
-                        &seq.tokens,
+                        &keys,
                         &seq.block_table,
                         &seq.disk_block_ids,
-                        bs,
                         snap_id,
                         seq.session_hash,
                         seq.prompt_len,
@@ -76,10 +80,9 @@ impl TransformerModel {
                     acquired
                 } else {
                     self.prefix_cache.insert(
-                        &seq.tokens,
+                        &keys,
                         &seq.block_table,
                         &seq.disk_block_ids,
-                        bs,
                         seq.prompt_len,
                     )
                 };
@@ -130,8 +133,11 @@ impl TransformerModel {
 
         // Release prefix cache refs before freeing blocks.
         // (i.e., blocks not shared with the prefix cache).
-        self.prefix_cache
-            .release(&seq.tokens, self.kv_cache.lock().block_size());
+        seq.block_keys.extend_to(&seq.tokens);
+        {
+            let keys = seq.block_keys.view(&seq.tokens, seq.tokens.len());
+            self.prefix_cache.release(&keys);
+        }
         if !seq.block_table.is_empty() {
             self.kv_cache.lock().free_blocks(&seq.block_table);
             seq.block_table.clear();
