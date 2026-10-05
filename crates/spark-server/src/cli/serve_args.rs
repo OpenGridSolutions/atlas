@@ -653,6 +653,12 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 5)]
     pub sse_keepalive_interval_s: u64,
 
+    /// Embed/rerank models at or below this checkpoint size load as
+    /// RESIDENT sidecars beside the arena model (E4/MOD-3); larger ones
+    /// take the arena queue. 0 disables text sidecars.
+    #[arg(long, default_value_t = 4.0)]
+    pub sidecar_small_max_gib: f64,
+
     /// Trust proxy-injected headers (AUTH-3): only with this flag does
     /// the server honour `X-Priority: high` (the proxy must strip the
     /// header from external traffic). Startup fails when combined with

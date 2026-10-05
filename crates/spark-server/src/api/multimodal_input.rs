@@ -38,10 +38,28 @@ pub(crate) fn encode_item(
     image: Option<&str>,
     render: impl FnOnce(&str) -> String,
 ) -> Result<EncodedItem, (StatusCode, String)> {
+    encode_item_with(
+        rt.vision_config.as_ref(),
+        &rt.tokenizer,
+        state.vision_max_pixels,
+        image,
+        render,
+    )
+}
+
+/// Runtime-independent variant: the text sidecars encode with THEIR
+/// model's tokenizer/vision config, not the arena runtime's.
+pub(crate) fn encode_item_with(
+    vision_config: Option<&atlas_core::config::VisionConfig>,
+    tokenizer: &crate::tokenizer::ChatTokenizer,
+    vision_max_pixels: Option<usize>,
+    image: Option<&str>,
+    render: impl FnOnce(&str) -> String,
+) -> Result<EncodedItem, (StatusCode, String)> {
     let mut image_pixels = Vec::new();
     let mut pad_counts: Vec<usize> = Vec::new();
     let vision_part = if let Some(uri) = image {
-        let Some(vcfg) = rt.vision_config.as_ref() else {
+        let Some(vcfg) = vision_config else {
             return Err((
                 StatusCode::BAD_REQUEST,
                 "image input requires a vision-language model (active model serves \
@@ -53,7 +71,7 @@ pub(crate) fn encode_item(
             spark_model::vision_preprocess::preprocess_image_with_max_pixels(
                 uri,
                 vcfg,
-                state.vision_max_pixels,
+                vision_max_pixels,
             )
             .map_err(|e| (StatusCode::BAD_REQUEST, format!("image decode error: {e}")))?;
         pad_counts.push(spark_model::vision_preprocess::image_pad_count(
@@ -67,11 +85,10 @@ pub(crate) fn encode_item(
         ""
     };
     let full_text = render(vision_part);
-    let tokens = rt
-        .tokenizer
+    let tokens = tokenizer
         .encode(&full_text)
         .map_err(|e| (StatusCode::BAD_REQUEST, format!("tokenizer error: {e:#}")))?;
-    let tokens = rt.tokenizer.expand_image_pads(tokens, &pad_counts);
+    let tokens = tokenizer.expand_image_pads(tokens, &pad_counts);
     Ok(EncodedItem {
         tokens,
         image_pixels,

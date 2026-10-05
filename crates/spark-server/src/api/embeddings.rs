@@ -106,6 +106,30 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority:
         );
     }
 
+    // E4/MOD-3: small embed models run as resident sidecars and never
+    // touch (or wait for) the arena (WAIT-6).
+    match crate::main_modules::text_sidecar::maybe_for(
+        &state,
+        &req.model,
+        crate::main_modules::hotswap::ModelCategory::Embed,
+    )
+    .await
+    {
+        None => {}
+        Some(Err(resp)) => return resp,
+        Some(Ok(sidecar)) => {
+            return embeddings_via_sidecar(
+                state,
+                req.model.clone(),
+                req.instruction.clone(),
+                req.dimensions,
+                inputs,
+                sidecar,
+            )
+            .await;
+        }
+    }
+
     // Lazy multi-model swap BEFORE the runtime snapshot.
     let swap_ms = match super::lazy_swap::ensure_model_active(
         &state,
@@ -262,6 +286,89 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority:
     })
     .into_response();
     super::lazy_swap::attach_swap_header(resp, swap_ms)
+}
+
+/// Sidecar execution (E4): same encode + normalize as the arena path,
+/// but the prefill runs on the resident sidecar's own worker.
+async fn embeddings_via_sidecar(
+    state: Arc<AppState>,
+    model: String,
+    instruction: Option<String>,
+    dimensions: Option<usize>,
+    inputs: Vec<super::multimodal_input::MultimodalItem>,
+    sidecar: Arc<crate::main_modules::text_sidecar::TextSidecar>,
+) -> Response {
+    crate::metrics::REQUESTS_TOTAL.inc();
+    crate::metrics::REQUESTS_ACTIVE.inc();
+    let mut data = Vec::with_capacity(inputs.len());
+    let mut prompt_tokens_total = 0usize;
+    for (index, item) in inputs.iter().enumerate() {
+        let (text, image) = item.parts();
+        let encoded = super::multimodal_input::encode_item_with(
+            sidecar.vision_config.as_ref(),
+            &sidecar.tokenizer,
+            state.vision_max_pixels,
+            image,
+            |vision| match instruction.as_deref() {
+                Some(instr) => format!("Instruct: {instr}\nQuery: {vision}{text}{EOS_SUFFIX}"),
+                None => format!("{vision}{text}{EOS_SUFFIX}"),
+            },
+        );
+        let encoded = match encoded {
+            Ok(e) => e,
+            Err((status, msg)) => {
+                crate::metrics::REQUESTS_ACTIVE.dec();
+                return openai_error_response(status, format!("input {index}: {msg}"));
+            }
+        };
+        if encoded.tokens.len() > crate::main_modules::text_sidecar::SIDECAR_MAX_TOKENS {
+            crate::metrics::REQUESTS_ACTIVE.dec();
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "input {index}: {} tokens exceeds the sidecar window of {}",
+                    encoded.tokens.len(),
+                    crate::main_modules::text_sidecar::SIDECAR_MAX_TOKENS,
+                ),
+            );
+        }
+        prompt_tokens_total += encoded.tokens.len();
+        let pooled = match sidecar.embed(encoded.tokens, encoded.image_pixels).await {
+            Ok(v) => v,
+            Err(e) => {
+                crate::metrics::REQUESTS_ACTIVE.dec();
+                return openai_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("embedding input {index}: {e:#}"),
+                );
+            }
+        };
+        let Some(embedding) = normalize(pooled, dimensions) else {
+            crate::metrics::REQUESTS_ACTIVE.dec();
+            return openai_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!(
+                    "input {index}: sidecar returned no usable vector (dimensions={dimensions:?})"
+                ),
+            );
+        };
+        data.push(EmbeddingObject {
+            object: "embedding",
+            index,
+            embedding,
+        });
+    }
+    crate::metrics::REQUESTS_ACTIVE.dec();
+    Json(EmbeddingsResponse {
+        object: "list",
+        data,
+        model,
+        usage: EmbeddingsUsage {
+            prompt_tokens: prompt_tokens_total,
+            total_tokens: prompt_tokens_total,
+        },
+    })
+    .into_response()
 }
 
 #[cfg(test)]

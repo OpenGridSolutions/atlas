@@ -45,8 +45,20 @@ pub fn set_sidecar_pending_reserve_bytes(bytes: usize) {
     SIDECAR_PENDING_RESERVE_BYTES.store(bytes, Ordering::Relaxed);
 }
 
+/// Resident/pending reserve of the SMALL TEXT sidecars (embed/rerank,
+/// MEM-6) — additive to the image sidecar's reserve above.
+static TEXT_SIDECAR_RESERVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+pub fn set_text_sidecar_reserve_bytes(bytes: usize) {
+    TEXT_SIDECAR_RESERVE_BYTES.store(bytes, Ordering::Relaxed);
+}
+
+/// Total sidecar reserve the KV budget must subtract: the image
+/// pipeline's pending/working reserve PLUS the small embed/rerank
+/// sidecars (MEM-6).
 pub fn sidecar_pending_reserve_bytes() -> usize {
     SIDECAR_PENDING_RESERVE_BYTES.load(Ordering::Relaxed)
+        + TEXT_SIDECAR_RESERVE_BYTES.load(Ordering::Relaxed)
 }
 
 /// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).

@@ -100,6 +100,10 @@ pub struct AppState {
     pub nonstream_max_wait: std::time::Duration,
     /// AUTH-3: honour proxy-injected headers (X-Priority).
     pub trust_proxy_headers: bool,
+    /// Boot CLI snapshot — the text-sidecar loader reuses the boot
+    /// phases (weight loader, KV dtype resolution), which are
+    /// args-parameterised.
+    pub serve_args: std::sync::Arc<crate::cli::ServeArgs>,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Global kill switch for thinking / reasoning output. When true,

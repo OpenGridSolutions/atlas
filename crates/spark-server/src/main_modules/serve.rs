@@ -1203,6 +1203,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         arena: arena_dispatcher,
         sse_keepalive: std::time::Duration::from_secs(args.sse_keepalive_interval_s.max(1)),
         trust_proxy_headers: args.trust_proxy_headers,
+        serve_args: std::sync::Arc::new(args.clone()),
         nonstream_max_wait: std::time::Duration::from_secs(args.nonstream_max_wait_s.max(1)),
         request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,

@@ -101,6 +101,19 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest, priority: bool) -
             "documents must not be empty".into(),
         );
     }
+    // E4/MOD-3: small rerank models run as resident sidecars (WAIT-6).
+    match crate::main_modules::text_sidecar::maybe_for(
+        &state,
+        &req.model,
+        crate::main_modules::hotswap::ModelCategory::Rerank,
+    )
+    .await
+    {
+        None => {}
+        Some(Err(resp)) => return resp,
+        Some(Ok(sidecar)) => return rerank_via_sidecar(state, req, sidecar).await,
+    }
+
     // Lazy multi-model swap BEFORE the runtime snapshot — the requested
     // model's tokenizer must be the one that encodes these prompts.
     let swap_ms = match super::lazy_swap::ensure_model_active(
@@ -283,6 +296,113 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest, priority: bool) -
     })
     .into_response();
     super::lazy_swap::attach_swap_header(resp, swap_ms)
+}
+
+/// Sidecar execution (E4): same prompts and yes/no scoring as the arena
+/// path, prefill on the resident sidecar's worker.
+async fn rerank_via_sidecar(
+    state: Arc<AppState>,
+    req: RerankRequest,
+    sidecar: Arc<crate::main_modules::text_sidecar::TextSidecar>,
+) -> Response {
+    let single = |word: &str| match sidecar.tokenizer.encode(word) {
+        Ok(ids) if ids.len() == 1 => Some(ids[0]),
+        _ => None,
+    };
+    let (Some(yes_id), Some(no_id)) = (single("yes"), single("no")) else {
+        return openai_error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "sidecar model's tokenizer has no atomic yes/no tokens — not a              Qwen3-Reranker-class model"
+                .into(),
+        );
+    };
+    let instruction = req.instruction.as_deref().unwrap_or(DEFAULT_INSTRUCTION);
+    crate::metrics::REQUESTS_TOTAL.inc();
+    crate::metrics::REQUESTS_ACTIVE.inc();
+    let mut results = Vec::with_capacity(req.documents.len());
+    let mut prompt_tokens_total = 0usize;
+    for (index, doc) in req.documents.iter().enumerate() {
+        let (doc_text, doc_image) = doc.parts();
+        let encoded = super::multimodal_input::encode_item_with(
+            sidecar.vision_config.as_ref(),
+            &sidecar.tokenizer,
+            state.vision_max_pixels,
+            doc_image,
+            |vision| {
+                format!(
+                    "{SYSTEM_PREFIX}<Instruct>: {instruction}
+<Query>: {query}
+<Document>:                      {vision}{doc_text}{ASSISTANT_SUFFIX}",
+                    query = req.query,
+                )
+            },
+        );
+        let encoded = match encoded {
+            Ok(e) => e,
+            Err((status, msg)) => {
+                crate::metrics::REQUESTS_ACTIVE.dec();
+                return openai_error_response(status, format!("document {index}: {msg}"));
+            }
+        };
+        if encoded.tokens.len() > crate::main_modules::text_sidecar::SIDECAR_MAX_TOKENS {
+            crate::metrics::REQUESTS_ACTIVE.dec();
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "document {index}: {} tokens exceeds the sidecar window of {}",
+                    encoded.tokens.len(),
+                    crate::main_modules::text_sidecar::SIDECAR_MAX_TOKENS,
+                ),
+            );
+        }
+        prompt_tokens_total += encoded.tokens.len();
+        let probed = match sidecar
+            .probe(encoded.tokens, encoded.image_pixels, vec![yes_id, no_id])
+            .await
+        {
+            Ok(v) => v,
+            Err(e) => {
+                crate::metrics::REQUESTS_ACTIVE.dec();
+                return openai_error_response(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("scoring document {index}: {e:#}"),
+                );
+            }
+        };
+        let Some(score) = relevance_score(&probed) else {
+            crate::metrics::REQUESTS_ACTIVE.dec();
+            return openai_error_response(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("document {index}: no usable yes/no pair (got {probed:?})"),
+            );
+        };
+        results.push(RerankResult {
+            index,
+            relevance_score: score,
+            document: req.return_documents.then(|| RerankDocument {
+                text: req.documents[index].text_owned(),
+            }),
+        });
+    }
+    crate::metrics::REQUESTS_ACTIVE.dec();
+    results.sort_by(|a, b| {
+        b.relevance_score
+            .partial_cmp(&a.relevance_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    if let Some(n) = req.top_n {
+        results.truncate(n);
+    }
+    let n_docs = req.documents.len();
+    Json(RerankResponse {
+        model: req.model,
+        results,
+        usage: RerankUsage {
+            prompt_tokens: prompt_tokens_total,
+            total_tokens: prompt_tokens_total + n_docs,
+        },
+    })
+    .into_response()
 }
 
 #[cfg(test)]
