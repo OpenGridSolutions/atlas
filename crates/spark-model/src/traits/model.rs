@@ -225,6 +225,41 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// Build (without installing) the chained block keys for a prompt —
+    /// the scheduler's NVMe-restore probe needs the keys before any
+    /// `SequenceState` exists. Default: inert chain (nothing restorable).
+    fn build_block_key_chain(
+        &self,
+        _prompt_tokens: &[u32],
+        _media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) -> spark_runtime::block_keys::BlockKeyChain {
+        Default::default()
+    }
+
+    /// Read-only probe of the RAM prefix cache (tokens the chain would
+    /// match without taking refs). Default: 0.
+    fn peek_prefix_cached_tokens(
+        &self,
+        _keys: &spark_runtime::block_keys::BlockKeysView<'_>,
+    ) -> usize {
+        0
+    }
+
+    /// Upload NVMe-restored block payloads into freshly allocated KV
+    /// blocks and register them in the RAM prefix cache as cache-owned
+    /// entries (BAT-6). `payloads` are `(logical_block_index, bytes)` in
+    /// `export_kv_block` layout; only the contiguous run starting right
+    /// after the current RAM match is imported. Returns the number of
+    /// tokens now covered by the RAM cache (0 = nothing imported).
+    fn import_cached_blocks(
+        &self,
+        _prompt_tokens: &[u32],
+        _chain: &mut spark_runtime::block_keys::BlockKeyChain,
+        _payloads: &[(usize, Vec<u8>)],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
     /// Copy one logical KV block of `seq` (all attention layers, K then V
     /// per layer) into a host buffer — the NVMe-tier persist payload
     /// (NVM-1/2). Fails when the block is not HBM-resident (HSS slid it

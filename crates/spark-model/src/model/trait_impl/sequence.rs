@@ -350,6 +350,98 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// NVMe-restore import (BAT-6): upload `(logical_block, payload)`
+    /// pairs into freshly allocated KV blocks and register them in the
+    /// radix cache as cache-owned entries. Only the contiguous run
+    /// starting exactly after the current RAM match is accepted — a gap
+    /// would create unreachable (and unsound) tree nodes. Aborts cleanly
+    /// on pool exhaustion; already-imported blocks stay cached.
+    pub(super) fn import_cached_blocks_dispatch(
+        &self,
+        prompt_tokens: &[u32],
+        chain: &mut spark_runtime::block_keys::BlockKeyChain,
+        payloads: &[(usize, Vec<u8>)],
+    ) -> Result<usize> {
+        chain.extend_to(prompt_tokens);
+        if !chain.is_cacheable() || !self.prefix_cache.is_active() {
+            return Ok(0);
+        }
+        let view = chain.view(prompt_tokens, prompt_tokens.len());
+        let bs = view.block_size();
+        if bs == 0 {
+            return Ok(0);
+        }
+        let num_keys = view.full_keys().len();
+        let ram_blocks = self.prefix_cache.peek_matched_tokens(&view) / bs;
+
+        let mut sorted: Vec<&(usize, Vec<u8>)> = payloads.iter().collect();
+        sorted.sort_by_key(|p| p.0);
+
+        // Dummy entries for the already-cached prefix: `insert` never
+        // reads block_table[i] for pre-existing nodes.
+        let mut block_table = vec![u32::MAX; ram_blocks];
+        let mut imported = 0usize;
+        {
+            let gpu = self.gpu.as_ref();
+            let mut kv = self.kv_cache.lock();
+            let expected_len: usize = (0..kv.num_layers())
+                .map(|l| kv.block_stride_bytes_for_layer(l) * 2)
+                .sum();
+            for (next, (idx, payload)) in (ram_blocks..).zip(sorted) {
+                if *idx != next || *idx >= num_keys {
+                    break;
+                }
+                if payload.len() != expected_len {
+                    tracing::warn!(
+                        "nvme-restore: payload length {} != expected {expected_len}                          at block {idx} — chain ends here",
+                        payload.len(),
+                    );
+                    break;
+                }
+                let Ok(block_idx) = kv.alloc_block() else {
+                    break; // pool pressure — keep what we have
+                };
+                let mut off = 0usize;
+                let mut write_ok = true;
+                for l in 0..kv.num_layers() {
+                    let stride = kv.block_stride_bytes_for_layer(l);
+                    if let Err(e) = kv.write_block(
+                        l,
+                        block_idx,
+                        &payload[off..off + stride],
+                        &payload[off + stride..off + 2 * stride],
+                        gpu,
+                    ) {
+                        tracing::error!("nvme-restore: write_block failed: {e:#}");
+                        write_ok = false;
+                        break;
+                    }
+                    off += 2 * stride;
+                }
+                if !write_ok {
+                    kv.free_block(block_idx);
+                    break;
+                }
+                block_table.push(block_idx);
+                imported += 1;
+            }
+        }
+        if imported == 0 {
+            return Ok(0);
+        }
+        let covered = (ram_blocks + imported) * bs;
+        // Register as cache-owned (matched_tokens = covered → no
+        // seq-owned ref bump; nodes settle at the cache baseline).
+        let v = chain.view(prompt_tokens, covered);
+        let _ = self.prefix_cache.insert(&v, &block_table, &[], covered);
+        tracing::info!(
+            "nvme-restore: imported {imported} block(s) ({} tokens cached, {} from RAM)",
+            covered,
+            ram_blocks * bs,
+        );
+        Ok(covered)
+    }
+
     /// NVMe-tier persist payload: K then V of every attention layer for
     /// ONE logical block, concatenated in layer order. The counterpart
     /// import re-splits by each layer's `block_stride_bytes_for_layer`.

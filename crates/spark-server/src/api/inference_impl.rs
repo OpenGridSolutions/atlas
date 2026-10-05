@@ -57,6 +57,15 @@ impl InferenceRequest {
         media_digests_of(self.image_pixels_ref())
     }
 
+    /// Shared handle on the prompt tokens (NVMe-restore staging keeps it
+    /// across threads without copying).
+    pub fn prompt_tokens_arc(&self) -> std::sync::Arc<Vec<u32>> {
+        match self {
+            InferenceRequest::Blocking { prompt_tokens, .. } => prompt_tokens.clone(),
+            InferenceRequest::Streaming { prompt_tokens, .. } => prompt_tokens.clone(),
+        }
+    }
+
     /// Whether this request carries preprocessed image embeddings.
     pub fn has_image_pixels(&self) -> bool {
         match self {

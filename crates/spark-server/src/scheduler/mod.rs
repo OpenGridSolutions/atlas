@@ -316,6 +316,28 @@ pub fn run(
 
     let mut swap = hotswap_ctl::SwapCtl::new(hotswap.clone(), model_ready.clone());
 
+    // ── NVMe-restore staging (BAT-6) ──
+    // Requests whose prompt has a restorable prefix on the NVMe tier are
+    // routed through a blocking fetch thread; the loop imports the staged
+    // payloads into fresh KV blocks + the radix cache and only then lets
+    // the request enter prefill. The batch never waits on disk.
+    struct StagedRestore {
+        req: InferenceRequest,
+        prompt: Arc<Vec<u32>>,
+        chain: spark_runtime::block_keys::BlockKeyChain,
+        payloads: Vec<(usize, Vec<u8>)>,
+    }
+    let (staged_tx, staged_rx) = std::sync::mpsc::channel::<StagedRestore>();
+    let mut staging_in_flight: usize = 0;
+    // Bounded concurrency: the brief admission overshoot a completed
+    // staging causes is capped by this.
+    const MAX_STAGING: usize = 2;
+    // On import failure (pool pressure) stop staging for a while instead
+    // of looping stage→fail→stage on the same request.
+    let mut staging_backoff_until: Option<Instant> = None;
+    // Completed restores bypass the staging filter on re-entry.
+    let mut restored_ready: Vec<InferenceRequest> = Vec::new();
+
     loop {
         // ── Hot-swap: drain-and-unload control (plan Task 4/5) ──
         if let Some(unload_reply) = swap.poll(
@@ -376,9 +398,92 @@ pub fn run(
         // no-op when the retry buffer is empty).
         crate::kv_tier::with_active(|t| t.pump_retries());
 
+        // ── NVMe-restore completions: import + release into admission ──
+        while let Ok(mut st) = staged_rx.try_recv() {
+            staging_in_flight = staging_in_flight.saturating_sub(1);
+            match model.import_cached_blocks(&st.prompt, &mut st.chain, &st.payloads) {
+                Ok(covered) => {
+                    if covered == 0 && !st.payloads.is_empty() {
+                        // Pool pressure or RAM-match drift — don't re-stage
+                        // this wave; the request prefills normally.
+                        staging_backoff_until =
+                            Some(Instant::now() + std::time::Duration::from_secs(5));
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("nvme-restore import failed: {e:#}");
+                    staging_backoff_until =
+                        Some(Instant::now() + std::time::Duration::from_secs(5));
+                }
+            }
+            restored_ready.push(st.req);
+        }
+
         // ── Drain pending → start prefill (chunked or full) ──
-        let new_reqs =
+        let mut new_reqs =
             drain_pending_requests(&pending, &active, &prefilling, &*policy, max_batch_size);
+
+        // ── NVMe-restore staging filter (BAT-6/BAT-7) ──
+        let staging_open = staging_in_flight < MAX_STAGING
+            && staging_backoff_until.is_none_or(|t| Instant::now() >= t);
+        if staging_open {
+            crate::kv_tier::with_active(|tier| {
+                let min_tokens = tier.restore_min_tokens.max(1);
+                let mut i = 0;
+                while i < new_reqs.len() && staging_in_flight < MAX_STAGING {
+                    let req = &new_reqs[i];
+                    let prompt = req.prompt_tokens_arc();
+                    let digests = req.media_digests();
+                    let chain = model.build_block_key_chain(&prompt, &digests);
+                    let (start_block, keys): (usize, Vec<[u8; 16]>) = {
+                        if !chain.is_cacheable() {
+                            i += 1;
+                            continue;
+                        }
+                        let view = chain.view(&prompt, prompt.len());
+                        let bs = view.block_size();
+                        if bs == 0 {
+                            i += 1;
+                            continue;
+                        }
+                        let ram_blocks = model.peek_prefix_cached_tokens(&view) / bs;
+                        let keys: Vec<[u8; 16]> = view.full_keys()
+                            [ram_blocks.min(view.full_keys().len())..]
+                            .iter()
+                            .map(|k| k.0)
+                            .collect();
+                        let avail = tier.probe_restore(&keys);
+                        if avail * bs < min_tokens {
+                            i += 1;
+                            continue;
+                        }
+                        (ram_blocks, keys[..avail].to_vec())
+                    };
+                    // Stage: hand the request to the fetch thread.
+                    let req = new_reqs.remove(i);
+                    staging_in_flight += 1;
+                    let store = Arc::clone(tier.store());
+                    let tx = staged_tx.clone();
+                    std::thread::spawn(move || {
+                        let payloads =
+                            crate::kv_tier::KvTier::fetch_blocks(&store, start_block, &keys);
+                        let _ = tx.send(StagedRestore {
+                            req,
+                            prompt,
+                            chain,
+                            payloads,
+                        });
+                    });
+                }
+            });
+        }
+        // Completed restores enter admission ahead of fresh arrivals —
+        // their blocks are RAM-resident now (BAT-6's "erst dann in den
+        // Batch").
+        if !restored_ready.is_empty() {
+            restored_ready.extend(new_reqs);
+            new_reqs = std::mem::take(&mut restored_ready);
+        }
         // ATLAS_MEM_DEBUG: admission-time pool stats + GPU/RSS context.
         if crate::memdebug::enabled() && !new_reqs.is_empty() {
             let active_used: usize = active

@@ -35,6 +35,8 @@ pub struct KvTier {
     store: Arc<BlockStore>,
     writer: StoreWriter,
     pub persist_timeout: Duration,
+    /// BAT-7: restorable extensions below this are recomputed instead.
+    pub restore_min_tokens: usize,
     retry: Mutex<RetryBuf>,
 }
 
@@ -60,6 +62,7 @@ pub struct KvTierParams {
     pub write_queue_max_bytes: u64,
     pub write_budget_per_day: Option<u64>,
     pub persist_timeout: Duration,
+    pub restore_min_tokens: usize,
 }
 
 impl KvTier {
@@ -86,9 +89,12 @@ impl KvTier {
             min_free_pct: args.nvme_min_free_pct.min(90),
             write_queue_max_bytes: args.write_queue_max_mb.max(1) << 20,
             write_budget_per_day: args.nvme_write_budget_tb_day.map(|tb| (tb * 1e12) as u64),
+            restore_min_tokens: args.nvme_restore_min_tokens,
             persist_timeout: Duration::from_secs(args.persist_timeout_s.max(1)),
         };
-        Ok(Some(KvTier::open(&params, identity)?))
+        let tier = KvTier::open(&params, identity)?;
+        // Safe: Arc has a single owner right here.
+        Ok(Some(tier))
     }
 
     pub fn open(params: &KvTierParams, identity: &KvTierIdentity) -> Result<Arc<KvTier>> {
@@ -118,12 +124,40 @@ impl KvTier {
             store,
             writer,
             persist_timeout: params.persist_timeout,
+            restore_min_tokens: params.restore_min_tokens,
             retry: Mutex::new(RetryBuf::default()),
         }))
     }
 
     pub fn store(&self) -> &Arc<BlockStore> {
         &self.store
+    }
+
+    /// BAT-6 probe: how many CONTIGUOUS blocks starting at `keys[0]` the
+    /// store holds (index-only, no I/O).
+    pub fn probe_restore(&self, keys: &[[u8; 16]]) -> usize {
+        keys.iter()
+            .take_while(|k| self.store.contains(k, Kind::Kv))
+            .count()
+    }
+
+    /// Staging fetch (runs on a blocking thread, NOT the scheduler):
+    /// read `keys` in chain order, stopping at the first missing or
+    /// invalid record (NVM-6 — the rest is recomputed). Returns
+    /// `(logical_block, payload)` pairs.
+    pub fn fetch_blocks(
+        store: &BlockStore,
+        start_block: usize,
+        keys: &[[u8; 16]],
+    ) -> Vec<(usize, Vec<u8>)> {
+        let mut out = Vec::new();
+        for (i, key) in keys.iter().enumerate() {
+            match store.get(key, Kind::Kv) {
+                Some(rec) => out.push((start_block + i, rec.payload)),
+                None => break,
+            }
+        }
+        out
     }
 
     /// The KV-7 eviction guard bound to this tier's store.

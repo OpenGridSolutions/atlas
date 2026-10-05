@@ -64,14 +64,22 @@ impl TransformerModel {
         prompt_tokens: &[u32],
         media_digests: &[spark_runtime::block_keys::MediaDigest],
     ) {
+        seq.block_keys = self.build_block_key_chain_dispatch(prompt_tokens, media_digests);
+    }
+
+    pub(super) fn build_block_key_chain_dispatch(
+        &self,
+        prompt_tokens: &[u32],
+        media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) -> spark_runtime::block_keys::BlockKeyChain {
         let block_size = self.kv_cache.lock().block_size();
-        seq.block_keys = spark_runtime::block_keys::BlockKeyChain::new(
+        spark_runtime::block_keys::BlockKeyChain::new(
             self.block_key_seed,
             block_size,
             prompt_tokens,
             self.vision_pad_token_id(),
             media_digests,
-        );
+        )
     }
 
     /// Free pinned host memory on model destruction.

@@ -595,6 +595,11 @@ pub struct ServeArgs {
     /// only cache is lost, never results.
     #[arg(long, default_value_t = 30)]
     pub persist_timeout_s: u64,
+
+    /// Minimum restorable prefix extension (tokens) to load from the
+    /// NVMe store instead of recomputing the prefill (BAT-7).
+    #[arg(long, default_value_t = 512)]
+    pub nvme_restore_min_tokens: usize,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

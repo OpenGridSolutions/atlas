@@ -167,6 +167,27 @@ impl Model for TransformerModel {
     fn alloc_sequence(&self) -> Result<SequenceState> {
         self.alloc_sequence_dispatch()
     }
+    fn build_block_key_chain(
+        &self,
+        prompt_tokens: &[u32],
+        media_digests: &[spark_runtime::block_keys::MediaDigest],
+    ) -> spark_runtime::block_keys::BlockKeyChain {
+        self.build_block_key_chain_dispatch(prompt_tokens, media_digests)
+    }
+    fn peek_prefix_cached_tokens(
+        &self,
+        keys: &spark_runtime::block_keys::BlockKeysView<'_>,
+    ) -> usize {
+        self.prefix_cache.peek_matched_tokens(keys)
+    }
+    fn import_cached_blocks(
+        &self,
+        prompt_tokens: &[u32],
+        chain: &mut spark_runtime::block_keys::BlockKeyChain,
+        payloads: &[(usize, Vec<u8>)],
+    ) -> Result<usize> {
+        self.import_cached_blocks_dispatch(prompt_tokens, chain, payloads)
+    }
     fn export_kv_block(&self, seq: &SequenceState, logical_block: usize) -> Result<Vec<u8>> {
         self.export_kv_block_dispatch(seq, logical_block)
     }
