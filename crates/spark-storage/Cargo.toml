@@ -20,6 +20,7 @@ anyhow = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tracing = "0.1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 half = "2"
 rand = "0.8"
 rand_chacha = "0.3"
@@ -37,6 +38,7 @@ io-uring = "0.7"
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+tempfile = "3"
 
 [[example]]
 name = "gds-probe"
