@@ -223,13 +223,17 @@ pub async fn translate(
     };
 
     // Category gate + lazy swap (Plan.md Phase K).
-    let swap_ms =
-        match super::lazy_swap::ensure_model_active(&state, &model_id, ModelCategory::Translate)
-            .await
-        {
-            Ok(ms) => ms,
-            Err(resp) => return resp,
-        };
+    let swap_ms = match super::lazy_swap::ensure_model_active(
+        &state,
+        &model_id,
+        ModelCategory::Translate,
+        false,
+    )
+    .await
+    {
+        Ok(ms) => ms,
+        Err(resp) => return resp,
+    };
 
     let rt = state.runtime();
     let prompt = render_prompt(

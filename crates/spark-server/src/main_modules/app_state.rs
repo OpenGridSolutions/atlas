@@ -90,6 +90,10 @@ pub struct AppState {
     pub auto_compact_threshold: Option<f32>,
     /// Readiness flag: true after model is loaded and scheduler is running.
     pub model_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Pressure-based arena dispatcher (requirements §7). `None` when
+    /// lazy multi-model mode is off — the gate then falls back to the
+    /// legacy synchronous swap.
+    pub arena: Option<std::sync::Arc<crate::arena_sched::ArenaDispatcher>>,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Global kill switch for thinking / reasoning output. When true,

@@ -1128,6 +1128,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             adaptive_sampling,
             session_manager,
             boot_kv_tier,
+            std::time::Duration::from_millis(args.drain_grace_ms.max(1)),
         );
     });
 
@@ -1142,6 +1143,31 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             .context("preseed requires the weights arena (--weights-arena-gb > 0)")?;
         serve_phases::run_boot_preseed(&args, ctx, &ptx_set.modules).await?;
     }
+
+    // Arena dispatcher (requirements §7): replaces the synchronous lazy
+    // swap with queue-pressure-driven switching. Only with lazy
+    // multi-model mode — single-model servers keep today's behaviour.
+    let arena_dispatcher = match (&hotswap_ctx, lazy_enabled) {
+        (Some(ctx), true) => Some(crate::arena_sched::ArenaDispatcher::spawn(
+            std::sync::Arc::new(crate::arena_sched::ArenaQueues::new(
+                args.max_queue_length,
+                args.ewma_alpha,
+            )),
+            crate::arena_sched::DispatcherConfig {
+                decision: crate::arena_sched::DecisionConfig {
+                    kappa: args.kappa,
+                    min_residency_factor: args.min_residency_factor,
+                    max_wait_hard_secs: args.max_wait_hard_s as f64,
+                    idle_epsilon: args.idle_epsilon,
+                },
+                interval: std::time::Duration::from_millis(args.scheduler_interval_ms.max(10)),
+                priority_max_wait: std::time::Duration::from_secs(args.priority_max_wait_s),
+                nonstream_max_wait: std::time::Duration::from_secs(args.nonstream_max_wait_s),
+            },
+            ctx.clone(),
+        )),
+        _ => None,
+    };
 
     // 8. Build app state (model_ready created earlier, next to the
     // scheduler handle, so the hot-swap context shares both).
@@ -1165,6 +1191,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         tool_max_tokens: args.tool_max_tokens,
         auto_compact_threshold: args.auto_compact,
         model_ready: model_ready.clone(),
+        arena: arena_dispatcher,
         request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,
         default_chat_template_kwargs: args

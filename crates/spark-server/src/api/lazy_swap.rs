@@ -39,6 +39,7 @@ pub async fn ensure_model_active(
     state: &Arc<AppState>,
     requested: &str,
     required: ModelCategory,
+    streaming: bool,
 ) -> Result<Option<u64>, Response> {
     let Some(ctx) = state.hotswap.as_ref() else {
         return Ok(None);
@@ -80,12 +81,63 @@ pub async fn ensure_model_active(
     if reg.category != required {
         return Err(category_mismatch(requested, reg.category, required));
     }
+    // ── Pressure-scheduler gate (requirements §7) ──
+    // With the arena dispatcher active, requests never swap synchronously:
+    // the resident model fast-paths (SCH-7), everything else queues a
+    // ticket and waits for the dispatcher's grant. The 503-for-third-model
+    // and "model is unloading" rejections are gone (DRN-4).
+    if let Some(dispatcher) = state.arena.as_ref() {
+        if ctx.state() == SwapState::Running
+            && ctx.active_model().model_id == requested
+            && !dispatcher.swap_in_progress()
+        {
+            dispatcher.queues.note_arrival(requested);
+            return Ok(None);
+        }
+        // Priority tier wiring lands with --trust-proxy-headers; until
+        // then every queued request is normal-tier.
+        let ticket = match dispatcher.queues.submit(requested, false, streaming) {
+            Ok(t) => t,
+            Err(crate::arena_sched::SubmitError::QueueFull { retry_after_secs }) => {
+                let body = serde_json::json!({
+                    "error": {
+                        "message": format!(
+                            "queue for model '{requested}' is full; retry shortly"
+                        ),
+                        "type": "server_error",
+                        "param": "model",
+                        "code": "model_queue_full",
+                    },
+                });
+                return Err((
+                    StatusCode::TOO_MANY_REQUESTS,
+                    [(
+                        axum::http::header::RETRY_AFTER,
+                        retry_after_secs.to_string(),
+                    )],
+                    axum::Json(body),
+                )
+                    .into_response());
+            }
+        };
+        dispatcher.poke();
+        return match ticket.wait().await {
+            crate::arena_sched::TicketOutcome::Granted => {
+                Ok(Some(ticket.waited().as_millis() as u64))
+            }
+            crate::arena_sched::TicketOutcome::Expired => Err(wait_expired(requested)),
+            crate::arena_sched::TicketOutcome::Rejected => Err(swap_error(format!(
+                "model '{requested}' failed to load; the previous model was restored"
+            ))),
+        };
+    }
+
     // Fast path: right model, ready to serve.
     if ctx.state() == SwapState::Running && ctx.active_model().model_id == requested {
         return Ok(None);
     }
 
-    // ── Swap state machine (Phase 3.2): Idle | Swapping{to} ──
+    // ── Legacy synchronous swap (no dispatcher): Idle | Swapping{to} ──
     // Exactly one request claims the swap; same-target requests wait on it
     // (and pass through once it settles, paying no header); a request for
     // a THIRD model while a swap is in flight gets 503 + Retry-After.
@@ -169,7 +221,7 @@ pub async fn ensure_model_active(
 
 /// Perform (or piggyback on) the unload→load sequence. Serialized against
 /// admin snapshot/unload/load operations by the same `admin_lock`.
-async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
+pub(crate) async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
     let _admin = ctx.admin_lock.lock().await;
     // Re-check under the lock: a concurrent request may have completed
     // this exact swap while we waited.
@@ -277,6 +329,26 @@ fn category_mismatch(requested: &str, actual: ModelCategory, required: ModelCate
         "model_endpoint": actual.endpoint(),
     });
     (StatusCode::BAD_REQUEST, axum::Json(body)).into_response()
+}
+
+/// PRI-4 / WAIT-4 expiry: the queue wait bound was exceeded.
+fn wait_expired(requested: &str) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": format!(
+                "request for model '{requested}' exceeded its queue wait bound; retry later"
+            ),
+            "type": "server_error",
+            "param": "model",
+            "code": "model_wait_timeout",
+        },
+    });
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        [(axum::http::header::RETRY_AFTER, "30")],
+        axum::Json(body),
+    )
+        .into_response()
 }
 
 fn swap_error(msg: impl std::fmt::Display) -> Response {

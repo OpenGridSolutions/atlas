@@ -18,9 +18,8 @@ use super::types::{ActiveSeq, ControlMsg, PendingQueue, PrefillInProgress, Swapp
 use crate::api::{InferenceRequest, StreamEvent};
 use crate::main_modules::hotswap::{HotswapCtx, SwapState};
 
-/// Max grace for running sequences after an unload request; afterwards they
-/// are force-finished with finish_reason "model_swap" (plan Task 4).
-const DRAIN_GRACE: Duration = Duration::from_millis(2000);
+// Drain grace is configurable since the pressure-scheduler stage
+// (`--drain-grace-ms`, DRN-1); SwapCtl carries the value.
 
 type Shared = Arc<(Mutex<PendingQueue>, Condvar)>;
 type Reply = tokio::sync::oneshot::Sender<Result<serde_json::Value>>;
@@ -42,15 +41,22 @@ pub(super) fn fail_request(req: InferenceRequest, msg: &str) {
 pub(super) struct SwapCtl {
     hotswap: Option<Arc<HotswapCtx>>,
     model_ready: Arc<AtomicBool>,
+    /// DRN-1: grace before force-finishing running sequences.
+    drain_grace: Duration,
     /// In-progress drain: reply channel + force-finish deadline.
     draining: Option<(Reply, Instant)>,
 }
 
 impl SwapCtl {
-    pub fn new(hotswap: Option<Arc<HotswapCtx>>, model_ready: Arc<AtomicBool>) -> Self {
+    pub fn new(
+        hotswap: Option<Arc<HotswapCtx>>,
+        model_ready: Arc<AtomicBool>,
+        drain_grace: Duration,
+    ) -> Self {
         Self {
             hotswap,
             model_ready,
+            drain_grace,
             draining: None,
         }
     }
@@ -101,7 +107,7 @@ impl SwapCtl {
                     if let Some(ctx) = &self.hotswap {
                         ctx.set_state(SwapState::Draining);
                     }
-                    self.draining = Some((reply, Instant::now() + DRAIN_GRACE));
+                    self.draining = Some((reply, Instant::now() + self.drain_grace));
                 }
                 ControlMsg::Load { reply, .. } => {
                     let _ = reply.send(Err(anyhow::anyhow!(

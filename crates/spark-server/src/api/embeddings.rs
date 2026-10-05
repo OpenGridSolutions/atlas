@@ -106,6 +106,7 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Respon
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Embed,
+        false,
     )
     .await
     {

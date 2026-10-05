@@ -642,6 +642,11 @@ pub struct ServeArgs {
     /// (WAIT-3/4) — keep below the reverse proxy's read timeout.
     #[arg(long, default_value_t = 45)]
     pub nonstream_max_wait_s: u64,
+
+    /// Drain grace before running requests are force-finished with
+    /// finish_reason="model_swap" (DRN-1; previously a fixed 2 s).
+    #[arg(long, default_value_t = 2000)]
+    pub drain_grace_ms: u64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

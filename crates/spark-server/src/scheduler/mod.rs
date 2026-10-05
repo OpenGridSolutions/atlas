@@ -102,7 +102,17 @@ use spark_runtime::sampler::{
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::time::Instant;
+
+/// Live scheduler occupancy (active + in-progress prefills), published
+/// once per loop iteration for the arena dispatcher's N_active term
+/// (BAT-11). Process-global like the kv_stats counters.
+static SCHED_LOAD: AtomicUsize = AtomicUsize::new(0);
+
+pub fn scheduler_load() -> usize {
+    SCHED_LOAD.load(AtomicOrdering::Relaxed)
+}
 
 use crate::api::{GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::{GrammarEngine, GrammarState};
@@ -197,6 +207,7 @@ pub fn run(
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
     kv_tier: Option<Arc<crate::kv_tier::KvTier>>,
+    drain_grace: std::time::Duration,
 ) {
     // NVMe tier for the boot model; re-installed per hot-swap load.
     crate::kv_tier::set_active(kv_tier);
@@ -314,7 +325,7 @@ pub fn run(
     // ATLAS_MEM_DEBUG: block size for prefix-reuse math (no-op when off).
     crate::memdebug::init(block_size);
 
-    let mut swap = hotswap_ctl::SwapCtl::new(hotswap.clone(), model_ready.clone());
+    let mut swap = hotswap_ctl::SwapCtl::new(hotswap.clone(), model_ready.clone(), drain_grace);
 
     // ── NVMe-restore staging (BAT-6) ──
     // Requests whose prompt has a restorable prefix on the NVMe tier are
@@ -673,6 +684,7 @@ pub fn run(
         );
 
         if active.is_empty() {
+            SCHED_LOAD.store(prefilling.len(), AtomicOrdering::Relaxed);
             // ATLAS_MEM_DEBUG: a prefill error can end the last live request
             // here (before the end-of-loop check is reached via `continue`).
             if prefilling.is_empty() && swapped.is_empty() {
@@ -881,6 +893,8 @@ pub fn run(
                 }
             }
         }
+
+        SCHED_LOAD.store(active.len() + prefilling.len(), AtomicOrdering::Relaxed);
 
         // ATLAS_MEM_DEBUG: idle invariant — zero live sequences after this
         // step's retirement. Logs once per busy→idle transition; the next

@@ -102,6 +102,7 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Rerank,
+        false,
     )
     .await
     {

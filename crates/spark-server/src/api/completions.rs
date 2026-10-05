@@ -119,6 +119,7 @@ pub async fn completions(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
+        req.stream,
     )
     .await
     {

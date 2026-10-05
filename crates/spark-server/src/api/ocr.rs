@@ -225,7 +225,9 @@ pub async fn ocr(
 
     // Category gate + lazy swap (Plan.md Phase K).
     let swap_ms =
-        match super::lazy_swap::ensure_model_active(&state, &model_id, ModelCategory::Ocr).await {
+        match super::lazy_swap::ensure_model_active(&state, &model_id, ModelCategory::Ocr, false)
+            .await
+        {
             Ok(ms) => ms,
             Err(resp) => return resp,
         };

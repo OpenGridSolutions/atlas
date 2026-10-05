@@ -1,35 +1,91 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Per-arena-model request queues (SCH-1/2/3, PRI-1): two FIFO tiers
-//! (priority, normal) per model, arrival-rate EWMA, pressure/oldest-wait
-//! statistics for the decision function, and queue-length limits
-//! (SCH-8). Thread-safe — HTTP handlers submit from Tokio workers, the
-//! dispatcher consumes from its own task.
+//! Per-arena-model admission queues (SCH-1/2/3, PRI-1) — TICKET based.
+//!
+//! Handlers cannot tokenize a prompt before its model's tokenizer is
+//! active, so what queues here is not a finished `InferenceRequest` but
+//! a *ticket*: the handler registers, awaits the grant, and only then
+//! proceeds exactly like today (snapshot the runtime, tokenize, submit
+//! to the GPU scheduler). The dispatcher grants tickets when their model
+//! becomes resident (priority tier first — SCH-6/PRI-1), expires them
+//! per PRI-4/WAIT-4, and rejects them when a load fails (MOD-10).
+//!
+//! A dropped handler future (client disconnected while waiting) drops
+//! its ticket Arc; the queue holds Weaks and sweeps them out (DRN-5).
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
-use crate::api::InferenceRequest;
+const WAITING: u8 = 0;
+const GRANTED: u8 = 1;
+const EXPIRED: u8 = 2;
+const REJECTED: u8 = 3;
 
-/// One queued request with its admission metadata (SCH-1).
-pub struct QueuedRequest {
-    pub req: InferenceRequest,
-    pub enqueued: Instant,
-    pub priority: bool,
-    pub streaming: bool,
+/// Handler-visible outcome of a wait.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TicketOutcome {
+    /// Model is resident — proceed to tokenize + submit.
+    Granted,
+    /// Wait bound exceeded (PRI-4 / WAIT-4) → 503 + Retry-After.
+    Expired,
+    /// The model failed to load (MOD-10) → 503 with the failure note.
+    Rejected,
+}
+
+pub(crate) struct TicketInner {
+    enqueued: Instant,
+    priority: bool,
+    streaming: bool,
+    state: AtomicU8,
+    notify: tokio::sync::Notify,
+}
+
+/// The handler's side of a queued admission (SCH-1 metadata lives on the
+/// inner shared with the queue).
+pub struct Ticket {
+    inner: Arc<TicketInner>,
+}
+
+impl Ticket {
+    /// Await the dispatcher's verdict.
+    pub async fn wait(&self) -> TicketOutcome {
+        loop {
+            match self.inner.state.load(Ordering::Acquire) {
+                GRANTED => return TicketOutcome::Granted,
+                EXPIRED => return TicketOutcome::Expired,
+                REJECTED => return TicketOutcome::Rejected,
+                _ => self.inner.notify.notified().await,
+            }
+        }
+    }
+
+    pub fn waited(&self) -> Duration {
+        self.inner.enqueued.elapsed()
+    }
 }
 
 #[derive(Default)]
 struct ModelQueue {
-    priority: VecDeque<QueuedRequest>,
-    normal: VecDeque<QueuedRequest>,
-    /// Arrival rate EWMA (req/s) over ALL tiers (λ_A in §7).
+    priority: VecDeque<Weak<TicketInner>>,
+    normal: VecDeque<Weak<TicketInner>>,
+    /// Arrival rate EWMA (req/s) over ALL arrivals for this model —
+    /// queued AND fast-path (λ in §7).
     lambda: f64,
     last_arrival: Option<Instant>,
 }
 
 impl ModelQueue {
+    fn sweep(&mut self) {
+        for tier in [&mut self.priority, &mut self.normal] {
+            tier.retain(|w| {
+                w.upgrade()
+                    .is_some_and(|t| t.state.load(Ordering::Acquire) == WAITING)
+            });
+        }
+    }
+
     fn len(&self) -> usize {
         self.priority.len() + self.normal.len()
     }
@@ -44,24 +100,23 @@ impl ModelQueue {
                 alpha * sample + (1.0 - alpha) * self.lambda
             };
         }
-        self.last_arrival = now.into();
+        self.last_arrival = Some(now);
     }
 
-    /// Decay λ toward zero when no arrivals happen (idle detection must
-    /// not act on a stale burst-era λ).
+    /// Decay λ toward zero in silence (idle detection must not act on a
+    /// stale burst-era λ). Halves per 10 s without arrivals.
     fn decayed_lambda(&self, now: Instant) -> f64 {
         match self.last_arrival {
             None => 0.0,
             Some(prev) => {
                 let silent = now.duration_since(prev).as_secs_f64();
-                // Halve per 10 s of silence — smooth, monotone decay.
                 self.lambda * 0.5f64.powf(silent / 10.0)
             }
         }
     }
 }
 
-/// Per-tier snapshot for telemetry + the decision function (SCH-3).
+/// Per-tier snapshot for the decision function + telemetry (SCH-3, PRI-6).
 #[derive(Clone, Debug, Default)]
 pub struct QueueSnapshot {
     pub priority_len: usize,
@@ -96,148 +151,174 @@ impl ArenaQueues {
         }
     }
 
-    /// Enqueue a request for `model` (SCH-1; priority tier per PRI-1).
+    /// Register a waiter for `model` (SCH-1; priority tier per PRI-1).
     pub fn submit(
         &self,
         model: &str,
-        req: InferenceRequest,
         priority: bool,
         streaming: bool,
-    ) -> Result<(), Box<(InferenceRequest, SubmitError)>> {
+    ) -> Result<Ticket, SubmitError> {
         let now = Instant::now();
         let mut g = self.inner.lock().expect("arena queues lock");
         let q = g.entry(model.to_string()).or_default();
+        q.sweep();
         if q.len() >= self.max_queue_length {
-            return Err(Box::new((
-                req,
-                SubmitError::QueueFull {
-                    retry_after_secs: 5,
-                },
-            )));
+            return Err(SubmitError::QueueFull {
+                retry_after_secs: 5,
+            });
         }
         q.observe_arrival(now, self.ewma_alpha);
-        let item = QueuedRequest {
-            req,
+        let inner = Arc::new(TicketInner {
             enqueued: now,
             priority,
             streaming,
-        };
+            state: AtomicU8::new(WAITING),
+            notify: tokio::sync::Notify::new(),
+        });
+        let weak = Arc::downgrade(&inner);
         if priority {
-            q.priority.push_back(item);
+            q.priority.push_back(weak);
         } else {
-            q.normal.push_back(item);
+            q.normal.push_back(weak);
         }
-        Ok(())
+        Ok(Ticket { inner })
     }
 
-    /// Dequeue the next request for `model` — priority tier first, FIFO
-    /// within each tier (PRI-1, SCH-6).
-    pub fn pop(&self, model: &str) -> Option<QueuedRequest> {
+    /// λ bookkeeping for fast-path arrivals (request hit the resident
+    /// model and never queued).
+    pub fn note_arrival(&self, model: &str) {
+        let now = Instant::now();
         let mut g = self.inner.lock().expect("arena queues lock");
-        let q = g.get_mut(model)?;
-        q.priority.pop_front().or_else(|| q.normal.pop_front())
+        g.entry(model.to_string())
+            .or_default()
+            .observe_arrival(now, self.ewma_alpha);
     }
 
-    /// Push a request back to the FRONT of its tier (admission couldn't
-    /// place it yet — keeps FIFO order intact).
-    pub fn push_front(&self, model: &str, item: QueuedRequest) {
-        let mut g = self.inner.lock().expect("arena queues lock");
-        let q = g.entry(model.to_string()).or_default();
-        if item.priority {
-            q.priority.push_front(item);
-        } else {
-            q.normal.push_front(item);
-        }
-    }
-
-    /// Drop queued requests whose client is gone (DRN-5). The probe
-    /// returns true when the request's response channel is closed.
-    pub fn drop_disconnected(&self, is_dead: impl Fn(&InferenceRequest) -> bool) -> usize {
-        let mut g = self.inner.lock().expect("arena queues lock");
-        let mut dropped = 0;
-        for q in g.values_mut() {
-            for tier in [&mut q.priority, &mut q.normal] {
-                let before = tier.len();
-                tier.retain(|item| !is_dead(&item.req));
-                dropped += before - tier.len();
+    fn finish_tier(tier: &mut VecDeque<Weak<TicketInner>>, state: u8) -> usize {
+        let mut n = 0;
+        for w in tier.drain(..) {
+            if let Some(t) = w.upgrade()
+                && t.state
+                    .compare_exchange(WAITING, state, Ordering::AcqRel, Ordering::Acquire)
+                    .is_ok()
+            {
+                t.notify.notify_waiters();
+                n += 1;
             }
         }
-        dropped
+        n
     }
 
-    /// Expire PRIORITY requests for `not_loaded` models older than
-    /// `priority_max_wait` (PRI-4) and NON-STREAMING requests older than
-    /// `nonstream_max_wait` (WAIT-4). Returns the expired requests for
-    /// the caller to answer with 503 + Retry-After.
-    pub fn take_expired(
+    /// Grant every waiter of `model` — priority tier first (SCH-6).
+    /// Returns (priority, normal) grant counts.
+    pub fn grant_all(&self, model: &str) -> (usize, usize) {
+        let mut g = self.inner.lock().expect("arena queues lock");
+        let Some(q) = g.get_mut(model) else {
+            return (0, 0);
+        };
+        let p = Self::finish_tier(&mut q.priority, GRANTED);
+        let n = Self::finish_tier(&mut q.normal, GRANTED);
+        (p, n)
+    }
+
+    /// Reject every waiter of `model` (load failed, MOD-10).
+    pub fn reject_all(&self, model: &str) -> usize {
+        let mut g = self.inner.lock().expect("arena queues lock");
+        let Some(q) = g.get_mut(model) else { return 0 };
+        Self::finish_tier(&mut q.priority, REJECTED) + Self::finish_tier(&mut q.normal, REJECTED)
+    }
+
+    /// Expire overdue waiters: PRIORITY tickets for NOT-loaded models past
+    /// `priority_max_wait` (PRI-4) and NON-streaming tickets past
+    /// `nonstream_max_wait` (WAIT-4). Returns the number expired.
+    pub fn expire_sweep(
         &self,
         loaded_model: Option<&str>,
         priority_max_wait: Duration,
         nonstream_max_wait: Duration,
-    ) -> Vec<(String, QueuedRequest)> {
+    ) -> usize {
         let now = Instant::now();
         let mut g = self.inner.lock().expect("arena queues lock");
-        let mut out = Vec::new();
+        let mut expired = 0;
         for (model, q) in g.iter_mut() {
             let foreign = loaded_model != Some(model.as_str());
-            let mut keep_p = VecDeque::new();
-            for item in q.priority.drain(..) {
-                let waited = now.duration_since(item.enqueued);
-                let expired = (foreign && waited > priority_max_wait)
-                    || (!item.streaming && waited > nonstream_max_wait);
-                if expired {
-                    out.push((model.clone(), item));
-                } else {
-                    keep_p.push_back(item);
-                }
+            for tier in [&mut q.priority, &mut q.normal] {
+                tier.retain(|w| {
+                    let Some(t) = w.upgrade() else { return false };
+                    if t.state.load(Ordering::Acquire) != WAITING {
+                        return false;
+                    }
+                    let waited = now.duration_since(t.enqueued);
+                    let overdue = (t.priority && foreign && waited > priority_max_wait)
+                        || (!t.streaming && waited > nonstream_max_wait);
+                    if overdue
+                        && t.state
+                            .compare_exchange(WAITING, EXPIRED, Ordering::AcqRel, Ordering::Acquire)
+                            .is_ok()
+                    {
+                        t.notify.notify_waiters();
+                        expired += 1;
+                        return false;
+                    }
+                    true
+                });
             }
-            q.priority = keep_p;
-            let mut keep_n = VecDeque::new();
-            for item in q.normal.drain(..) {
-                let waited = now.duration_since(item.enqueued);
-                if !item.streaming && waited > nonstream_max_wait {
-                    out.push((model.clone(), item));
-                } else {
-                    keep_n.push_back(item);
-                }
-            }
-            q.normal = keep_n;
         }
-        out
+        expired
     }
 
     /// Snapshot of one model's queue (SCH-3, PRI-6).
     pub fn snapshot(&self, model: &str) -> QueueSnapshot {
         let now = Instant::now();
-        let g = self.inner.lock().expect("arena queues lock");
-        match g.get(model) {
+        let mut g = self.inner.lock().expect("arena queues lock");
+        match g.get_mut(model) {
             None => QueueSnapshot::default(),
-            Some(q) => snapshot_of(q, now),
+            Some(q) => {
+                q.sweep();
+                snapshot_of(q, now)
+            }
         }
     }
 
-    /// Snapshots of every model with queued work or a live λ.
+    /// Snapshots of every known model.
     pub fn snapshot_all(&self) -> Vec<(String, QueueSnapshot)> {
         let now = Instant::now();
-        let g = self.inner.lock().expect("arena queues lock");
-        g.iter()
-            .map(|(m, q)| (m.clone(), snapshot_of(q, now)))
+        let mut g = self.inner.lock().expect("arena queues lock");
+        g.iter_mut()
+            .map(|(m, q)| {
+                q.sweep();
+                (m.clone(), snapshot_of(q, now))
+            })
             .collect()
     }
 
-    pub fn total_queued(&self) -> usize {
-        let g = self.inner.lock().expect("arena queues lock");
-        g.values().map(|q| q.len()).sum()
+    pub fn queued_for(&self, model: &str) -> usize {
+        let mut g = self.inner.lock().expect("arena queues lock");
+        g.get_mut(model)
+            .map(|q| {
+                q.sweep();
+                q.len()
+            })
+            .unwrap_or(0)
     }
 
-    pub fn queued_for(&self, model: &str) -> usize {
-        let g = self.inner.lock().expect("arena queues lock");
-        g.get(model).map(|q| q.len()).unwrap_or(0)
+    pub fn total_queued(&self) -> usize {
+        let mut g = self.inner.lock().expect("arena queues lock");
+        g.values_mut()
+            .map(|q| {
+                q.sweep();
+                q.len()
+            })
+            .sum()
     }
 }
 
 fn snapshot_of(q: &ModelQueue, now: Instant) -> QueueSnapshot {
-    let wait = |item: &QueuedRequest| now.duration_since(item.enqueued).as_secs_f64();
+    let wait = |w: &Weak<TicketInner>| {
+        w.upgrade()
+            .map(|t| now.duration_since(t.enqueued).as_secs_f64())
+            .unwrap_or(0.0)
+    };
     QueueSnapshot {
         priority_len: q.priority.len(),
         normal_len: q.normal.len(),
@@ -252,159 +333,91 @@ fn snapshot_of(q: &ModelQueue, now: Instant) -> QueueSnapshot {
 mod tests {
     use super::*;
 
-    fn dummy_req() -> InferenceRequest {
-        let (tx, _rx) = tokio::sync::oneshot::channel();
-        InferenceRequest::Blocking {
-            prompt_tokens: std::sync::Arc::new(vec![1, 2, 3]),
-            session_hash: 0,
-            image_pixels: Vec::new(),
-            max_tokens: 1,
-            min_tokens: 0,
-            temperature: 1.0,
-            top_k: 0,
-            top_p: 1.0,
-            top_n_sigma: 0.0,
-            min_p: 0.0,
-            repetition_penalty: 1.0,
-            presence_penalty: 0.0,
-            frequency_penalty: 0.0,
-            dry_multiplier: 0.0,
-            dry_base: 0.0,
-            dry_allowed_length: 0,
-            lz_penalty: 0.0,
-            logit_bias: Vec::new(),
-            stop_tokens: Vec::new(),
-            enable_thinking: false,
-            thinking_budget: None,
-            repetition_detection: None,
-            require_tool_call: false,
-            tools_present: false,
-            suppress_tool_call: false,
-            disable_mtp: false,
-            grammar_spec: None,
-            seed: None,
-            top_logprobs: None,
-            timeout_at: None,
-            logit_probe: None,
-            capture_hidden: false,
-            response_tx: tx,
-        }
-    }
-
-    #[test]
-    fn priority_tier_pops_first_fifo_within_tiers() {
+    #[tokio::test]
+    async fn grant_wakes_waiters_priority_first() {
         let q = ArenaQueues::new(64, 0.2);
-        q.submit("m", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("m", dummy_req(), true, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("m", dummy_req(), true, false)
-            .map_err(|_| ())
-            .unwrap();
-        let a = q.pop("m").unwrap();
-        let b = q.pop("m").unwrap();
-        let c = q.pop("m").unwrap();
-        assert!(a.priority && b.priority && !c.priority);
-        assert!(a.enqueued <= b.enqueued, "FIFO within the priority tier");
-        assert!(q.pop("m").is_none());
+        let n = q.submit("m", false, false).unwrap();
+        let p = q.submit("m", true, false).unwrap();
+        let (granted_p, granted_n) = q.grant_all("m");
+        assert_eq!((granted_p, granted_n), (1, 1));
+        assert_eq!(p.wait().await, TicketOutcome::Granted);
+        assert_eq!(n.wait().await, TicketOutcome::Granted);
     }
 
-    #[test]
-    fn queue_full_rejects_with_429_semantics() {
+    #[tokio::test]
+    async fn queue_full_rejects_with_429_semantics() {
         let q = ArenaQueues::new(2, 0.2);
-        q.submit("m", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("m", dummy_req(), true, false)
-            .map_err(|_| ())
-            .unwrap();
-        let err = q.submit("m", dummy_req(), false, false);
+        let _a = q.submit("m", false, false).unwrap();
+        let _b = q.submit("m", true, false).unwrap();
         assert!(matches!(
-            err.map_err(|b| b.1),
+            q.submit("m", false, false),
             Err(SubmitError::QueueFull { .. })
         ));
         // Other models are unaffected.
-        q.submit("other", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
+        let _c = q.submit("other", false, false).unwrap();
     }
 
-    #[test]
-    fn pressure_counts_only_normal_tier() {
+    #[tokio::test]
+    async fn dropped_ticket_leaves_the_queue() {
+        let q = ArenaQueues::new(2, 0.2);
+        {
+            let _dropped = q.submit("m", false, false).unwrap();
+        } // client disconnected (DRN-5)
+        assert_eq!(q.queued_for("m"), 0);
+        // Its slot is reusable.
+        let _a = q.submit("m", false, false).unwrap();
+        let _b = q.submit("m", false, false).unwrap();
+        assert!(q.submit("m", false, false).is_err());
+    }
+
+    #[tokio::test]
+    async fn pressure_counts_only_normal_tier() {
         let q = ArenaQueues::new(64, 0.2);
-        q.submit("m", dummy_req(), true, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("m", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(20));
+        let _p = q.submit("m", true, false).unwrap();
+        let _n = q.submit("m", false, false).unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
         let s = q.snapshot("m");
-        assert_eq!(s.priority_len, 1);
-        assert_eq!(s.normal_len, 1);
+        assert_eq!((s.priority_len, s.normal_len), (1, 1));
         assert!(s.normal_pressure_secs > 0.0);
         assert!(s.oldest_priority_wait_secs > 0.0);
-        // PRI-2: the priority wait is NOT part of the normal pressure.
         assert!(s.normal_pressure_secs < 2.0 * s.oldest_normal_wait_secs + 1e-6);
     }
 
-    #[test]
-    fn lambda_rises_with_arrivals_and_decays_in_silence() {
-        let q = ArenaQueues::new(64, 0.5);
-        for _ in 0..5 {
-            q.submit("m", dummy_req(), false, false)
-                .map_err(|_| ())
-                .unwrap();
-            std::thread::sleep(Duration::from_millis(5));
-        }
-        let live = q.snapshot("m").lambda;
-        assert!(live > 1.0, "5ms inter-arrivals → λ ≫ 1/s, got {live}");
-    }
-
-    #[test]
-    fn push_front_preserves_head_position() {
+    #[tokio::test]
+    async fn expiry_hits_foreign_priority_and_nonstream() {
         let q = ArenaQueues::new(64, 0.2);
-        q.submit("m", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("m", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap();
-        let head = q.pop("m").unwrap();
-        let head_t = head.enqueued;
-        q.push_front("m", head);
-        assert_eq!(q.pop("m").unwrap().enqueued, head_t);
-    }
-
-    #[test]
-    fn expiry_hits_foreign_priority_and_nonstream_waiters() {
-        let q = ArenaQueues::new(64, 0.2);
-        q.submit("loaded", dummy_req(), true, false)
-            .map_err(|_| ())
-            .unwrap();
-        q.submit("other", dummy_req(), true, true)
-            .map_err(|_| ())
-            .unwrap(); // foreign priority (streaming)
-        q.submit("other", dummy_req(), false, false)
-            .map_err(|_| ())
-            .unwrap(); // foreign normal nonstream
-        std::thread::sleep(Duration::from_millis(15));
-        // priority_max_wait exceeded for foreign priority; nonstream_max_wait
-        // exceeded for the nonstream one; loaded-model priority survives
-        // (PRI-4 applies to NOT-loaded models only; it is streaming? no —
-        // loaded + nonstream BUT nonstream_max also applies... use large).
-        let expired = q.take_expired(
+        let loaded_stream_p = q.submit("loaded", true, true).unwrap();
+        let foreign_p = q.submit("other", true, true).unwrap();
+        let nonstream = q.submit("other", false, false).unwrap();
+        tokio::time::sleep(Duration::from_millis(15)).await;
+        let expired = q.expire_sweep(
             Some("loaded"),
             Duration::from_millis(10),
             Duration::from_millis(10),
         );
-        let models: Vec<&str> = expired.iter().map(|(m, _)| m.as_str()).collect();
-        assert!(models.contains(&"other"));
-        // the loaded model's nonstream priority item also expired via
-        // nonstream_max_wait (WAIT-4 applies regardless of model).
-        assert_eq!(expired.len(), 3);
-        assert_eq!(q.total_queued(), 0);
+        assert_eq!(expired, 2);
+        assert_eq!(foreign_p.wait().await, TicketOutcome::Expired);
+        assert_eq!(nonstream.wait().await, TicketOutcome::Expired);
+        // Loaded-model streaming priority ticket survives both rules.
+        assert_eq!(q.queued_for("loaded"), 1);
+        drop(loaded_stream_p);
+    }
+
+    #[tokio::test]
+    async fn reject_all_signals_load_failure() {
+        let q = ArenaQueues::new(64, 0.2);
+        let t = q.submit("m", false, false).unwrap();
+        assert_eq!(q.reject_all("m"), 1);
+        assert_eq!(t.wait().await, TicketOutcome::Rejected);
+    }
+
+    #[tokio::test]
+    async fn lambda_rises_with_arrivals() {
+        let q = ArenaQueues::new(64, 0.5);
+        for _ in 0..5 {
+            q.note_arrival("m");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        assert!(q.snapshot("m").lambda > 1.0);
     }
 }

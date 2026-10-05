@@ -6,10 +6,13 @@
 //! lazy swap.
 
 pub mod decision;
+pub mod dispatcher;
 pub mod queues;
 
 // Consumed by the dispatcher stage; re-exported for its call sites.
 #[allow(unused_imports)]
 pub use decision::{ActiveStats, CandidateStats, Decision, DecisionConfig, SwapTrigger, decide};
 #[allow(unused_imports)]
-pub use queues::{ArenaQueues, QueueSnapshot, QueuedRequest, SubmitError};
+pub use dispatcher::{ArenaDispatcher, DispatcherConfig};
+#[allow(unused_imports)]
+pub use queues::{ArenaQueues, QueueSnapshot, SubmitError, Ticket, TicketOutcome};
