@@ -24,6 +24,7 @@
 mod adaptive_sampler;
 mod anthropic;
 mod api;
+mod arena_sched;
 mod auth;
 mod citation;
 mod cli;

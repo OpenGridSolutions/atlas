@@ -605,6 +605,43 @@ pub struct ServeArgs {
     /// (MOD-8, SCH-2).
     #[arg(long, default_value_t = 0.2)]
     pub ewma_alpha: f64,
+
+    // ── Pressure scheduler (requirements §7) ──
+    /// Tuning factor of the swap threshold S_B (κ = 1 ⇒ break-even).
+    #[arg(long, default_value_t = 1.0)]
+    pub kappa: f64,
+
+    /// Minimum arena residency in multiples of T_swap (hysteresis).
+    #[arg(long, default_value_t = 2.0)]
+    pub min_residency_factor: f64,
+
+    /// Starvation bound for normal requests in seconds; past it the
+    /// candidate wins regardless of pressure or hysteresis.
+    #[arg(long, default_value_t = 60)]
+    pub max_wait_hard_s: u64,
+
+    /// Expected loaded-model arrivals during a swap below which the
+    /// arena counts as idle.
+    #[arg(long, default_value_t = 0.1)]
+    pub idle_epsilon: f64,
+
+    /// Periodic evaluation interval of the swap decision (ms).
+    #[arg(long, default_value_t = 200)]
+    pub scheduler_interval_ms: u64,
+
+    /// Per-model queue bound; past it HTTP 429 + Retry-After (SCH-8).
+    #[arg(long, default_value_t = 64)]
+    pub max_queue_length: usize,
+
+    /// Maximum wait of a PRIORITY request on a not-loaded model before
+    /// HTTP 503 + Retry-After (PRI-4).
+    #[arg(long, default_value_t = 300)]
+    pub priority_max_wait_s: u64,
+
+    /// Maximum queue wait of a NON-streaming request before HTTP 503
+    /// (WAIT-3/4) — keep below the reverse proxy's read timeout.
+    #[arg(long, default_value_t = 45)]
+    pub nonstream_max_wait_s: u64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named
