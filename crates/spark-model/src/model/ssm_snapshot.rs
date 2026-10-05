@@ -358,6 +358,72 @@ impl SsmSnapshotPool {
         Ok(())
     }
 
+    /// Bytes of one serialised snapshot (h + conv per SSM layer) — the
+    /// NVMe `.ssm` payload size.
+    pub(super) fn host_bytes(&self) -> usize {
+        self.num_ssm_layers * (self.h_bytes + self.conv_bytes)
+    }
+
+    /// D2H-export a snapshot slot (NVMe persist). Layout: per SSM layer,
+    /// h_state then conv_state.
+    pub(super) fn export_host(&self, snap_slot: usize, gpu: &dyn GpuBackend) -> Result<Vec<u8>> {
+        let mut out = Vec::with_capacity(self.host_bytes());
+        let mut h_buf = vec![0u8; self.h_bytes];
+        let mut c_buf = vec![0u8; self.conv_bytes];
+        for i in 0..self.num_ssm_layers {
+            gpu.copy_d2h(
+                self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+                &mut h_buf,
+            )?;
+            gpu.copy_d2h(
+                self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),
+                &mut c_buf,
+            )?;
+            out.extend_from_slice(&h_buf);
+            out.extend_from_slice(&c_buf);
+        }
+        Ok(out)
+    }
+
+    /// H2D-import an NVMe `.ssm` payload into a fresh snapshot slot.
+    /// Returns `None` when the pool has no free slot (caller may reclaim
+    /// and retry). The slot carries no session tag (restorable by any
+    /// session — the chain key already proves content identity).
+    pub(super) fn import_host(
+        &self,
+        payload: &[u8],
+        gpu: &dyn GpuBackend,
+    ) -> Result<Option<usize>> {
+        if !self.is_enabled() {
+            return Ok(None);
+        }
+        anyhow::ensure!(
+            payload.len() == self.host_bytes(),
+            "ssm payload {} != expected {}",
+            payload.len(),
+            self.host_bytes(),
+        );
+        let Some(snap_slot) = self.free_slots.lock().pop() else {
+            return Ok(None);
+        };
+        self.slot_has_hidden.lock().remove(&snap_slot);
+        self.session_tags.lock().remove(&snap_slot);
+        let mut off = 0usize;
+        for i in 0..self.num_ssm_layers {
+            gpu.copy_h2d(
+                &payload[off..off + self.h_bytes],
+                self.h_snapshots[i].offset(snap_slot * self.h_bytes),
+            )?;
+            off += self.h_bytes;
+            gpu.copy_h2d(
+                &payload[off..off + self.conv_bytes],
+                self.conv_snapshots[i].offset(snap_slot * self.conv_bytes),
+            )?;
+            off += self.conv_bytes;
+        }
+        Ok(Some(snap_slot))
+    }
+
     /// Return a snapshot slot to the free list.
     pub(super) fn free(&self, snap_slot: usize) {
         self.slot_has_hidden.lock().remove(&snap_slot);

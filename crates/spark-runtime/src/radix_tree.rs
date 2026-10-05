@@ -191,6 +191,20 @@ impl PrefixCache for RadixTree {
         self.inner.lock().dec_refs(keys.full_keys());
     }
 
+    fn peek_snapshot(
+        &self,
+        keys: &BlockKeysView<'_>,
+        max_tokens: usize,
+        session_hash: u64,
+    ) -> Option<(usize, usize)> {
+        if !keys.cacheable() {
+            return None;
+        }
+        self.snapshot_index
+            .lock()
+            .peek(keys, max_tokens, session_hash)
+    }
+
     fn set_evict_guard(&self, guard: Option<EvictGuard>) {
         *self.evict_guard.lock() = guard;
     }

@@ -117,6 +117,32 @@ impl SsmSnapshotIndex {
         best
     }
 
+    /// Read-only variant of `lookup`: no LRU bump, no hit count, no
+    /// live-session tracking.
+    pub(super) fn peek(
+        &self,
+        keys: &BlockKeysView<'_>,
+        max_tokens: usize,
+        session_hash: u64,
+    ) -> Option<(usize, usize)> {
+        let mut best: Option<(usize, usize)> = None;
+        for entry in &self.entries {
+            if entry.token_count > max_tokens {
+                continue;
+            }
+            if session_hash != 0 && entry.session_hash != 0 && entry.session_hash != session_hash {
+                continue;
+            }
+            if keys.key_at(entry.token_count).fold_u64() != entry.prefix_hash {
+                continue;
+            }
+            if best.is_none_or(|(_, tc)| entry.token_count > tc) {
+                best = Some((entry.snapshot_id, entry.token_count));
+            }
+        }
+        best
+    }
+
     pub(super) fn evict_lru(&mut self) -> Option<usize> {
         if self.entries.is_empty() {
             return None;

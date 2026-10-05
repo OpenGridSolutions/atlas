@@ -218,13 +218,65 @@ impl KvTier {
             });
         }
 
-        // Tail record: the trailing sub-block's KV (SSM tail snapshots
-        // join this record in the hybrid-model stage). Only when every
-        // full block is valid — a tail behind an unwritten gap would be
-        // unreachable anyway (its predecessors get GC'd as orphans).
+        let hybrid = model.has_recurrent_state();
+
+        // Interior SSM resume point (SSM-1/2/7): the deepest block-aligned
+        // Marconi snapshot of this sequence, keyed by the chain key of the
+        // KV block it sits behind. `pred` is that same key's KV record, so
+        // the GC orphans the snapshot exactly when its KV chain dies.
+        if hybrid && full > 0 {
+            match model.export_deepest_aligned_ssm_snapshot(seq) {
+                Ok(Some((tokens, payload))) => {
+                    let blk = tokens / bs;
+                    if blk >= 1 && blk <= full {
+                        let key = keys[blk - 1].0;
+                        if !self.store.contains(&key, Kind::Ssm) {
+                            self.submit(WriteJob {
+                                kind: Kind::Ssm,
+                                key,
+                                pred: key,
+                                token_count: tokens as u32,
+                                payload,
+                            });
+                        }
+                    }
+                }
+                Ok(None) => {}
+                Err(e) => tracing::warn!("kv-tier: ssm snapshot export failed: {e:#}"),
+            }
+        }
+
         let tail_len = seq.tokens.len() % bs;
-        if tail_len > 0
-            && valid_tokens == seq.tokens.len()
+        if tail_len == 0 {
+            // Block-aligned end: persist the live end state as an `.ssm`
+            // record at the final chain key (SSM-3's aligned arm).
+            if hybrid
+                && full > 0
+                && full == keys.len()
+                && valid_tokens == seq.tokens.len()
+                && !self.store.contains(&keys[full - 1].0, Kind::Ssm)
+            {
+                match model.export_ssm_state(seq) {
+                    Ok(payload) if !payload.is_empty() => self.submit(WriteJob {
+                        kind: Kind::Ssm,
+                        key: keys[full - 1].0,
+                        pred: keys[full - 1].0,
+                        token_count: seq.tokens.len() as u32,
+                        payload,
+                    }),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("kv-tier: ssm end-state export failed: {e:#}"),
+                }
+            }
+            return;
+        }
+
+        // Tail record (SSM-3): partial KV block + live end SSM state in
+        // one framed payload — `[u64 kv_len][kv][ssm]` (ssm empty for
+        // attention-only models, SSM-8). Only when every full block is
+        // valid — a tail behind an unwritten gap would be unreachable
+        // anyway (its predecessors get GC'd as orphans).
+        if valid_tokens == seq.tokens.len()
             && seq.block_table.len() > full
             && full == keys.len()
             && let Some(tail_key) = view.tail_key()
@@ -235,16 +287,32 @@ impl KvTier {
             } else {
                 keys[full - 1].0
             };
-            match model.export_kv_block(seq, full) {
-                Ok(payload) => self.submit(WriteJob {
-                    kind: Kind::Tail,
-                    key: tail_key.0,
-                    pred,
-                    token_count: tail_len as u32,
-                    payload,
-                }),
-                Err(e) => tracing::warn!("kv-tier: export tail block failed: {e:#}"),
-            }
+            let kv = match model.export_kv_block(seq, full) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("kv-tier: export tail block failed: {e:#}");
+                    return;
+                }
+            };
+            let ssm = if hybrid {
+                model.export_ssm_state(seq).unwrap_or_else(|e| {
+                    tracing::warn!("kv-tier: tail ssm export failed: {e:#}");
+                    Vec::new()
+                })
+            } else {
+                Vec::new()
+            };
+            let mut payload = Vec::with_capacity(8 + kv.len() + ssm.len());
+            payload.extend_from_slice(&(kv.len() as u64).to_le_bytes());
+            payload.extend_from_slice(&kv);
+            payload.extend_from_slice(&ssm);
+            self.submit(WriteJob {
+                kind: Kind::Tail,
+                key: tail_key.0,
+                pred,
+                token_count: tail_len as u32,
+                payload,
+            });
         }
     }
 

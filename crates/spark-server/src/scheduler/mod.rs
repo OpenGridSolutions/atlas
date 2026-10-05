@@ -326,6 +326,9 @@ pub fn run(
         prompt: Arc<Vec<u32>>,
         chain: spark_runtime::block_keys::BlockKeyChain,
         payloads: Vec<(usize, Vec<u8>)>,
+        /// Hybrid models: restored SSM resume point `(token_count, bytes)`
+        /// (SSM-4), registered after the KV import succeeds.
+        ssm: Option<(usize, Vec<u8>)>,
     }
     let (staged_tx, staged_rx) = std::sync::mpsc::channel::<StagedRestore>();
     let mut staging_in_flight: usize = 0;
@@ -409,6 +412,15 @@ pub fn run(
                         staging_backoff_until =
                             Some(Instant::now() + std::time::Duration::from_secs(5));
                     }
+                    // SSM resume point (SSM-4): only valid when the KV
+                    // import actually covers it.
+                    if let Some((tokens, payload)) = st.ssm.take()
+                        && covered >= tokens
+                        && let Err(e) =
+                            model.import_ssm_snapshot(&st.prompt, &mut st.chain, tokens, &payload)
+                    {
+                        tracing::warn!("nvme-restore: ssm import failed: {e:#}");
+                    }
                 }
                 Err(e) => {
                     tracing::warn!("nvme-restore import failed: {e:#}");
@@ -464,14 +476,47 @@ pub fn run(
                     staging_in_flight += 1;
                     let store = Arc::clone(tier.store());
                     let tx = staged_tx.clone();
+                    let hybrid = model.has_recurrent_state();
+                    let bs = chain.block_size();
                     std::thread::spawn(move || {
+                        // Hybrid models (SSM-4): pick the deepest `.ssm`
+                        // resume point within the restorable range and load
+                        // KV only up to it; without one, load everything
+                        // and let the Marconi replay recompute SSM state.
+                        let mut kv_keys: &[[u8; 16]] = &keys;
+                        let mut ssm: Option<(usize, Vec<u8>)> = None;
+                        if hybrid {
+                            use spark_storage::block_store::Kind;
+                            for j in (0..keys.len()).rev() {
+                                if !store.contains(&keys[j], Kind::Ssm) {
+                                    continue;
+                                }
+                                match store.get(&keys[j], Kind::Ssm) {
+                                    Some(rec) => {
+                                        // Token coverage from the record —
+                                        // interior points store the aligned
+                                        // count, end points the exact one.
+                                        let tokens = (rec.header.token_count as usize)
+                                            .min((start_block + j + 1) * bs);
+                                        ssm = Some((tokens, rec.payload));
+                                        kv_keys = &keys[..=j];
+                                        break;
+                                    }
+                                    // Checksum/binding failure: the record
+                                    // was deleted — fall back to the next
+                                    // earlier resume point (SSM-5).
+                                    None => continue,
+                                }
+                            }
+                        }
                         let payloads =
-                            crate::kv_tier::KvTier::fetch_blocks(&store, start_block, &keys);
+                            crate::kv_tier::KvTier::fetch_blocks(&store, start_block, kv_keys);
                         let _ = tx.send(StagedRestore {
                             req,
                             prompt,
                             chain,
                             payloads,
+                            ssm,
                         });
                     });
                 }

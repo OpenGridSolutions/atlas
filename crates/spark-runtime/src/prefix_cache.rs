@@ -232,6 +232,19 @@ pub trait PrefixCache: Send + Sync {
     /// nodes along the key chain, making them eligible for eviction.
     fn release(&self, keys: &BlockKeysView<'_>);
 
+    /// Read-only probe of the deepest SSM snapshot at or below
+    /// `max_tokens` for this chain (no LRU/hit-count mutation). Returns
+    /// `(snapshot_id, token_count)`. Used by the NVMe persist path to
+    /// export the deepest aligned checkpoint. Default: none.
+    fn peek_snapshot(
+        &self,
+        _keys: &BlockKeysView<'_>,
+        _max_tokens: usize,
+        _session_hash: u64,
+    ) -> Option<(usize, usize)> {
+        None
+    }
+
     /// Install (or clear) the KV-7 eviction guard. Default: no-op —
     /// `NoPrefixCaching` has nothing to evict.
     fn set_evict_guard(&self, _guard: Option<EvictGuard>) {}

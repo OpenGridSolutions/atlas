@@ -260,6 +260,39 @@ pub trait Model: Send + Sync {
         Ok(0)
     }
 
+    /// Whether this model carries recurrent (SSM/linear-attention) state
+    /// alongside the paged KV cache. Default: false.
+    fn has_recurrent_state(&self) -> bool {
+        false
+    }
+
+    /// Live end-of-sequence SSM state for the NVMe tail/ssm record
+    /// (SSM-3). Empty for attention-only models. Default: empty.
+    fn export_ssm_state(&self, _seq: &SequenceState) -> Result<Vec<u8>> {
+        Ok(Vec::new())
+    }
+
+    /// Deepest block-aligned Marconi snapshot of this sequence as
+    /// `(token_count, payload)` — an interior NVMe resume point.
+    fn export_deepest_aligned_ssm_snapshot(
+        &self,
+        _seq: &SequenceState,
+    ) -> Result<Option<(usize, Vec<u8>)>> {
+        Ok(None)
+    }
+
+    /// Import an NVMe `.ssm` payload as a Marconi resume point at
+    /// `token_count` (SSM-4). Returns false when no pool slot was free.
+    fn import_ssm_snapshot(
+        &self,
+        _prompt_tokens: &[u32],
+        _chain: &mut spark_runtime::block_keys::BlockKeyChain,
+        _token_count: usize,
+        _payload: &[u8],
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     /// Copy one logical KV block of `seq` (all attention layers, K then V
     /// per layer) into a host buffer — the NVMe-tier persist payload
     /// (NVM-1/2). Fails when the block is not HBM-resident (HSS slid it

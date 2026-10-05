@@ -25,6 +25,7 @@ mod decode_b2;
 mod decode_checkpoint;
 mod ep_misc;
 mod meta;
+mod nvme_tier;
 mod prefill_a;
 mod prefill_b;
 mod prefill_c;
@@ -190,6 +191,27 @@ impl Model for TransformerModel {
     }
     fn export_kv_block(&self, seq: &SequenceState, logical_block: usize) -> Result<Vec<u8>> {
         self.export_kv_block_dispatch(seq, logical_block)
+    }
+    fn has_recurrent_state(&self) -> bool {
+        self.has_recurrent_state_dispatch()
+    }
+    fn export_ssm_state(&self, seq: &SequenceState) -> Result<Vec<u8>> {
+        self.export_ssm_state_dispatch(seq)
+    }
+    fn export_deepest_aligned_ssm_snapshot(
+        &self,
+        seq: &SequenceState,
+    ) -> Result<Option<(usize, Vec<u8>)>> {
+        self.export_deepest_aligned_ssm_snapshot_dispatch(seq)
+    }
+    fn import_ssm_snapshot(
+        &self,
+        prompt_tokens: &[u32],
+        chain: &mut spark_runtime::block_keys::BlockKeyChain,
+        token_count: usize,
+        payload: &[u8],
+    ) -> Result<bool> {
+        self.import_ssm_snapshot_dispatch(prompt_tokens, chain, token_count, payload)
     }
     fn set_kv_evict_guard(&self, guard: Option<spark_runtime::prefix_cache::EvictGuard>) {
         self.prefix_cache.set_evict_guard(guard)
