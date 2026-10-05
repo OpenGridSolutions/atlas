@@ -152,7 +152,18 @@ impl SwapCtl {
         // drain the write queue bounded by persist_timeout before the
         // teardown invalidates nothing — the store outlives the model, but
         // the payload exports must reach disk before we stop pumping.
-        crate::kv_tier::with_active(|t| t.flush());
+        crate::kv_tier::with_active(|t| {
+            let queued_gib = t.stats().1 as f64 / (1u64 << 30) as f64;
+            let t0 = Instant::now();
+            t.flush();
+            if let Some(ctx) = &self.hotswap {
+                crate::swap_costs::observe_persist(
+                    &ctx.active_model().model_id,
+                    t0.elapsed().as_secs_f64() * 1000.0,
+                    queued_gib,
+                );
+            }
+        });
         let (reply, _) = self.draining.take().expect("draining checked above");
         Some(reply)
     }
@@ -212,6 +223,8 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
     drop(model);
     hotswap.arena.reset();
     let duration_ms = t0.elapsed().as_millis() as u64;
+    // MOD-5/8: refine the outgoing model's unload cost.
+    crate::swap_costs::observe_unload(&hotswap.active_model().model_id, duration_ms as f64);
     tracing::info!(
         "Hot-swap: model unloaded ({freed} device allocations freed, {free_failed} failed, \
          {duration_ms} ms); arena reset (base {} unchanged)",

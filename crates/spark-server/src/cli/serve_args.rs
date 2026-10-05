@@ -600,6 +600,11 @@ pub struct ServeArgs {
     /// NVMe store instead of recomputing the prefill (BAT-7).
     #[arg(long, default_value_t = 512)]
     pub nvme_restore_min_tokens: usize,
+
+    /// EWMA smoothing for swap costs, arrival rates and step times
+    /// (MOD-8, SCH-2).
+    #[arg(long, default_value_t = 0.2)]
+    pub ewma_alpha: f64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

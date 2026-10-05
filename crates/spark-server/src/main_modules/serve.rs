@@ -456,6 +456,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         kv_dtype,
         &layer_dtypes,
     );
+    crate::swap_costs::init(std::path::Path::new(&args.snapshot_dir), args.ewma_alpha);
     let boot_kv_tier = crate::kv_tier::KvTier::build_from_args(
         &args,
         &crate::kv_tier::KvTierIdentity {
@@ -463,6 +464,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             layout_hash: boot_kv_identity.layout_hash,
         },
     )?;
+    let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
     let model = serve_phases::build_model(
         &args,
         &boot_model_id,
@@ -488,6 +490,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(tier) = &boot_kv_tier {
         model.set_kv_evict_guard(Some(tier.evict_guard()));
     }
+    observe_runtime_reserve_delta(&boot_model_id, avail_before_build);
 
     // Kernel load audit: print the table of every kernel resolved during model
     // construction (grouped by module/operation family) + flag any MISSING
@@ -850,12 +853,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                         inference_reserve as f64 / (1u64 << 30) as f64,
                     );
                 }
-                r.inference_reserve
+                crate::swap_costs::runtime_reserve_or(&prep.model_id, r.inference_reserve)
             };
             // Track the rebuild's derived-buffer allocations for the next
             // unload (same window as the boot build).
             gpu.set_alloc_tracking(true);
             crate::memdebug::on_build_phase("start", &prep.model_id);
+            let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let model = match serve_phases::build_model(
                 &reload_args,
@@ -875,6 +879,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             ) {
                 Ok(m) => {
                     crate::memdebug::on_build_phase("ok", &prep.model_id);
+                    observe_runtime_reserve_delta(&prep.model_id, avail_before_build);
                     m
                 }
                 Err(e) => {
@@ -919,6 +924,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 .inc();
             crate::metrics::MODEL_SWAP_SECONDS.observe(duration_ms as f64 / 1000.0);
             crate::metrics::MODEL_SWAP_READ_BYTES_TOTAL.inc_by(read_stats.bytes_read);
+            // MOD-5/8: refine this model's load + warmup costs per real swap.
+            crate::swap_costs::observe_load(
+                &prep.model_id,
+                read_stats.duration_ms as f64,
+                (duration_ms as f64 - read_stats.duration_ms as f64).max(0.0),
+                read_stats.gib_per_s,
+            );
             let stats = serde_json::json!({
                 "model": prep.model_id,
                 "kernel_target": prep.target_key,
@@ -1329,6 +1341,24 @@ pub(crate) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
         ("bf16", "fp8") |
         ("bf16", "nvfp4")
     )
+}
+
+/// MEM-7 measurement: MemAvailable delta across `build_model` minus the
+/// KV pool the budget reserved — the model's real runtime footprint
+/// (derived buffers, SSM pools, CUDA workspaces). The plausibility clamp
+/// in `swap_costs::runtime_reserve_or` guards against driver-pool noise.
+fn observe_runtime_reserve_delta(model_id: &str, avail_before: Option<usize>) {
+    let (Some(before), Some(after)) = (
+        avail_before,
+        spark_runtime::meminfo::read().map(|m| m.mem_available),
+    ) else {
+        return;
+    };
+    let delta = before.saturating_sub(after) as u64;
+    let kv_reserved = spark_runtime::kv_stats::snapshot()
+        .map(|s| s.reserved_bytes)
+        .unwrap_or(0);
+    crate::swap_costs::observe_runtime_reserve(model_id, delta.saturating_sub(kv_reserved as u64));
 }
 
 #[cfg(test)]
