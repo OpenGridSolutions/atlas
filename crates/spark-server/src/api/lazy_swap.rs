@@ -47,9 +47,10 @@ pub async fn ensure_model_active(
     state: &Arc<AppState>,
     requested: &str,
     required: ModelCategory,
+    priority: bool,
     streaming: bool,
 ) -> Result<Option<u64>, Response> {
-    match prepare_model_gate(state, requested, required, streaming).await? {
+    match prepare_model_gate(state, requested, required, priority, streaming).await? {
         GatePass::Ready(ms) => Ok(ms),
         GatePass::Wait(ticket) => match ticket.wait().await {
             crate::arena_sched::TicketOutcome::Granted => {
@@ -71,6 +72,7 @@ pub async fn prepare_model_gate(
     state: &Arc<AppState>,
     requested: &str,
     required: ModelCategory,
+    priority: bool,
     streaming: bool,
 ) -> Result<GatePass, Response> {
     let Some(ctx) = state.hotswap.as_ref() else {
@@ -134,9 +136,7 @@ pub async fn prepare_model_gate(
                 return Err(wait_estimate_exceeded(requested, est));
             }
         }
-        // Priority tier wiring lands with --trust-proxy-headers; until
-        // then every queued request is normal-tier.
-        let ticket = match dispatcher.queues.submit(requested, false, streaming) {
+        let ticket = match dispatcher.queues.submit(requested, priority, streaming) {
             Ok(t) => t,
             Err(crate::arena_sched::SubmitError::QueueFull { retry_after_secs }) => {
                 let body = serde_json::json!({

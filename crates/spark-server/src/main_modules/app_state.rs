@@ -98,6 +98,8 @@ pub struct AppState {
     pub sse_keepalive: std::time::Duration,
     /// WAIT-3/4: hard queue-wait bound for non-streaming requests.
     pub nonstream_max_wait: std::time::Duration,
+    /// AUTH-3: honour proxy-injected headers (X-Priority).
+    pub trust_proxy_headers: bool,
     /// Default request timeout in seconds. 0 = no timeout.
     pub request_timeout: u32,
     /// Global kill switch for thinking / reasoning output. When true,

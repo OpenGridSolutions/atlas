@@ -101,6 +101,7 @@ fn validate_token_ids(rt: &ModelRuntime, ids: &[u32]) -> Result<(), (StatusCode,
 
 pub async fn completions(
     State(state): State<Arc<AppState>>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
     req: Result<Json<CompletionRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -119,6 +120,7 @@ pub async fn completions(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
+        prio.map(|p| p.0.0).unwrap_or(false),
         req.stream,
     )
     .await

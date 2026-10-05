@@ -61,6 +61,11 @@ pub async fn embeddings(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,
 ) -> Response {
+    let priority = request
+        .extensions()
+        .get::<crate::main_modules::middleware::RequestPriority>()
+        .map(|p| p.0)
+        .unwrap_or(false);
     let req = if super::multimodal_input::is_multipart(&request) {
         let multipart = match axum::extract::Multipart::from_request(request, &()).await {
             Ok(mp) => mp,
@@ -81,10 +86,10 @@ pub async fn embeddings(
             Err(e) => return openai_error_response(e.status(), e.body_text()),
         }
     };
-    embeddings_core(state, req).await
+    embeddings_core(state, req, priority).await
 }
 
-async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Response {
+async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority: bool) -> Response {
     if let Some(fmt) = req.encoding_format.as_deref()
         && fmt != "float"
     {
@@ -106,6 +111,7 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest) -> Respon
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Embed,
+        priority,
         false,
     )
     .await

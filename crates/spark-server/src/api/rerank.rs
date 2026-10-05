@@ -66,6 +66,11 @@ pub async fn rerank(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,
 ) -> Response {
+    let priority = request
+        .extensions()
+        .get::<crate::main_modules::middleware::RequestPriority>()
+        .map(|p| p.0)
+        .unwrap_or(false);
     let req = if super::multimodal_input::is_multipart(&request) {
         let multipart = match axum::extract::Multipart::from_request(request, &()).await {
             Ok(mp) => mp,
@@ -86,10 +91,10 @@ pub async fn rerank(
             Err(e) => return openai_error_response(e.status(), e.body_text()),
         }
     };
-    rerank_core(state, req).await
+    rerank_core(state, req, priority).await
 }
 
-async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
+async fn rerank_core(state: Arc<AppState>, req: RerankRequest, priority: bool) -> Response {
     if req.documents.is_empty() {
         return openai_error_response(
             StatusCode::BAD_REQUEST,
@@ -102,6 +107,7 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest) -> Response {
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Rerank,
+        priority,
         false,
     )
     .await

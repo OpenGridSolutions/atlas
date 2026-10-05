@@ -41,6 +41,7 @@ use super::compact::openai_error_response;
 pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
     body: axum::body::Bytes,
 ) -> Response {
     // Parse the body ourselves (instead of using axum's `Json`
@@ -74,10 +75,12 @@ pub async fn chat_completions(
     // active one BEFORE the per-request ModelRuntime snapshot inside
     // `chat_completions_inner` — otherwise this request would render with
     // the previous model's tokenizer.
+    let priority = prio.map(|p| p.0.0).unwrap_or(false);
     match super::lazy_swap::prepare_model_gate(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
+        priority,
         req.stream,
     )
     .await

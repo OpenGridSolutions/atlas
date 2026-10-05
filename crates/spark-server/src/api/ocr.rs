@@ -176,6 +176,7 @@ async fn generate_once(
 
 pub async fn ocr(
     State(state): State<Arc<AppState>>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
     req: Result<Json<OcrRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -224,13 +225,18 @@ pub async fn ocr(
     };
 
     // Category gate + lazy swap (Plan.md Phase K).
-    let swap_ms =
-        match super::lazy_swap::ensure_model_active(&state, &model_id, ModelCategory::Ocr, false)
-            .await
-        {
-            Ok(ms) => ms,
-            Err(resp) => return resp,
-        };
+    let swap_ms = match super::lazy_swap::ensure_model_active(
+        &state,
+        &model_id,
+        ModelCategory::Ocr,
+        prio.map(|p| p.0.0).unwrap_or(false),
+        false,
+    )
+    .await
+    {
+        Ok(ms) => ms,
+        Err(resp) => return resp,
+    };
 
     let rt = state.runtime();
     let Some(vcfg) = rt.vision_config.as_ref() else {

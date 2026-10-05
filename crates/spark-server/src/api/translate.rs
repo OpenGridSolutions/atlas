@@ -152,6 +152,7 @@ fn render_prompt(
 
 pub async fn translate(
     State(state): State<Arc<AppState>>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
     req: Result<Json<TranslateRequest>, JsonRejection>,
 ) -> Response {
     let Json(req) = match req {
@@ -227,6 +228,7 @@ pub async fn translate(
         &state,
         &model_id,
         ModelCategory::Translate,
+        prio.map(|p| p.0.0).unwrap_or(false),
         false,
     )
     .await

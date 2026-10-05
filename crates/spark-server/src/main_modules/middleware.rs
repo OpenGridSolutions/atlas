@@ -132,6 +132,27 @@ pub(crate) async fn model_state_middleware(
     next.run(req).await
 }
 
+/// AUTH-3/PRI: proxy-asserted priority, stamped on every request by
+/// [`priority_middleware`]. `true` only when `--trust-proxy-headers` is
+/// set AND the proxy sent `X-Priority: high`.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RequestPriority(pub bool);
+
+pub(crate) async fn priority_middleware(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    mut req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let high = state.trust_proxy_headers
+        && req
+            .headers()
+            .get("x-priority")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("high"));
+    req.extensions_mut().insert(RequestPriority(high));
+    next.run(req).await
+}
+
 pub(crate) async fn require_auth_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::extract::Request,

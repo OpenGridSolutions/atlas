@@ -456,6 +456,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         kv_dtype,
         &layer_dtypes,
     );
+    // AUTH-4: trusting proxy headers is only safe when nothing but the
+    // proxy can reach us.
+    if args.trust_proxy_headers && !matches!(args.bind.as_str(), "127.0.0.1" | "localhost" | "::1")
+    {
+        anyhow::bail!(
+            "--trust-proxy-headers requires a loopback bind (got --bind {}):              any direct client could claim X-Priority: high",
+            args.bind
+        );
+    }
     crate::swap_costs::init(std::path::Path::new(&args.snapshot_dir), args.ewma_alpha);
     let boot_kv_tier = crate::kv_tier::KvTier::build_from_args(
         &args,
@@ -1193,6 +1202,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         model_ready: model_ready.clone(),
         arena: arena_dispatcher,
         sse_keepalive: std::time::Duration::from_secs(args.sse_keepalive_interval_s.max(1)),
+        trust_proxy_headers: args.trust_proxy_headers,
         nonstream_max_wait: std::time::Duration::from_secs(args.nonstream_max_wait_s.max(1)),
         request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,

@@ -137,3 +137,59 @@ schreiben — danach startet der Server ohne modellbezogene CLI-Flags:
    Gate: tok/s End-to-End (Acceptance-Rate schlägt Draft-Speed).
 3. `fp8_kv_calibration_tokens` (nur FP8-Checkpoints ohne Scales): 0/256.
 4. Watchdog-/Thinking-Keys nur bei auffälligem Verhalten (Loops, Prosa-Flut).
+
+
+## NVMe-Tier, Druck-Scheduler und Priorität (Okt 2026)
+
+Neue Serve-Flags (Anforderungsdokument Okt 2026). Der NVMe-Tier ist aus,
+solange `--nvme-cache-dir` fehlt; der Druck-Scheduler ersetzt den
+synchronen Lazy-Swap automatisch, sobald eine Preseed-Liste konfiguriert
+ist.
+
+| Flag | Default | Bedeutung |
+|---|---|---|
+| `--nvme-cache-dir` | – (aus) | Wurzel des content-addressierten KV-Block-Stores |
+| `--persist-mode` | `on_release` | `write_through` ist Stufe 2 und wird abgelehnt |
+| `--session-ttl-hours` | 24 | GC-Alter der Store-Dateien |
+| `--gc-interval-s` | 600 | GC-Intervall |
+| `--nvme-min-free-pct` | 10 | Mindestreserve auf der NVMe |
+| `--write-queue-max-mb` | 2048 | Byte-Limit der Schreib-Queue (voll ⇒ Block bleibt im RAM) |
+| `--nvme-write-budget-tb-day` | – | Tagesbudget (TBW); Überschreitung ⇒ Warnung |
+| `--persist-timeout-s` | 30 | Flush-Obergrenze vor dem Unload |
+| `--nvme-restore-min-tokens` | 512 | kürzere Prefixe werden neu gerechnet |
+| `--ewma-alpha` | 0.2 | Glättung für Swap-Kosten, λ, Schrittzeit |
+| `--kappa` | 1.0 | Wechselschwellen-Faktor (κ=1 ⇒ Break-even) |
+| `--min-residency-factor` | 2.0 | Hysterese in Vielfachen von T_swap |
+| `--max-wait-hard-s` | 60 | Starvation-Grenze normaler Requests |
+| `--idle-epsilon` | 0.1 | Idle-Schwelle (λ·T_swap) |
+| `--scheduler-interval-ms` | 200 | Auswertetakt der Wechselentscheidung |
+| `--max-queue-length` | 64 | pro Modell; darüber HTTP 429 |
+| `--priority-max-wait-s` | 300 | Wartegrenze priorisierter Requests auf ein fremdes Modell |
+| `--nonstream-max-wait-s` | 45 | harte Wartegrenze ohne Streaming (unter Proxy-Timeout!) |
+| `--drain-grace-ms` | 2000 | Drain-Frist vor `finish_reason="model_swap"` |
+| `--sse-keepalive-interval-s` | 5 | `: waiting`-Kommentare wartender Streams |
+| `--trust-proxy-headers` | aus | `X-Priority: high` auswerten (nur Loopback-Bind) |
+
+### Traefik (AUTH-5 / PRI-7)
+
+Der Server wertet `X-Priority` nur mit `--trust-proxy-headers` und
+Loopback-Bind aus. Traefik muss den Header **setzen** für Anfragen aus
+dem internen Netz und **entfernen** für alle anderen, und den
+`Authorization`-Header durchreichen (`removeHeadersOnSuccess: false` im
+ForwardAuth- bzw. keine Header-Strips im Router):
+
+```yaml
+http:
+  middlewares:
+    strip-priority:
+      headers:
+        customRequestHeaders:
+          X-Priority: ""        # extern: Header entfernen
+    internal-priority:
+      headers:
+        customRequestHeaders:
+          X-Priority: "high"    # nur am internen Router (ClientIP 10.0.0.0/8)
+```
+
+Bearer-Auth bleibt unverändert aktiv (`--require-auth`); Traefik und
+Server verwenden denselben Token.

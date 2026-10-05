@@ -652,6 +652,13 @@ pub struct ServeArgs {
     /// queue (WAIT-2).
     #[arg(long, default_value_t = 5)]
     pub sse_keepalive_interval_s: u64,
+
+    /// Trust proxy-injected headers (AUTH-3): only with this flag does
+    /// the server honour `X-Priority: high` (the proxy must strip the
+    /// header from external traffic). Startup fails when combined with
+    /// a non-loopback bind (AUTH-4).
+    #[arg(long, default_value_t = false)]
+    pub trust_proxy_headers: bool,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

@@ -14,8 +14,8 @@ use crate::anthropic;
 use crate::api;
 use crate::main_modules::AppState;
 use crate::main_modules::middleware::{
-    model_state_middleware, openai_observability_middleware, rate_limit_middleware,
-    require_auth_middleware,
+    model_state_middleware, openai_observability_middleware, priority_middleware,
+    rate_limit_middleware, require_auth_middleware,
 };
 
 pub(crate) async fn build_and_serve(
@@ -153,6 +153,10 @@ pub(crate) async fn build_and_serve(
                 .ok()
                 .and_then(|s| s.parse::<usize>().ok())
                 .unwrap_or(32 * 1024 * 1024),
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            priority_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
