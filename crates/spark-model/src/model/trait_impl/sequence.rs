@@ -350,6 +350,28 @@ impl TransformerModel {
         Ok(())
     }
 
+    /// NVMe-tier persist payload: K then V of every attention layer for
+    /// ONE logical block, concatenated in layer order. The counterpart
+    /// import re-splits by each layer's `block_stride_bytes_for_layer`.
+    pub(super) fn export_kv_block_dispatch(
+        &self,
+        seq: &SequenceState,
+        logical_block: usize,
+    ) -> Result<Vec<u8>> {
+        let gpu = self.gpu.as_ref();
+        let Some(block_idx) = seq.physical_block_for(logical_block) else {
+            anyhow::bail!("logical block {logical_block} not HBM-resident (HSS window)");
+        };
+        let kv = self.kv_cache.lock();
+        let mut out = Vec::new();
+        for layer_idx in 0..kv.num_layers() {
+            let (k_data, v_data) = kv.read_block(layer_idx, block_idx, gpu)?;
+            out.extend_from_slice(&k_data);
+            out.extend_from_slice(&v_data);
+        }
+        Ok(out)
+    }
+
     pub(super) fn save_sequence_state_dispatch(
         &self,
         seq: &SequenceState,

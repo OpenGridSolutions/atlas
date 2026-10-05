@@ -131,6 +131,8 @@ pub struct SwapOutcome {
     pub model: Box<dyn Model>,
     pub params: SchedulerModelParams,
     pub stats: serde_json::Value,
+    /// NVMe KV tier bound to the swapped-in model (None = tier off).
+    pub kv_tier: Option<Arc<crate::kv_tier::KvTier>>,
 }
 
 /// Rebuilds a model for a hot-swap `load` (constructed in serve.rs, runs
@@ -194,7 +196,10 @@ pub fn run(
     block_size: usize,
     adaptive_sampling: bool,
     mut session_manager: crate::session_manager::SessionSsmManager,
+    kv_tier: Option<Arc<crate::kv_tier::KvTier>>,
 ) {
+    // NVMe tier for the boot model; re-installed per hot-swap load.
+    crate::kv_tier::set_active(kv_tier);
     // Per-model scheduler state — every binding here is REBOUND when a
     // hot-swap load installs a different model (see the swap arm below).
     let SchedulerModelParams {
@@ -334,6 +339,7 @@ pub fn run(
             ) {
                 Some(outcome) => {
                     model = outcome.model;
+                    crate::kv_tier::set_active(outcome.kv_tier);
                     // Install the (possibly different) model's scheduler
                     // params — tokenizer-derived token ids, EOS set,
                     // grammar engine, thinking budget (Task 6 Phase 1.3).
@@ -365,6 +371,10 @@ pub fn run(
                 }
             }
         }
+
+        // NVMe tier: re-offer writes the bounded queue rejected (cheap
+        // no-op when the retry buffer is empty).
+        crate::kv_tier::with_active(|t| t.pump_retries());
 
         // ── Drain pending → start prefill (chunked or full) ──
         let new_reqs =

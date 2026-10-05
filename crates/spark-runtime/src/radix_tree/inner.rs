@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 
 use crate::block_keys::BlockKey;
+use crate::prefix_cache::EvictGuard;
 
 type NodeId = usize;
 
@@ -314,7 +315,11 @@ impl RadixTreeInner {
     /// in the result is `u32::MAX` and the caller should ignore them; the
     /// public-trait wrapper filters those out into the returned
     /// `EvictedBlocks::disk_block_ids`.
-    pub(super) fn evict(&mut self, num_blocks: usize) -> (Vec<u32>, Vec<u32>) {
+    pub(super) fn evict(
+        &mut self,
+        num_blocks: usize,
+        guard: Option<&EvictGuard>,
+    ) -> (Vec<u32>, Vec<u32>) {
         let mut freed_phys = Vec::new();
         let mut freed_disk = Vec::new();
         if num_blocks == 0 {
@@ -332,6 +337,16 @@ impl RadixTreeInner {
                     continue;
                 }
                 if node.ref_count <= 1 && node.children.is_empty() && node.block_idx != u32::MAX {
+                    // KV-7: a node (or any of its tails) that is not yet
+                    // persisted must stay in RAM — skip to the next LRU
+                    // candidate instead.
+                    if let Some(g) = guard {
+                        let node_ok = node.parent_key.as_ref().is_none_or(|k| g(&k.0, false));
+                        let tails_ok = node.tails.iter().all(|(tk, _, _)| g(&tk.0, true));
+                        if !node_ok || !tails_ok {
+                            continue;
+                        }
+                    }
                     match best {
                         None => best = Some((id, node.last_access)),
                         Some((_, best_access)) if node.last_access < best_access => {

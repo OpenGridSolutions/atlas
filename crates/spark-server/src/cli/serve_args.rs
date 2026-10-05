@@ -553,6 +553,48 @@ pub struct ServeArgs {
     /// `ps`/`/proc/<pid>/cmdline`. Use `--auth-tokens-file` instead.
     #[arg(long, value_name = "TOKEN", conflicts_with = "auth_tokens_file")]
     pub auth_token: Option<String>,
+
+    // ── NVMe KV tier (requirements §5, E3) ──
+    /// Root directory of the content-addressed NVMe block store. Unset =
+    /// tier off (RAM prefix cache only; today's behaviour).
+    #[arg(long, value_name = "DIR")]
+    pub nvme_cache_dir: Option<std::path::PathBuf>,
+
+    /// Persist mode of the NVMe tier. v1 implements `on_release` (write
+    /// at request end and before a model switch); `write_through` is a
+    /// later stage and is rejected at startup.
+    #[arg(long, default_value = "on_release")]
+    pub persist_mode: String,
+
+    /// Age (hours since last access) after which the GC deletes store
+    /// records (Ausgelagert → Gelöscht).
+    #[arg(long, default_value_t = 24)]
+    pub session_ttl_hours: u64,
+
+    /// Garbage-collector interval in seconds.
+    #[arg(long, default_value_t = 600)]
+    pub gc_interval_s: u64,
+
+    /// Minimum free space on the NVMe filesystem in percent; below this
+    /// the GC evicts records in LRU order.
+    #[arg(long, default_value_t = 10)]
+    pub nvme_min_free_pct: u8,
+
+    /// Byte budget of the background write queue in MiB. A full queue
+    /// never blocks generation — blocks stay in RAM (NVM-11).
+    #[arg(long, default_value_t = 2048)]
+    pub write_queue_max_mb: u64,
+
+    /// Daily NVMe write budget in TB (derive from the SSD's TBW). On
+    /// excess a warning is logged (NVM-12). Unset = unmonitored.
+    #[arg(long, value_name = "TB")]
+    pub nvme_write_budget_tb_day: Option<f64>,
+
+    /// Upper bound in seconds for draining pending persists before a
+    /// model unload (DRN-3). Past it, remaining writes are dropped —
+    /// only cache is lost, never results.
+    #[arg(long, default_value_t = 30)]
+    pub persist_timeout_s: u64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

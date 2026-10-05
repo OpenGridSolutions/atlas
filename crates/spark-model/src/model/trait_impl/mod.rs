@@ -167,6 +167,12 @@ impl Model for TransformerModel {
     fn alloc_sequence(&self) -> Result<SequenceState> {
         self.alloc_sequence_dispatch()
     }
+    fn export_kv_block(&self, seq: &SequenceState, logical_block: usize) -> Result<Vec<u8>> {
+        self.export_kv_block_dispatch(seq, logical_block)
+    }
+    fn set_kv_evict_guard(&self, guard: Option<spark_runtime::prefix_cache::EvictGuard>) {
+        self.prefix_cache.set_evict_guard(guard)
+    }
     fn set_block_key_seed(&mut self, seed: spark_runtime::block_keys::BlockKey) {
         self.block_key_seed = seed;
     }

@@ -225,6 +225,19 @@ pub trait Model: Send + Sync {
     /// Allocate a new SequenceState with SSM states.
     fn alloc_sequence(&self) -> Result<SequenceState>;
 
+    /// Copy one logical KV block of `seq` (all attention layers, K then V
+    /// per layer) into a host buffer — the NVMe-tier persist payload
+    /// (NVM-1/2). Fails when the block is not HBM-resident (HSS slid it
+    /// out) or the model has no paged KV. Default: unsupported.
+    fn export_kv_block(&self, _seq: &SequenceState, _logical_block: usize) -> Result<Vec<u8>> {
+        bail!("export_kv_block unsupported by this model")
+    }
+
+    /// Install the KV-7 eviction guard on the model's prefix cache:
+    /// blocks the guard rejects (not yet persisted to the NVMe tier)
+    /// stay in RAM. Default: no-op.
+    fn set_kv_evict_guard(&self, _guard: Option<spark_runtime::prefix_cache::EvictGuard>) {}
+
     /// Install the per-model block-key seed `k_0 = H(model_hash ‖ layout_hash)`
     /// (KV-3/KV-5). Called once by the server after `build_model`; the
     /// default is a no-op (mock models keep the inert zero seed).

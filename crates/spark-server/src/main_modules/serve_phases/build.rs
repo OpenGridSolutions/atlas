@@ -38,13 +38,19 @@ pub(crate) fn build_prefix_cache(
 /// `model_identity` is the model id today — the NVMe store additionally
 /// binds entries to the snapshot's `model_version_hash`, which covers
 /// checkpoint revisions.
-fn compute_block_key_seed(
+pub(crate) struct KvIdentity {
+    pub seed: spark_runtime::block_keys::BlockKey,
+    pub model_hash: [u8; 32],
+    pub layout_hash: [u8; 32],
+}
+
+pub(crate) fn compute_kv_identity(
     model_identity: &str,
     block_size: usize,
     config: &ModelConfig,
     kv_dtype: spark_runtime::kv_cache::KvCacheDtype,
     layer_dtypes: &[spark_runtime::kv_cache::KvCacheDtype],
-) -> spark_runtime::block_keys::BlockKey {
+) -> KvIdentity {
     let mut h = blake3::Hasher::new();
     h.update(b"atlas-kv-layout-v1");
     h.update(&(block_size as u64).to_le_bytes());
@@ -59,7 +65,13 @@ fn compute_block_key_seed(
     h.update(&(config.head_dim as u64).to_le_bytes());
     h.update(&config.rope_theta.to_le_bytes());
     h.update(&config.partial_rotary_factor.to_le_bytes());
-    spark_runtime::block_keys::seed(model_identity.as_bytes(), h.finalize().as_bytes())
+    let layout_hash = *h.finalize().as_bytes();
+    let model_hash = *blake3::hash(model_identity.as_bytes()).as_bytes();
+    KvIdentity {
+        seed: spark_runtime::block_keys::seed(model_identity.as_bytes(), &layout_hash),
+        model_hash,
+        layout_hash,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -107,13 +119,14 @@ pub(crate) fn build_model(
     let mtp_quant: spark_model::layers::MtpQuantization = mtp_quant_str
         .parse()
         .context("Invalid --mtp-quantization value")?;
-    let seed = compute_block_key_seed(
+    let seed = compute_kv_identity(
         model_identity,
         args.block_size,
         config,
         kv_dtype,
         &layer_dtypes,
-    );
+    )
+    .seed;
     let mut model = spark_model::factory::build_model(
         config.clone(),
         store,

@@ -447,6 +447,22 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // pools, buffers) so unload can free exactly the derived buffers.
     // Frees always unrecord, so build-time self-frees never double-free.
     gpu.set_alloc_tracking(true);
+    // NVMe KV tier (requirements §5): per-model store bound to the boot
+    // model's identity + KV layout. Built before `layer_dtypes` moves.
+    let boot_kv_identity = serve_phases::compute_kv_identity(
+        &boot_model_id,
+        args.block_size,
+        &config,
+        kv_dtype,
+        &layer_dtypes,
+    );
+    let boot_kv_tier = crate::kv_tier::KvTier::build_from_args(
+        &args,
+        &crate::kv_tier::KvTierIdentity {
+            model_hash: boot_kv_identity.model_hash,
+            layout_hash: boot_kv_identity.layout_hash,
+        },
+    )?;
     let model = serve_phases::build_model(
         &args,
         &boot_model_id,
@@ -468,6 +484,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // owned by the model build and must not be freed at unload.
     if let Some(g) = model.gpu_backend() {
         g.set_alloc_tracking(false);
+    }
+    if let Some(tier) = &boot_kv_tier {
+        model.set_kv_evict_guard(Some(tier.evict_guard()));
     }
 
     // Kernel load audit: print the table of every kernel resolved during model
@@ -918,10 +937,34 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 duration_ms,
                 prep.target_key,
             );
+            // Per-target NVMe KV tier: new store directory (model hash)
+            // and layout binding for the swapped-in model.
+            let kv_identity = serve_phases::compute_kv_identity(
+                &prep.model_id,
+                reload_args.block_size,
+                &config,
+                prep.kv_dtype,
+                &prep.layer_dtypes,
+            );
+            let kv_tier = crate::kv_tier::KvTier::build_from_args(
+                &reload_args,
+                &crate::kv_tier::KvTierIdentity {
+                    model_hash: kv_identity.model_hash,
+                    layout_hash: kv_identity.layout_hash,
+                },
+            )
+            .unwrap_or_else(|e| {
+                tracing::error!("kv-tier: reopen for swap target failed: {e:#}");
+                None
+            });
+            if let Some(tier) = &kv_tier {
+                model.set_kv_evict_guard(Some(tier.evict_guard()));
+            }
             Ok(scheduler::SwapOutcome {
                 model,
                 params: prep.scheduler_params,
                 stats,
+                kv_tier,
             })
         })
     };
@@ -1072,6 +1115,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             block_size,
             adaptive_sampling,
             session_manager,
+            boot_kv_tier,
         );
     });
 

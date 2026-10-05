@@ -90,6 +90,10 @@ pub fn finish_sequence_with_reason(
     // Must happen BEFORE free_sequence() so block indices are still valid.
     // Enables multi-turn sessions to reuse KV cache for prior assistant responses.
     model.cache_sequence(&mut a.seq);
+    // NVMe tier (NVM-1, DRN-6): persist this sequence's blocks while they
+    // are still HBM-resident. Runs for normal finishes AND the hot-swap
+    // "model_swap" abort — DRN-2's generated-token chain included.
+    crate::kv_tier::with_active(|t| t.persist_sequence(model, &mut a.seq));
     if let Err(e) = model.free_sequence(&mut a.seq) {
         tracing::error!("free_sequence: {e:#}");
     }

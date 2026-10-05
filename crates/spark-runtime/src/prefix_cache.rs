@@ -18,6 +18,12 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::block_keys::BlockKeysView;
 
+/// KV-7 eviction guard: `guard(key, is_tail)` returns true when the
+/// block identified by `key` may leave RAM (i.e. it is persisted on the
+/// NVMe tier, or no tier is configured). Installed by the server when
+/// `--nvme-cache-dir` is active; absent → everything is evictable.
+pub type EvictGuard = std::sync::Arc<dyn Fn(&[u8; 16], bool) -> bool + Send + Sync>;
+
 // ── Global prefix cache counters (one RadixTree per server) ──
 
 static CACHE_HITS: AtomicU64 = AtomicU64::new(0);
@@ -225,6 +231,10 @@ pub trait PrefixCache: Send + Sync {
     /// Called when a sequence finishes. Decrements ref_count on cache
     /// nodes along the key chain, making them eligible for eviction.
     fn release(&self, keys: &BlockKeysView<'_>);
+
+    /// Install (or clear) the KV-7 eviction guard. Default: no-op —
+    /// `NoPrefixCaching` has nothing to evict.
+    fn set_evict_guard(&self, _guard: Option<EvictGuard>) {}
 
     /// Evict up to `num_blocks` cached blocks, returning their physical
     /// indices and parallel disk-block IDs (Phase 6.1.e).

@@ -13,7 +13,7 @@
 use parking_lot::Mutex;
 
 use crate::block_keys::BlockKeysView;
-use crate::prefix_cache::{EvictedBlocks, PrefixCache, PrefixMatch};
+use crate::prefix_cache::{EvictGuard, EvictedBlocks, PrefixCache, PrefixMatch};
 
 mod inner;
 mod snapshot;
@@ -32,6 +32,8 @@ use snapshot::SsmSnapshotIndex;
 pub struct RadixTree {
     inner: Mutex<RadixTreeInner>,
     snapshot_index: Mutex<SsmSnapshotIndex>,
+    /// KV-7: blocks the guard rejects stay in RAM (not yet persisted).
+    evict_guard: Mutex<Option<EvictGuard>>,
 }
 
 impl Default for RadixTree {
@@ -45,6 +47,7 @@ impl RadixTree {
         Self {
             inner: Mutex::new(RadixTreeInner::new()),
             snapshot_index: Mutex::new(SsmSnapshotIndex::new()),
+            evict_guard: Mutex::new(None),
         }
     }
 }
@@ -188,8 +191,13 @@ impl PrefixCache for RadixTree {
         self.inner.lock().dec_refs(keys.full_keys());
     }
 
+    fn set_evict_guard(&self, guard: Option<EvictGuard>) {
+        *self.evict_guard.lock() = guard;
+    }
+
     fn evict(&self, num_blocks: usize) -> EvictedBlocks {
-        let (physical, disk) = self.inner.lock().evict(num_blocks);
+        let guard = self.evict_guard.lock().clone();
+        let (physical, disk) = self.inner.lock().evict(num_blocks, guard.as_ref());
         // Filter MAX sentinels out — the caller only needs disk_block_ids to
         // dec_disk_ref on, and MAX entries don't correspond to a live HSS ref.
         let disk_block_ids: Vec<u32> = disk.into_iter().filter(|&id| id != u32::MAX).collect();

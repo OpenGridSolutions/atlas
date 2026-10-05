@@ -147,6 +147,12 @@ impl SwapCtl {
                 let _ = spill.remove_file(s.swap_id);
             }
         }
+        // NVM-2 / DRN-3: the force-finished sequences above enqueued their
+        // persists (finish_sequence_with_reason → KvTier::persist_sequence);
+        // drain the write queue bounded by persist_timeout before the
+        // teardown invalidates nothing — the store outlives the model, but
+        // the payload exports must reach disk before we stop pumping.
+        crate::kv_tier::with_active(|t| t.flush());
         let (reply, _) = self.draining.take().expect("draining checked above");
         Some(reply)
     }
