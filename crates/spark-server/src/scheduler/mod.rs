@@ -208,7 +208,13 @@ pub fn run(
     mut session_manager: crate::session_manager::SessionSsmManager,
     kv_tier: Option<Arc<crate::kv_tier::KvTier>>,
     drain_grace: std::time::Duration,
+    growth_reserve_pct: u8,
 ) {
+    // BAT-3: a slice of the pool stays free for running sequences'
+    // growth; admission (and its spill guard) must leave it untouched.
+    let growth_reserve_blocks = spark_runtime::kv_stats::snapshot()
+        .map(|p| p.total_blocks * (growth_reserve_pct.min(90) as usize) / 100)
+        .unwrap_or(0);
     // NVMe tier for the boot model; re-installed per hot-swap load.
     crate::kv_tier::set_active(kv_tier);
     // Per-model scheduler state — every binding here is REBOUND when a
@@ -568,7 +574,8 @@ pub fn run(
         if let Some(ref mut spill) = spill_manager {
             for req in &new_reqs {
                 let prompt_len = req.prompt_len();
-                let blocks_needed = prompt_len / block_size + 1;
+                // BAT-3(a): admission may not consume the growth reserve.
+                let blocks_needed = prompt_len / block_size + 1 + growth_reserve_blocks;
                 while model.num_free_blocks() < blocks_needed && !active.is_empty() {
                     let victim_idx = active
                         .iter()

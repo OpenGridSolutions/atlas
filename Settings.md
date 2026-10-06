@@ -169,6 +169,13 @@ ist.
 | `--drain-grace-ms` | 2000 | Drain-Frist vor `finish_reason="model_swap"` |
 | `--sse-keepalive-interval-s` | 5 | `: waiting`-Kommentare wartender Streams |
 | `--trust-proxy-headers` | aus | `X-Priority: high` auswerten (nur Loopback-Bind) |
+| `--sidecar-small-max-gib` | 4 | Embed/Rerank-Modelle bis zu dieser Größe laufen als residente Sidecars |
+| `--growth-reserve-pct` | 10 | Anteil des KV-Pools, den die Admission für wachsende Sequenzen freilässt |
+
+Hinweis: `--write-batch-interval-ms` aus dem Anforderungsdokument gehört
+zur Write-through-Stufe (NVM-13) und kommt erst mit
+`--persist-mode write_through`; der Server lehnt diesen Modus derzeit
+beim Start ab.
 
 ### Traefik (AUTH-5 / PRI-7)
 

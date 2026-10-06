@@ -1138,6 +1138,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             session_manager,
             boot_kv_tier,
             std::time::Duration::from_millis(args.drain_grace_ms.max(1)),
+            args.growth_reserve_pct,
         );
     });
 

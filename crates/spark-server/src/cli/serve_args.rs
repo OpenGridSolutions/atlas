@@ -653,6 +653,11 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 5)]
     pub sse_keepalive_interval_s: u64,
 
+    /// Share of the KV pool kept free for the GROWTH of running
+    /// sequences; admission must not eat into it (BAT-3).
+    #[arg(long, default_value_t = 10)]
+    pub growth_reserve_pct: u8,
+
     /// Embed/rerank models at or below this checkpoint size load as
     /// RESIDENT sidecars beside the arena model (E4/MOD-3); larger ones
     /// take the arena queue. 0 disables text sidecars.

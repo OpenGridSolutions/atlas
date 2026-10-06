@@ -455,3 +455,37 @@ Rechen-Hinweis: `unaccounted = total − free − active_used −
 cached_evictable` kann **negativ** werden, weil ein per Prefix-Cache
 wiederverwendeter Block gleichzeitig in `active_used` und
 `cached_evictable` zählt. Die harte Invariante ist die Idle-Prüfung.
+
+---
+
+## 8. NVMe-Tier, Druck-Scheduler, Sidecars (Stand 2026-10-06)
+
+Umsetzung des Anforderungsdokuments vom 2026-10-05 (Analyse:
+`docs/design/nvme-tier-analysis.md`). Die wichtigsten neuen Bausteine:
+
+| Baustein | Ort |
+|---|---|
+| Verkettete Block-Schlüssel (BLAKE3-128, Medien-Digests) | `spark-runtime/src/block_keys.rs`, Radix-Keying in `radix_tree/inner.rs` |
+| NVMe-Block-Store (Header/Checksummen/GC/Write-Queue) | `spark-storage/src/block_store/` |
+| Persist/Restore-Glue (on_release, KV-7-Guard, Staging) | `spark-server/src/kv_tier.rs` + Scheduler-Hooks |
+| SSM-Snapshots auf NVMe (Resume-Punkte, Tail-Records) | `trait_impl/nvme_tier.rs`, `kv_tier.rs` |
+| Swap-Kosten (EWMA, `snapshots/swap_costs.json`) | `spark-server/src/swap_costs.rs` |
+| Queues + reine Wechselentscheidung + Dispatcher | `spark-server/src/arena_sched/` |
+| Warte-SSE (`: queued`/`: waiting`) | `api/queued_sse.rs` |
+| Embed/Rerank-Sidecars | `main_modules/text_sidecar.rs` |
+| `/internal/state`, neue Metriken | `api/internal_state.rs`, `metrics.rs` |
+
+Ablauf eines Modellwechsels (Abschnitt 10 des Dokuments): Gate
+(`api/lazy_swap.rs`) reiht Tickets ein → Dispatcher entscheidet
+(`arena_sched/decision.rs`, rein + replay-getestet) → bestehende
+`ControlMsg`-Drain/Unload/Load-Maschinerie → Persist-Flush
+(`persist_timeout`) → Grant der Ziel-Tickets (Priorität zuerst).
+Laufende Requests werden nach `--drain-grace-ms` mit
+`finish_reason="model_swap"` beendet; ihr KV/SSM-Zustand ist zuvor
+persistiert (E1), sodass der Folge-Request den Prefix wiederfindet.
+
+Bewusst offen (Stufe 2 / SOLL): Write-through (NVM-13, inkl.
+`--write-batch-interval-ms`), KV-9 (CoW für angebrochene Blöcke),
+NVM-14 (Spill-Formatvereinheitlichung), SSM-6, PRI-5 (Aging), BAT-4
+(gelernte Schrittzeit-Kurve — die SLAI-Policy mit `--tbt-deadline-ms`
+deckt die Admission-Bremse heute ab), TEL-3-Paginierung.

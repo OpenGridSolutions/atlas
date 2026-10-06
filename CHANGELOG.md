@@ -12,6 +12,42 @@ behind specific subsystems — see the
 
 ### Added
 
+- **NVMe KV tier** (`--nvme-cache-dir`): content-addressed block store for
+  KV blocks, SSM snapshots and tail records, keyed by chained BLAKE3 block
+  keys (`k_i = H(k_{i-1} ‖ tokens_i ‖ media_digests_i)`) shared with the RAM
+  radix cache. `persist_mode = on_release` writes at request end and before
+  a model switch (atomic tmp+fdatasync+rename, xxh3 checksums, header
+  binding to model + KV layout); restore stages contiguous prefixes
+  asynchronously into the RAM cache before admission (`--nvme-restore-min-
+  tokens`), with SSM resume points for hybrid models. GC by TTL, orphan
+  cascade and free-space pressure; daily write-budget monitoring; the KV-7
+  evict guard keeps unpersisted blocks in RAM.
+- **Media digests in the prefix-cache keys**: vision/OCR prompts are now
+  cacheable — the BLAKE3 chain folds in per-image digests, so identical
+  token streams with different images never share blocks (closes the
+  issue-#58 all-or-nothing vision bypass).
+- **Pressure-based arena scheduler**: per-model two-tier queues (priority /
+  normal) + a pure, replay-tested swap decision (`D_B ≥ S_B = κ·T_swap·(1 +
+  N_active + N_queued + λ·T_swap)`; candidate by highest D/S, starvation
+  over hysteresis, idle fast-path) replace the synchronous first-request-
+  pays lazy swap. Swap costs (T_load/T_warmup/T_unload/T_persist) are
+  measured per real swap, EWMA-refined and persisted next to the snapshots;
+  the measured runtime reserve feeds the KV budget (MEM-7). Queued
+  streaming requests answer immediately with SSE keep-alives; non-streaming
+  requests get estimated-wait 503s below the proxy timeout.
+- **Priority tier** behind `--trust-proxy-headers` (`X-Priority: high`,
+  loopback-bind enforced): priority requests are admitted first but never
+  trigger a model switch.
+- **Resident embed/rerank sidecars** (`--sidecar-small-max-gib`): small
+  embed/rerank models load once beside the arena model with their own
+  worker, tokenizer and fixed KV pool — no arena waits; their footprint
+  joins the KV-budget sidecar reserve.
+- `GET /internal/state` (Bearer-gated): queues per model/tier with D/S/λ,
+  last swap decision + inputs, capacity profile (bytes/token, S_ssm,
+  parallel sequences at 8k/32k/max), KV pool, swap costs, NVMe store +
+  write queue. `/health` gains `draining`/`swapping`. New metrics:
+  tokens/s, queue wait + length per tier, NVMe read/write/restored bytes.
+
 - Holo-3.1-35B-A3B / Holo-3.1-0.8B / Ornith-1.0-9B model support on GB10
   (sm_121): hybrid Gated-DeltaNet + full-attention + (256-expert MoE | dense
   FFN) + Qwen3-VL vision tower. Brings CUTLASS Sm120 NVFP4 grouped MoE, FLA
