@@ -79,6 +79,7 @@ pub(crate) async fn chat_completions_stream(
     seed: Option<u64>,
     top_logprobs: Option<u8>,
     timeout_at: Option<std::time::Instant>,
+    priority: bool,
     stop_strings: Vec<String>,
     req_stream_include_usage: bool,
     req_return_token_ids: bool,
@@ -149,6 +150,7 @@ pub(crate) async fn chat_completions_stream(
         seed,
         top_logprobs,
         timeout_at,
+        priority,
         token_tx,
         cancel_flag: cancel_flag.clone(),
     };
@@ -272,7 +274,11 @@ pub(crate) async fn chat_completions_stream(
     });
     let full_stream = role_event.chain(token_stream).chain(done_event);
 
-    Ok(Sse::new(full_stream)
-        .keep_alive(KeepAlive::default())
-        .into_response())
+    Ok(super::lazy_swap::attach_context_remaining(
+        Sse::new(full_stream)
+            .keep_alive(KeepAlive::default())
+            .into_response(),
+        prompt_len + max_tokens,
+        state.max_seq_len,
+    ))
 }

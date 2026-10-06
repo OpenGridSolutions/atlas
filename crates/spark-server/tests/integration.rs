@@ -120,6 +120,7 @@ fn setup_model(
         None,               // hss_cache_blocks_per_seq
         None,               // dflash_args (no speculative-decoding pairing)
         None,               // kv_pool_bytes_override (--kv-pool-gb)
+        0,                  // slot_tokens (unset → max_seq_len)
     )?;
 
     Ok((model, config))

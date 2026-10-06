@@ -83,6 +83,8 @@ pub(super) fn drain_pending_requests(
     prefilling: &[PrefillInProgress],
     policy: &dyn SchedulingPolicy,
     max_batch_size: usize,
+    // PRI-7: slots normal requests must leave free for X-Priority: high.
+    reserved_priority_slots: usize,
 ) -> Vec<InferenceRequest> {
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
@@ -152,6 +154,27 @@ pub(super) fn drain_pending_requests(
         })
         .collect();
     let selected = policy.select_prefills(&infos, cap);
+
+    // PRI-1/PRI-7: priority requests admit first and may use the whole
+    // cap; normal requests stop short of the reserved band — those stay
+    // queued for the next iteration instead of occupying a slot a
+    // priority request would need.
+    let reserved = reserved_priority_slots.min(cap);
+    let normal_cap = cap - reserved;
+    let mut admitted: Vec<usize> = Vec::with_capacity(selected.len());
+    let mut normals = 0usize;
+    for &i in selected.iter().filter(|&&i| g.requests[i].priority()) {
+        if admitted.len() < cap {
+            admitted.push(i);
+        }
+    }
+    for &i in selected.iter().filter(|&&i| !g.requests[i].priority()) {
+        if admitted.len() < cap && normals < normal_cap {
+            admitted.push(i);
+            normals += 1;
+        }
+    }
+    let selected = admitted;
 
     // Remove selected indices from pending (reverse order to preserve indices).
     let mut remove_indices = selected.clone();

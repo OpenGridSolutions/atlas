@@ -653,10 +653,17 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 5)]
     pub sse_keepalive_interval_s: u64,
 
-    /// Share of the KV pool kept free for the GROWTH of running
-    /// sequences; admission must not eat into it (BAT-3).
-    #[arg(long, default_value_t = 10)]
-    pub growth_reserve_pct: u8,
+    /// Per-model slot size override (E6/SLOT-1): repeatable, either
+    /// `model=N` or a bare global `N`. Wins over MODEL.toml
+    /// `[behavior].slot_tokens`; unset models fall back to
+    /// `--max-seq-len`. Validated at load (MOD-12).
+    #[arg(long = "slot-tokens", value_name = "[MODEL=]N")]
+    pub slot_tokens: Vec<String>,
+
+    /// PRI-7: slots kept free for priorized requests; normal requests
+    /// occupy at most slots_total minus this.
+    #[arg(long, default_value_t = 0)]
+    pub priority_reserved_slots: usize,
 
     /// Embed/rerank models at or below this checkpoint size load as
     /// RESIDENT sidecars beside the arena model (E4/MOD-3); larger ones

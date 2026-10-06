@@ -285,6 +285,7 @@ fn load_sidecar(
         None,
         None,
         Some(SIDECAR_KV_POOL_BYTES),
+        0, // slot_tokens: sidecars size by SIDECAR_MAX_TOKENS
     )?;
 
     let (jobs_tx, mut jobs_rx) = tokio::sync::mpsc::channel::<Job>(16);

@@ -86,7 +86,7 @@ pub async fn chat_completions(
     .await
     {
         Ok(super::lazy_swap::GatePass::Ready(ms)) => {
-            let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+            let resp = chat_completions_inner(state, req_ctx, req, dump_seq, priority).await;
             super::lazy_swap::attach_swap_header(resp, ms)
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) if req.stream => {
@@ -96,15 +96,15 @@ pub async fn chat_completions(
             super::queued_sse::respond(
                 ticket,
                 keepalive,
-                Box::pin(
-                    async move { chat_completions_inner(state, req_ctx, req, dump_seq).await },
-                ),
+                Box::pin(async move {
+                    chat_completions_inner(state, req_ctx, req, dump_seq, priority).await
+                }),
             )
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) => match ticket.wait().await {
             crate::arena_sched::TicketOutcome::Granted => {
                 let ms = ticket.waited().as_millis() as u64;
-                let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+                let resp = chat_completions_inner(state, req_ctx, req, dump_seq, priority).await;
                 super::lazy_swap::attach_swap_header(resp, Some(ms))
             }
             outcome => super::lazy_swap::wait_outcome_response(outcome, &req.model),
@@ -123,6 +123,8 @@ pub(crate) async fn chat_completions_inner(
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     mut req: ChatCompletionRequest,
     dump_seq: Option<u64>,
+    // PRI-7: X-Priority: high → may occupy the reserved slots.
+    priority: bool,
 ) -> Response {
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
@@ -297,20 +299,33 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
-    // Clamp the generation budget to the context that is actually left
-    // (Plan.md 2.1). Nothing downstream bounds prompt + max_tokens: an
-    // unclamped budget runs the sequence past the context window until
-    // the KV pool starves — which kills the whole decode batch with an
-    // untyped stream error instead of a clean `finish_reason: "length"`.
-    // `prompt_len < max_seq_len` is guaranteed by the 400 above.
+    // SLOT-4: fit the request into the model's slot — the prompt must
+    // leave room for at least one output token, and the generation
+    // budget is capped by the slot buffer and the room the slot has
+    // left. Without a slot plan this is byte-identical to the previous
+    // max_seq_len clamp (Plan.md 2.1): an unclamped budget runs the
+    // sequence past the context window until the KV pool starves.
     let requested_max_tokens = max_tokens;
-    let max_tokens = max_tokens.min(state.max_seq_len - prompt_len);
+    let max_tokens = match crate::slots::fit_request(prompt_len, max_tokens, state.max_seq_len) {
+        crate::slots::Fit::Ok { granted_max_tokens } => granted_max_tokens,
+        crate::slots::Fit::PromptTooLarge { slot_tokens } => {
+            return super::compact::openai_error_response_with_param(
+                StatusCode::BAD_REQUEST,
+                format!(
+                    "Prompt too long: {prompt_len} tokens exceeds the model's slot size \
+                     {slot_tokens} (leave room for output tokens)"
+                ),
+                Some("messages"),
+                Some("context_length_exceeded"),
+            );
+        }
+    };
     if max_tokens < requested_max_tokens {
         tracing::info!(
             requested = requested_max_tokens,
             clamped = max_tokens,
             prompt_len,
-            "max_tokens clamped to remaining context (max_seq_len {})",
+            "max_tokens clamped to the slot (SLOT-4, max_seq_len {})",
             state.max_seq_len
         );
     }
@@ -350,6 +365,7 @@ pub(crate) async fn chat_completions_inner(
             grammar_spec.clone(),
             top_logprobs,
             timeout_at,
+            priority,
         )
         .await;
     }
@@ -386,6 +402,7 @@ pub(crate) async fn chat_completions_inner(
         grammar_spec,
         top_logprobs,
         timeout_at,
+        priority,
         cwd_hint,
         prompt_len,
     })

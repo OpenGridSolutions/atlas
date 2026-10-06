@@ -150,6 +150,8 @@ pub(super) struct ParsedBehavior {
     pub max_thinking_budget: u32,
     pub thinking_default: bool,
     pub fp8_kv_calibration_tokens: usize,
+    pub slot_tokens: usize,
+    pub slot_buffer_tokens: usize,
     pub default_kv_dtype: String,
     pub default_mtp_quantization: String,
     pub default_num_drafts: u32,
@@ -179,6 +181,8 @@ impl Default for ParsedBehavior {
             max_thinking_budget: 256,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
+            slot_tokens: 0,
+            slot_buffer_tokens: 0,
             default_kv_dtype: String::new(),
             default_mtp_quantization: String::new(),
             default_num_drafts: 0,
@@ -229,6 +233,16 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         .and_then(|v| v.get("thinking_default"))
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
+    let slot_tokens = b
+        .and_then(|v| v.get("slot_tokens"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as usize)
+        .unwrap_or(0);
+    let slot_buffer_tokens = b
+        .and_then(|v| v.get("slot_buffer_tokens"))
+        .and_then(|v| v.as_integer())
+        .map(|v| v as usize)
+        .unwrap_or(0);
     let fp8_kv_calibration_tokens = b
         .and_then(|v| v.get("fp8_kv_calibration_tokens"))
         .and_then(|v| v.as_integer())
@@ -332,6 +346,8 @@ pub(super) fn parse_behavior(model_dir: &std::path::Path) -> ParsedBehavior {
         max_thinking_budget,
         thinking_default,
         fp8_kv_calibration_tokens,
+        slot_tokens,
+        slot_buffer_tokens,
         default_kv_dtype,
         default_mtp_quantization,
         default_num_drafts,

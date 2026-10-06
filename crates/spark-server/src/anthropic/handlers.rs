@@ -95,7 +95,8 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
 
     // 4. Run the shared OpenAI pipeline. All sanitization, salvage,
     //    watchdog, sampling preset, and prompt mutation logic lives there.
-    let chat_resp = crate::api::chat_completions_inner(state.clone(), None, chat_req, None).await;
+    let chat_resp =
+        crate::api::chat_completions_inner(state.clone(), None, chat_req, None, false).await;
 
     // 5. Translate the response back to Anthropic shape.
     if !chat_resp.status().is_success() {

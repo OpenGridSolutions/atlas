@@ -28,6 +28,8 @@ festschreiben — nicht in serve.sh/compose.
 | `thinking_in_tools` | true | Thinking auch innerhalb von Tool-Loops erlauben. |
 | `tool_call_parser` | "" | Parser-Override (`hermes`, `qwen3_coder`, …); leer = Mapping aus tool_defaults.toml per model_type. |
 | `disable_tool_steering` | false | `<tool_call>`-Steering-Präfix unterdrücken (Nemotron-Super-Fall). |
+| `slot_tokens` | 0 (= max-seq-len) | **Neu (E6/SLOT-1).** Slot-Größe des Modells: bindet pro Session Input+Output; `slots_total = Pool ÷ Blöcke-pro-Slot` begrenzt die Admission (BAT-8). CLI `--slot-tokens` überschreibt. |
+| `slot_buffer_tokens` | 0 (= slot/4) | **Neu (SLOT-4).** Output-Budget-Obergrenze pro Request innerhalb des Slots; `max_tokens` wird darauf geklemmt. |
 | `disable_tool_grammar` | false | XGrammar-Erzwingung bei `tool_choice=auto` aus (vLLM-Verhalten). |
 | `tool_retry` | true | Fehlgeschlagene Tool-Call-Parses re-steern. |
 | `enable_loop_watchdog` | false | Content-Loop-Watchdog für dieses Modell. |
@@ -170,7 +172,8 @@ ist.
 | `--sse-keepalive-interval-s` | 5 | `: waiting`-Kommentare wartender Streams |
 | `--trust-proxy-headers` | aus | `X-Priority: high` auswerten (nur Loopback-Bind) |
 | `--sidecar-small-max-gib` | 4 | Embed/Rerank-Modelle bis zu dieser Größe laufen als residente Sidecars |
-| `--growth-reserve-pct` | 10 | Anteil des KV-Pools, den die Admission für wachsende Sequenzen freilässt |
+| `--slot-tokens [MODEL=]N` | — | Slot-Größe (E6), wiederholbar: `MODEL=N` schlägt globales `N` schlägt `[behavior].slot_tokens` schlägt `--max-seq-len`. MOD-12 verweigert den Load bei Slot > max-seq-len/Positionslimit |
+| `--priority-reserved-slots` | 0 | PRI-7: Slots, die nur `X-Priority: high` belegen darf (geklemmt auf slots_total − 1) |
 
 Hinweis: `--write-batch-interval-ms` aus dem Anforderungsdokument gehört
 zur Write-through-Stufe (NVM-13) und kommt erst mit
@@ -231,8 +234,8 @@ Antwort (gekürzt):
 }
 ```
 
-`slot.source` wechselt mit der Slot-Stufe von `max_seq_len` auf das
-per-Modell-`slot_tokens`. Die Probe ist strikt read-only (keine
+`slot.source` ist `model`, sobald ein explizites `slot_tokens` (CLI
+oder MODEL.toml) aktiv ist, sonst `max_seq_len`. Die Probe ist strikt read-only (keine
 Refcount-/LRU-Mutation) und rendert Nachrichten ohne Generation-Prompt —
 der Treffer entspricht dem geteilten Prefix eines echten Requests bis
 zur letzten Blockgrenze. Multimodale Inhalte werden nicht bewertet

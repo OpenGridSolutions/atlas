@@ -483,9 +483,20 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
         std::sync::Arc::clone(&prefix_cache),
     );
+    // SLOT-1/MOD-12: resolve the boot model's slot size before the pool
+    // exists; a violation refuses the load, not the first request.
+    let (boot_slot_config, boot_slot_explicit) = crate::slots::resolve(
+        &args.slot_tokens,
+        &boot_model_id,
+        ptx_set.behavior.slot_tokens,
+        ptx_set.behavior.slot_buffer_tokens,
+        args.max_seq_len,
+        config.max_position_embeddings,
+    )?;
     let model = serve_phases::build_model(
         &args,
         &boot_model_id,
+        boot_slot_config,
         &config,
         &store,
         gpu,
@@ -508,6 +519,18 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(tier) = &boot_kv_tier {
         model.set_kv_evict_guard(Some(tier.evict_guard()));
     }
+    // SLOT-2: the pool geometry is live now — publish the slot plan the
+    // scheduler admission and the handlers read.
+    crate::slots::publish_from_pool(
+        &boot_model_id,
+        boot_slot_config,
+        boot_slot_explicit,
+        args.priority_reserved_slots,
+        spark_runtime::kv_stats::snapshot()
+            .map(|s| s.total_blocks)
+            .unwrap_or(0),
+        args.block_size,
+    )?;
     observe_runtime_reserve_delta(&boot_model_id, avail_before_build);
 
     // Kernel load audit: print the table of every kernel resolved during model
@@ -880,9 +903,19 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let reload_prefix_cache = std::sync::Arc::clone(&prefix_cache);
+            // SLOT-1/MOD-12 for the swap target (same order as boot).
+            let (slot_config, slot_explicit) = crate::slots::resolve(
+                &reload_args.slot_tokens,
+                &prep.model_id,
+                prep.behavior_slot_tokens,
+                prep.behavior_slot_buffer_tokens,
+                reload_args.max_seq_len,
+                config.max_position_embeddings,
+            )?;
             let model = match serve_phases::build_model(
                 &reload_args,
                 &prep.model_id,
+                slot_config,
                 &config,
                 &store,
                 gpu,
@@ -1000,6 +1033,16 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 },
                 reload_prefix_cache,
             );
+            crate::slots::publish_from_pool(
+                &prep.model_id,
+                slot_config,
+                slot_explicit,
+                reload_args.priority_reserved_slots,
+                spark_runtime::kv_stats::snapshot()
+                    .map(|s| s.total_blocks)
+                    .unwrap_or(0),
+                reload_args.block_size,
+            )?;
             Ok(scheduler::SwapOutcome {
                 model,
                 params: prep.scheduler_params,
@@ -1157,7 +1200,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             session_manager,
             boot_kv_tier,
             std::time::Duration::from_millis(args.drain_grace_ms.max(1)),
-            args.growth_reserve_pct,
         );
     });
 

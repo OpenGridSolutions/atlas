@@ -52,6 +52,10 @@ pub fn build_model(
     // `Some(bytes)` pins the KV pool budget (--kv-pool-gb), bypassing the
     // free-memory measurement whose baseline is stale on hot-swap reloads.
     kv_pool_bytes_override: Option<usize>,
+    // MOD-12: per-model slot size. The attention metadata
+    // (max_blocks_per_seq) is dimensioned on this instead of
+    // max_seq_len; 0 = no slot config → max_seq_len.
+    slot_tokens: usize,
 ) -> Result<Box<dyn Model>> {
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
@@ -543,6 +547,11 @@ pub fn build_model(
         mtp_weights,
         gpu,
         max_seq_len,
+        if slot_tokens > 0 {
+            slot_tokens.min(max_seq_len)
+        } else {
+            max_seq_len
+        },
         max_batch_size,
         effective_mtp_quant,
         use_speculative,

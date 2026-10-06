@@ -110,12 +110,14 @@ async fn generate_once(
     max_tokens: usize,
     temperature: f32,
     top_p: f32,
+    priority: bool,
 ) -> Result<Vec<u32>, Response> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(prompt_tokens);
     let request = InferenceRequest::Blocking {
         prompt_tokens: Arc::clone(prompt_tokens),
         session_hash,
+        priority,
         image_pixels: image_pixels.to_vec(),
         max_tokens,
         min_tokens: 0,
@@ -194,6 +196,7 @@ pub async fn ocr(
     if req.image.is_empty() {
         return openai_error_response(StatusCode::BAD_REQUEST, "'image' is empty".into());
     }
+    let priority = prio.as_ref().map(|p| p.0.0).unwrap_or(false);
     let prompt_type = req.prompt_type.as_deref().unwrap_or("ocr_layout");
     let Some(prompt_text) = ocr::prompts::prompt_for(prompt_type) else {
         return openai_error_response(
@@ -229,7 +232,7 @@ pub async fn ocr(
         &state,
         &model_id,
         ModelCategory::Ocr,
-        prio.map(|p| p.0.0).unwrap_or(false),
+        priority,
         false,
     )
     .await
@@ -325,6 +328,7 @@ pub async fn ocr(
             max_retries,
             req.include_headers_footers,
             req.include_images,
+            priority,
         )
         .await
         {
@@ -365,6 +369,7 @@ async fn process_page(
     max_retries: usize,
     include_headers_footers: bool,
     include_images: bool,
+    priority: bool,
 ) -> Result<(OcrPage, usize, usize), Response> {
     let model_image = ocr::input::scale_to_fit(page_image.clone());
     let (pixels, grid_h, grid_w) =
@@ -413,13 +418,13 @@ async fn process_page(
         .tokenizer
         .expand_image_pads(prompt_tokens, &image_pad_counts);
     let prompt_len = prompt_tokens.len();
-    if prompt_len >= state.max_seq_len {
+    let token_limit = crate::slots::prompt_limit(state.max_seq_len);
+    if prompt_len >= token_limit {
         return Err(openai_error_response(
             StatusCode::BAD_REQUEST,
             format!(
-                "page produces {prompt_len} prompt tokens, at/over the context limit \
-                 {} — reduce the image resolution",
-                state.max_seq_len,
+                "page produces {prompt_len} prompt tokens, at/over the per-sequence limit \
+                 {token_limit} — reduce the image resolution",
             ),
         ));
     }
@@ -427,7 +432,7 @@ async fn process_page(
 
     let max_tokens = max_tokens_req
         .unwrap_or(ocr::MAX_OUTPUT_TOKENS)
-        .min(state.max_seq_len.saturating_sub(prompt_len));
+        .min(token_limit.saturating_sub(prompt_len));
 
     // Generation + degeneration retry, mirroring vllm.py::process_item:
     // pass 0 at (0.0, 0.1); retry n at (min(0.2·n, 0.8), 0.95).
@@ -446,6 +451,7 @@ async fn process_page(
             max_tokens,
             temperature,
             top_p,
+            priority,
         )
         .await?;
         completion_tokens = output_tokens.len();

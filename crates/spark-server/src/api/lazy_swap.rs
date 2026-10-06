@@ -432,6 +432,24 @@ fn swap_error(msg: impl std::fmt::Display) -> Response {
 }
 
 /// Attach the swap-latency header to a response (no-op when `ms` is None).
+/// SLOT-6: free tokens left in the session's slot after this response.
+/// Blocking paths pass exact usage (prompt + completion); streaming
+/// paths pass the conservative bound prompt + granted max_tokens.
+pub fn attach_context_remaining(
+    mut resp: Response,
+    used_tokens: usize,
+    max_seq_len: usize,
+) -> Response {
+    let remaining = crate::slots::remaining_after(used_tokens, max_seq_len);
+    if let Ok(v) = axum::http::HeaderValue::from_str(&remaining.to_string()) {
+        resp.headers_mut().insert(
+            axum::http::HeaderName::from_static("x-atlas-context-remaining"),
+            v,
+        );
+    }
+    resp
+}
+
 pub fn attach_swap_header(mut resp: Response, ms: Option<u64>) -> Response {
     if let Some(ms) = ms
         && let Ok(v) = axum::http::HeaderValue::from_str(&ms.to_string())

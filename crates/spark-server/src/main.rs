@@ -55,6 +55,7 @@ mod retrieval_heads;
 mod scheduler;
 mod scheduling_policy;
 mod session_manager;
+mod slots;
 mod swap_costs;
 mod symbol_trie;
 mod tokenizer;

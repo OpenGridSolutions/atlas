@@ -95,6 +95,17 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         },
         "capacity_profile": capacity_profile(state.max_seq_len),
         "kv_pool": pool,
+        // E6: the active model's slot plan — capacity, not reservation;
+        // `occupied` is the live admitted-sequence count.
+        "slots": crate::slots::active().map(|p| serde_json::json!({
+            "model": p.model_id,
+            "slot_tokens": p.slot_tokens,
+            "slot_buffer_tokens": p.slot_buffer_tokens,
+            "slots_total": p.slots_total,
+            "priority_reserved": p.priority_reserved,
+            "source": if p.explicit { "model" } else { "max_seq_len" },
+            "occupied": crate::scheduler::scheduler_load(),
+        })),
         "batch": {
             "scheduler_load": crate::scheduler::scheduler_load(),
         },

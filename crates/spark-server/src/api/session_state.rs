@@ -226,9 +226,18 @@ pub async fn session_state(
         )
     });
 
-    // ── Slot fit (slot_tokens lands with the slot stage; until then the
-    //    bound is --max-seq-len, and `source` says so) ──
-    let slot_tokens = state.max_seq_len;
+    // ── Slot fit (SLOT-1/2): the active model's slot plan bounds the
+    //    session; without an explicit plan the bound is --max-seq-len,
+    //    and `source` says which applies ──
+    let plan = crate::slots::active();
+    let slot_tokens = plan
+        .as_ref()
+        .map(|p| p.slot_tokens)
+        .unwrap_or(state.max_seq_len);
+    let slot_source = match &plan {
+        Some(p) if p.explicit => "model",
+        _ => "max_seq_len",
+    };
     let planned_output = req.max_tokens.unwrap_or(0);
     let remaining = slot_tokens.saturating_sub(tokens.len());
 
@@ -253,7 +262,7 @@ pub async fn session_state(
         "media_evaluated": !media_present && cacheable,
         "slot": {
             "slot_tokens": slot_tokens,
-            "source": "max_seq_len",
+            "source": slot_source,
             "used_tokens": tokens.len(),
             "remaining_tokens": remaining,
             "fits_with_max_tokens": tokens.len() + planned_output <= slot_tokens,

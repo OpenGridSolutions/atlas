@@ -136,6 +136,9 @@ pub enum InferenceRequest {
         top_logprobs: Option<u8>,
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
+        /// PRI-7: X-Priority: high requests may occupy the reserved
+        /// slots; normal requests stop at slots_total − reserved.
+        priority: bool,
         /// Logit probe (multiclass Plan.md 1.3): token ids whose RAW
         /// first-token logits are returned in
         /// [`InferenceResponse::probed_logits`]. Drives /v1/rerank —
@@ -225,6 +228,8 @@ pub enum InferenceRequest {
         top_logprobs: Option<u8>,
         /// Request timeout as absolute deadline. None = no timeout.
         timeout_at: Option<std::time::Instant>,
+        /// PRI-7: see the Blocking variant.
+        priority: bool,
         token_tx: tokio::sync::mpsc::Sender<StreamEvent>,
         /// Cooperative cancellation flag, shared with the streaming
         /// pipeline. Set true by chat_stream guards (tool-call loop
