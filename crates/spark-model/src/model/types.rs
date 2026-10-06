@@ -136,7 +136,7 @@ pub struct TransformerModel {
     /// per (slot, K) — different γ values coexist via the K dimension.
     pub(super) verify_kgamma_graph: Mutex<std::collections::HashMap<(usize, usize), GraphHandle>>,
     /// Prefix cache for KV block reuse across requests.
-    pub(super) prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
+    pub(super) prefix_cache: std::sync::Arc<dyn spark_runtime::prefix_cache::PrefixCache>,
     /// Per-model seed `k_0 = H(model_hash ‖ layout_hash)` for the chained
     /// block keys (KV-3/KV-5). Set once by `build_model` after
     /// construction via `set_block_key_seed`.

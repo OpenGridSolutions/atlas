@@ -94,8 +94,8 @@ fn setup_model(
         spark_runtime::kv_cache::PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
     tracing::info!("KV cache: {} blocks", num_blocks);
 
-    let prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache> =
-        Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
+    let prefix_cache: std::sync::Arc<dyn spark_runtime::prefix_cache::PrefixCache> =
+        std::sync::Arc::new(spark_runtime::prefix_cache::NoPrefixCaching);
     let model = spark_model::factory::build_model(
         config.clone(),
         &store,

@@ -59,8 +59,6 @@ impl Index {
         self.entries.contains_key(&(*key, kind))
     }
 
-    /// (Consumed by the restore path in T5; tests use it today.)
-    #[allow(dead_code)]
     pub fn get(&self, key: &[u8; 16], kind: Kind) -> Option<&IndexEntry> {
         self.entries.get(&(*key, kind))
     }

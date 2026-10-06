@@ -474,6 +474,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
     )?;
     let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
+    crate::main_modules::cache_registry::set_active(
+        crate::main_modules::cache_registry::ChainParams {
+            model_id: boot_model_id.clone(),
+            seed: boot_kv_identity.seed,
+            block_size: args.block_size,
+            vision_pad_token_id: vision_pad_id_of(&config),
+        },
+        std::sync::Arc::clone(&prefix_cache),
+    );
     let model = serve_phases::build_model(
         &args,
         &boot_model_id,
@@ -870,6 +879,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             crate::memdebug::on_build_phase("start", &prep.model_id);
             let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
+            let reload_prefix_cache = std::sync::Arc::clone(&prefix_cache);
             let model = match serve_phases::build_model(
                 &reload_args,
                 &prep.model_id,
@@ -981,6 +991,15 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             if let Some(tier) = &kv_tier {
                 model.set_kv_evict_guard(Some(tier.evict_guard()));
             }
+            crate::main_modules::cache_registry::set_active(
+                crate::main_modules::cache_registry::ChainParams {
+                    model_id: prep.model_id.clone(),
+                    seed: kv_identity.seed,
+                    block_size: reload_args.block_size,
+                    vision_pad_token_id: vision_pad_id_of(&config),
+                },
+                reload_prefix_cache,
+            );
             Ok(scheduler::SwapOutcome {
                 model,
                 params: prep.scheduler_params,
@@ -1382,6 +1401,18 @@ pub(crate) fn quant_pair_compatible(kernel_quant: &str, model_quant: &str) -> bo
         ("bf16", "fp8") |
         ("bf16", "nvfp4")
     )
+}
+
+/// Resolve the `<|image_pad|>` id the model layer uses for chain
+/// construction (0 = no vision tower → no media placeholders).
+fn vision_pad_id_of(config: &atlas_core::config::ModelConfig) -> u32 {
+    if config.vision.is_none() {
+        return 0;
+    }
+    match config.vision.as_ref().map(|v| v.image_pad_token_id) {
+        Some(id) if id != 0 => id,
+        _ => spark_model::layers::vision_encoder::IMAGE_PAD_TOKEN_ID,
+    }
 }
 
 /// MEM-7 measurement: MemAvailable delta across `build_model` minus the

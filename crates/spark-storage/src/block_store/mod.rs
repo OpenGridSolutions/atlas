@@ -237,6 +237,16 @@ impl BlockStore {
         self.index.lock().expect("index lock").contains(key, kind)
     }
 
+    /// Index entry for a key (no file I/O) — the session-state probe
+    /// reads token counts from here.
+    pub fn entry(&self, key: &[u8; 16], kind: Kind) -> Option<IndexEntry> {
+        self.index
+            .lock()
+            .expect("index lock")
+            .get(key, kind)
+            .copied()
+    }
+
     /// Touch a chain head's recency (NVM-9) without reading payload.
     pub fn touch(&self, key: &[u8; 16]) {
         self.index

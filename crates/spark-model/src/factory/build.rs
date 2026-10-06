@@ -31,7 +31,7 @@ pub fn build_model(
     max_batch_size: usize,
     mtp_quant: MtpQuantization,
     use_speculative: bool,
-    prefix_cache: Box<dyn PrefixCache>,
+    prefix_cache: std::sync::Arc<dyn PrefixCache>,
     mtp_vocab_size: u32,
     comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     self_speculative: bool,

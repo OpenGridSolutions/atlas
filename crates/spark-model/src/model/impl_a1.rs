@@ -52,7 +52,7 @@ impl TransformerModel {
         max_batch_size: usize,
         mtp_quant: crate::layers::MtpQuantization,
         use_speculative: bool,
-        prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
+        prefix_cache: std::sync::Arc<dyn spark_runtime::prefix_cache::PrefixCache>,
         mtp_vocab_size: u32,
         comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
         self_speculative: bool,

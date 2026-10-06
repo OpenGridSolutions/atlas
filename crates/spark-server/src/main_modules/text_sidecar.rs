@@ -271,7 +271,7 @@ fn load_sidecar(
         1, // one sequence at a time
         spark_model::layers::MtpQuantization::Bf16,
         false,
-        Box::new(spark_runtime::prefix_cache::NoPrefixCaching),
+        std::sync::Arc::new(spark_runtime::prefix_cache::NoPrefixCaching),
         0,
         None,
         false,

@@ -11,7 +11,7 @@ use crate::cli;
 
 pub(crate) fn build_prefix_cache(
     args: &cli::ServeArgs,
-) -> Box<dyn spark_runtime::prefix_cache::PrefixCache> {
+) -> std::sync::Arc<dyn spark_runtime::prefix_cache::PrefixCache> {
     if args.enable_prefix_caching {
         if args.high_speed_swap {
             tracing::info!(
@@ -20,10 +20,10 @@ pub(crate) fn build_prefix_cache(
         } else {
             tracing::info!("Prefix caching: ENABLED (radix tree)");
         }
-        Box::new(spark_runtime::radix_tree::RadixTree::new())
+        std::sync::Arc::new(spark_runtime::radix_tree::RadixTree::new())
     } else {
         tracing::info!("Prefix caching: disabled");
-        Box::new(spark_runtime::prefix_cache::NoPrefixCaching)
+        std::sync::Arc::new(spark_runtime::prefix_cache::NoPrefixCaching)
     }
 }
 
@@ -86,7 +86,7 @@ pub(crate) fn build_model(
     inference_reserve: usize,
     layer_dtypes: Vec<spark_runtime::kv_cache::KvCacheDtype>,
     hss_cache_blocks_per_seq: Option<u32>,
-    prefix_cache: Box<dyn spark_runtime::prefix_cache::PrefixCache>,
+    prefix_cache: std::sync::Arc<dyn spark_runtime::prefix_cache::PrefixCache>,
     comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     dflash_args: Option<spark_model::factory::DflashBuildArgs<'_>>,
     default_mtp_quantization: &str,

@@ -126,8 +126,8 @@ mod tests {
         let gpu = spark_runtime::gpu::mock::MockGpuBackend::new();
         let store = WeightStore::empty();
 
-        let prefix_cache: Box<dyn PrefixCache> =
-            Box::new(spark_runtime::prefix_cache::NoPrefixCaching);
+        let prefix_cache: std::sync::Arc<dyn PrefixCache> =
+            std::sync::Arc::new(spark_runtime::prefix_cache::NoPrefixCaching);
         let result = build_model(
             config,
             &store,

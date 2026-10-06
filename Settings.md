@@ -200,3 +200,40 @@ http:
 
 Bearer-Auth bleibt unverändert aktiv (`--require-auth`); Traefik und
 Server verwenden denselben Token.
+
+
+### Session-Tracking: `POST /v1/atlas/session/state`
+
+Content-addressiertes Tracking des KV-Cache-Zustands einer Session
+(keine Session-IDs, E2): Der Client schickt seine Konversation, der
+Server meldet den Zustand über alle Ebenen. Nur für das aktive
+Arena-Modell (Token-IDs und Ketten-Seed sind modellspezifisch).
+
+```bash
+curl -s $BASE/v1/atlas/session/state -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d '{
+    "model": "…", "max_tokens": 512,
+    "messages": [{"role":"user","content":"…"}, {"role":"assistant","content":"…"}]
+  }'
+```
+
+Antwort (gekürzt):
+
+```json
+{
+  "active": true, "tokens": 3912, "cacheable": true,
+  "slot": { "slot_tokens": 32768, "source": "max_seq_len",
+            "remaining_tokens": 28856, "fits_with_max_tokens": true },
+  "ram_cache": { "cached_tokens": 3072, "ssm_resume_tokens": 3072 },
+  "nvme": { "persisted_tokens": 3840, "tail_persisted": true,
+            "ssm_resume_tokens": 2048, "restore_eligible": true },
+  "estimated_prefill_tokens": 72
+}
+```
+
+`slot.source` wechselt mit der Slot-Stufe von `max_seq_len` auf das
+per-Modell-`slot_tokens`. Die Probe ist strikt read-only (keine
+Refcount-/LRU-Mutation) und rendert Nachrichten ohne Generation-Prompt —
+der Treffer entspricht dem geteilten Prefix eines echten Requests bis
+zur letzten Blockgrenze. Multimodale Inhalte werden nicht bewertet
+(`media_evaluated: false`).
