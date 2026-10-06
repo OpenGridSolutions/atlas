@@ -129,3 +129,4 @@ bench/**/*.jsonl
 bench/**/*.csv
 bench/**/*.pid
 bench/fp8_dgx2_drift/harness/oc
+refenv/
