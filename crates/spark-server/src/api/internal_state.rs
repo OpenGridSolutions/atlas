@@ -30,11 +30,7 @@ fn capacity_profile(max_seq_len: usize) -> serde_json::Value {
         .map(|p| p.total_blocks * block_size)
         .unwrap_or(0);
     let seqs_at = |ctx: usize| {
-        if ctx == 0 {
-            0
-        } else {
-            pool_tokens / ctx
-        }
+        if ctx == 0 { 0 } else { pool_tokens / ctx }
     };
     serde_json::json!({
         "block_size_tokens": block_size,
@@ -68,7 +64,7 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
     let pool = spark_runtime::kv_stats::snapshot().map(|p| {
         serde_json::json!({
             "total_blocks": p.total_blocks,
-            "free_blocks": p.free_blocks,
+            "free_blocks": p.total_blocks.saturating_sub(p.used_blocks),
             "used_blocks": p.used_blocks,
             "reserved_bytes": p.reserved_bytes,
         })
@@ -114,4 +110,28 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         "nvme_store": nvme,
     });
     Json(body).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::capacity_profile;
+    use spark_runtime::kv_stats;
+
+    /// T-TEL-01 / MEM-9: the capacity profile is derived from the live
+    /// pool geometry (capacity, not reservation).
+    #[test]
+    fn capacity_profile_derives_from_pool_geometry() {
+        kv_stats::publish_pool_geometry(16, 4096);
+        kv_stats::publish_ssm_bytes_per_seq(2048);
+        kv_stats::publish_pool(1000, 1000 * 4096);
+        let p = capacity_profile(4096);
+        assert_eq!(p["block_size_tokens"], 16);
+        assert_eq!(p["bytes_per_token"], 256.0);
+        assert_eq!(p["ssm_bytes_per_seq"], 2048);
+        assert_eq!(p["pool_tokens_total"], 16_000);
+        assert_eq!(p["max_context_tokens"], 4096);
+        assert_eq!(p["parallel_seqs"]["at_8k"], 1);
+        assert_eq!(p["parallel_seqs"]["at_32k"], 0);
+        assert_eq!(p["parallel_seqs"]["at_max_context"], 3);
+    }
 }

@@ -20,6 +20,8 @@
 //! - `stored`             — stored-completion / response retrieval
 //! - `conversations`      — `/v1/conversations` CRUD
 //! - `misc_handlers`      — cancel / metrics / health / tokenize / detokenize
+//! - `internal_state`     — `GET /internal/state` (TEL-3 introspection)
+//! - `session_state`      — `POST /v1/atlas/session/state` (per-session KV probe)
 //! - `inference_types`    — `GrammarSpec`, `InferenceRequest`,
 //!                          `InferenceResponse`, `StreamEvent`,
 //!                          `TokenLogprobs`
@@ -42,6 +44,7 @@ pub mod images;
 pub mod images_edit;
 pub mod inference_impl;
 pub mod inference_types;
+pub mod internal_state;
 pub mod lazy_swap;
 pub mod misc_handlers;
 pub mod multimodal_input;

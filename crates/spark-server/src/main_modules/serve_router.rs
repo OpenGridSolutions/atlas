@@ -140,6 +140,15 @@ pub(crate) async fn build_and_serve(
         // Memory + residency diagnostics (Plan.md Phase S) — surfaces the
         // cudaMemGetInfo vs /proc/meminfo discrepancy as a metric.
         .route("/v1/stats", get(api::stats::stats))
+        // Per-session KV tracking (E2): content-addressed probe across
+        // RAM radix cache + NVMe store. Under /v1 → bearer-gated.
+        .route(
+            "/v1/atlas/session/state",
+            post(api::session_state::session_state),
+        )
+        // TEL-3 introspection: arena, slots, queues, swap decision,
+        // NVMe store. Bearer-gated via the /internal prefix (TEL-7).
+        .route("/internal/state", get(api::internal_state::internal_state))
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))
