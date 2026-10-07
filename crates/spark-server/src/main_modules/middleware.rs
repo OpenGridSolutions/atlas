@@ -73,6 +73,30 @@ pub(crate) async fn openai_observability_middleware(
 /// timings. The error body matches the OpenAI shape so client SDKs
 /// surface "missing_api_key" / "invalid_api_key" the same way they do
 /// against `api.openai.com`.
+/// Inference paths bounced with 503 while the arena is not `Running`.
+/// In lazy multi-model mode (Task 6 Phase 3) the lazy-load endpoints
+/// handle that state themselves — they queue a ticket instead — so they
+/// pass through; introspection, health and admin are never gated.
+pub(crate) fn swap_gated(path: &str, lazy_enabled: bool) -> bool {
+    const GATED: [&str; 7] = [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/responses",
+        "/v1/messages",
+        "/v1/embeddings",
+        "/v1/rerank",
+        "/rerank",
+    ];
+    const LAZY_HANDLED: [&str; 5] = [
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/rerank",
+        "/rerank",
+    ];
+    GATED.contains(&path) && !(lazy_enabled && LAZY_HANDLED.contains(&path))
+}
+
 /// Inference-endpoint gate for hot-swap (plan Task 4): while a model swap
 /// is in progress or no model is loaded, inference requests get an
 /// immediate 503 + `Retry-After: 1` with a JSON body naming the state,
@@ -85,48 +109,27 @@ pub(crate) async fn model_state_middleware(
     use axum::response::IntoResponse;
     if let Some(ctx) = state.hotswap.as_ref() {
         let swap_state = ctx.state();
-        if swap_state != crate::main_modules::hotswap::SwapState::Running {
-            const GATED: [&str; 7] = [
-                "/v1/chat/completions",
-                "/v1/completions",
-                "/v1/responses",
-                "/v1/messages",
-                "/v1/embeddings",
-                "/v1/rerank",
-                "/rerank",
-            ];
-            // Lazy multi-model mode (Task 6 Phase 3): the lazy-load
-            // endpoints handle a non-Running state themselves — the
-            // handler-side interceptor synchronously loads the requested
-            // registered model instead of bouncing with 503.
-            const LAZY_HANDLED: [&str; 5] = [
-                "/v1/chat/completions",
-                "/v1/completions",
-                "/v1/embeddings",
-                "/v1/rerank",
-                "/rerank",
-            ];
-            let lazy_pass = ctx.lazy_enabled && LAZY_HANDLED.contains(&req.uri().path());
-            if !lazy_pass && GATED.contains(&req.uri().path()) {
-                let body = serde_json::json!({
-                    "error": {
-                        "message": format!(
-                            "no model available (state: {}); retry shortly",
-                            swap_state.as_str()
-                        ),
-                        "type": "server_error",
-                        "param": null,
-                        "code": "model_unavailable",
-                    },
-                    "state": swap_state.as_str(),
-                });
-                return (
-                    axum::http::StatusCode::SERVICE_UNAVAILABLE,
-                    [(axum::http::header::RETRY_AFTER, "1")],
-                    axum::Json(body),
-                )
-                    .into_response();
-            }
+        if swap_state != crate::main_modules::hotswap::SwapState::Running
+            && swap_gated(req.uri().path(), ctx.lazy_enabled)
+        {
+            let body = serde_json::json!({
+                "error": {
+                    "message": format!(
+                        "no model available (state: {}); retry shortly",
+                        swap_state.as_str()
+                    ),
+                    "type": "server_error",
+                    "param": null,
+                    "code": "model_unavailable",
+                },
+                "state": swap_state.as_str(),
+            });
+            return (
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                [(axum::http::header::RETRY_AFTER, "1")],
+                axum::Json(body),
+            )
+                .into_response();
         }
     }
     next.run(req).await
@@ -138,19 +141,70 @@ pub(crate) async fn model_state_middleware(
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RequestPriority(pub bool);
 
+/// AUTH-4: `--trust-proxy-headers` is only safe when nothing but the
+/// proxy can reach the listener — a loopback bind.
+pub(crate) fn is_loopback_bind(bind: &str) -> bool {
+    matches!(bind, "127.0.0.1" | "localhost" | "::1")
+}
+
+/// AUTH-3/PRI-1: the proxy-asserted priority of one request. `true`
+/// only when the operator trusts proxy headers AND the proxy sent
+/// `X-Priority: high` (case-insensitive value). Any other value, a
+/// missing header, or an untrusting server yields the normal tier.
+pub(crate) fn proxy_priority(trust_proxy_headers: bool, headers: &axum::http::HeaderMap) -> bool {
+    trust_proxy_headers
+        && headers
+            .get("x-priority")
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.eq_ignore_ascii_case("high"))
+}
+
 pub(crate) async fn priority_middleware(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     mut req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let high = state.trust_proxy_headers
-        && req
-            .headers()
-            .get("x-priority")
-            .and_then(|v| v.to_str().ok())
-            .is_some_and(|v| v.eq_ignore_ascii_case("high"));
+    let high = proxy_priority(state.trust_proxy_headers, req.headers());
     req.extensions_mut().insert(RequestPriority(high));
     next.run(req).await
+}
+
+/// Paths behind `--require-auth`: every inference and management
+/// surface. `/admin` (hot-swap) and `/internal` (TEL-7 introspection)
+/// are in the set deliberately; health, liveness and metrics stay open
+/// (scrape targets, expected to be firewalled at the network layer).
+pub(crate) fn needs_auth(path: &str) -> bool {
+    path.starts_with("/v1/")
+        || path.starts_with("/admin")
+        || path.starts_with("/internal")
+        || path == "/tokenize"
+        || path == "/detokenize"
+}
+
+/// AUTH-1: the bearer verdict for one request — `None` lets it through;
+/// `Some((status, code, message))` is the OpenAI-shaped rejection.
+pub(crate) fn bearer_rejection(
+    auth_cfg: &crate::auth::AuthConfig,
+    headers: &axum::http::HeaderMap,
+) -> Option<(axum::http::StatusCode, &'static str, &'static str)> {
+    let presented = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.strip_prefix("Bearer "))
+        .map(str::trim);
+    match presented {
+        None => Some((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "missing_api_key",
+            "Missing Authorization: Bearer header",
+        )),
+        Some(t) if !auth_cfg.validate(t.as_bytes()) => Some((
+            axum::http::StatusCode::UNAUTHORIZED,
+            "invalid_api_key",
+            "Invalid bearer token",
+        )),
+        Some(_) => None,
+    }
 }
 
 pub(crate) async fn require_auth_middleware(
@@ -162,35 +216,11 @@ pub(crate) async fn require_auth_middleware(
     let Some(auth_cfg) = state.auth.as_ref() else {
         return next.run(req).await;
     };
-    let path = req.uri().path();
-    // /admin (hot-swap) is deliberately in the auth set: snapshot/unload/load
-    // are management operations and must respect --require-auth (plan §2).
-    let needs_auth = path.starts_with("/v1/")
-        || path.starts_with("/admin")
-        || path.starts_with("/internal")
-        || path == "/tokenize"
-        || path == "/detokenize";
-    if !needs_auth {
+    if !needs_auth(req.uri().path()) {
         return next.run(req).await;
     }
-    let presented_token = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer "))
-        .map(str::trim);
-    let (status, code, message) = match presented_token {
-        None => (
-            axum::http::StatusCode::UNAUTHORIZED,
-            "missing_api_key",
-            "Missing Authorization: Bearer header",
-        ),
-        Some(t) if !auth_cfg.validate(t.as_bytes()) => (
-            axum::http::StatusCode::UNAUTHORIZED,
-            "invalid_api_key",
-            "Invalid bearer token",
-        ),
-        Some(_) => return next.run(req).await,
+    let Some((status, code, message)) = bearer_rejection(auth_cfg, req.headers()) else {
+        return next.run(req).await;
     };
     let body = serde_json::json!({
         "error": {

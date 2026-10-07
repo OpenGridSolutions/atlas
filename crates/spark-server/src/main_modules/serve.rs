@@ -458,8 +458,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     );
     // AUTH-4: trusting proxy headers is only safe when nothing but the
     // proxy can reach us.
-    if args.trust_proxy_headers && !matches!(args.bind.as_str(), "127.0.0.1" | "localhost" | "::1")
-    {
+    if args.trust_proxy_headers && !crate::main_modules::middleware::is_loopback_bind(&args.bind) {
         anyhow::bail!(
             "--trust-proxy-headers requires a loopback bind (got --bind {}):              any direct client could claim X-Priority: high",
             args.bind

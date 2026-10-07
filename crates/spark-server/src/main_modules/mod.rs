@@ -14,6 +14,8 @@ pub(crate) mod serve_router;
 pub(crate) mod text_sidecar;
 
 #[cfg(test)]
+mod middleware_tests;
+#[cfg(test)]
 mod tests;
 
 pub(crate) use app_state::{AppState, ModelRuntime};
