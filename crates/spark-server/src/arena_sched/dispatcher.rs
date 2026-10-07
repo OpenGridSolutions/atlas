@@ -238,15 +238,12 @@ impl ArenaDispatcher {
             return 0.0;
         }
         let est = crate::swap_costs::estimate(target, self.snapshot_bytes(target));
-        let t_swap = est.total(0.0).as_secs_f64();
-        let residency_hold = match loaded {
-            Some(_) => {
-                let resident = self.hotswap.active_since.lock().elapsed().as_secs_f64();
-                (self.cfg.decision.min_residency_factor * t_swap - resident).max(0.0)
-            }
-            None => 0.0,
-        };
-        residency_hold + t_swap
+        let resident = loaded.map(|_| self.hotswap.active_since.lock().elapsed().as_secs_f64());
+        super::decision::wait_estimate_secs(
+            est.total(0.0).as_secs_f64(),
+            resident,
+            self.cfg.decision.min_residency_factor,
+        )
     }
 
     fn snapshot_bytes(&self, model_id: &str) -> Option<u64> {

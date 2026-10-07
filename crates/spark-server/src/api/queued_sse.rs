@@ -133,3 +133,7 @@ async fn forward_or_wrap(
             .await;
     }
 }
+
+#[cfg(test)]
+#[path = "queued_sse_tests.rs"]
+mod tests;

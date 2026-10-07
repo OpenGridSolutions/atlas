@@ -165,6 +165,21 @@ pub fn decide(
     Decision::Stay
 }
 
+/// WAIT-3: coarse queue-wait estimate for a request whose target model
+/// is not resident — the resident model's remaining hysteresis hold
+/// (`min_residency_factor · T_swap − resident`, floored at 0) plus the
+/// target's T_swap. `resident_secs` is `None` for an empty arena.
+pub fn wait_estimate_secs(
+    t_swap_secs: f64,
+    resident_secs: Option<f64>,
+    min_residency_factor: f64,
+) -> f64 {
+    let hold = resident_secs
+        .map(|r| (min_residency_factor * t_swap_secs - r).max(0.0))
+        .unwrap_or(0.0);
+    hold + t_swap_secs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +373,22 @@ mod tests {
             last_was_swap = is_swap;
         }
         assert_eq!(swaps, 1, "one coherent switch, no flapping");
+    }
+}
+
+#[cfg(test)]
+mod wait_tests {
+    use super::wait_estimate_secs;
+
+    /// T-SCH-12 / WAIT-3: the estimate a queued client is told.
+    #[test]
+    fn wait_estimate_adds_the_remaining_residency_hold() {
+        // 1.5 × 10 s hold, 2 s already resident → 13 s hold + 10 s swap.
+        assert_eq!(wait_estimate_secs(10.0, Some(2.0), 1.5), 23.0);
+        // Hold already satisfied → just the swap.
+        assert_eq!(wait_estimate_secs(10.0, Some(50.0), 1.5), 10.0);
+        // Empty arena → no hold.
+        assert_eq!(wait_estimate_secs(10.0, None, 1.5), 10.0);
+        assert_eq!(wait_estimate_secs(0.0, Some(0.0), 1.5), 0.0);
     }
 }

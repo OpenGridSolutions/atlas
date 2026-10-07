@@ -399,3 +399,7 @@ pub fn with_active<R>(f: impl FnOnce(&KvTier) -> R) -> Option<R> {
     let guard = ACTIVE.lock().expect("kv-tier active lock");
     guard.as_ref().map(|t| f(t))
 }
+
+#[cfg(test)]
+#[path = "kv_tier_tests.rs"]
+mod tests;
