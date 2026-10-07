@@ -91,6 +91,7 @@ fn now_secs() -> u64 {
 }
 
 #[cfg(unix)]
+#[allow(clippy::unnecessary_cast)] // statvfs field widths differ per target
 fn fs_free_space(path: &Path) -> (u64, u64) {
     use std::os::unix::ffi::OsStrExt;
     let c = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap_or_default();
