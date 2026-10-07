@@ -68,7 +68,7 @@ pub fn step_self_spec(
 
     // 3. Rewind to pre-draft state (SSM unchanged since we skipped SSM layers)
     a.seq.seq_len = seq_len_before_draft;
-    a.seq.tokens.truncate(tokens_before_draft);
+    a.seq.truncate_tokens(tokens_before_draft);
 
     if draft_tokens.is_empty() {
         // No drafts: emit token_0 and continue
@@ -159,7 +159,7 @@ pub fn step_self_spec(
         let extra = a.seq.seq_len - expected_seq_len;
         for _ in 0..extra {
             a.seq.seq_len -= 1;
-            a.seq.tokens.pop();
+            a.seq.pop_tokens(1);
         }
         // +1 because token_0 is always accepted in the verify batch
         if let Err(e) = model.rollback_ssm_states(&mut a.seq, num_accepted + 1) {
@@ -335,7 +335,7 @@ pub fn step_ngram_verify(
     } else {
         // ── REJECTED: rollback SSM, emit v0 only ──
         a.seq.seq_len -= 1;
-        a.seq.tokens.pop();
+        a.seq.pop_tokens(1);
 
         if let Err(e) = model.start_rollback_and_checkpoint_async(&mut a.seq, 1) {
             tracing::error!("ngram rollback: {e:#}");

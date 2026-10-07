@@ -218,7 +218,7 @@ pub fn step_verify_k2(
     } else {
         // ── REJECTED ──
         a.seq.seq_len -= 1;
-        a.seq.tokens.pop();
+        a.seq.pop_tokens(1);
 
         let t_trim = Instant::now();
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {

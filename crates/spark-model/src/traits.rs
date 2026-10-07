@@ -173,6 +173,23 @@ pub struct SequenceState {
 }
 
 impl SequenceState {
+    /// Shrink the sequence to `len` tokens and keep the block-key chain
+    /// in step (KV-8): rejected speculative drafts and rolled-back output
+    /// must never leave a sealed key behind. `seq_len` (the KV cursor) is
+    /// rewound by the caller — the two are decoupled on the verify paths.
+    #[inline]
+    pub fn truncate_tokens(&mut self, len: usize) {
+        self.tokens.truncate(len);
+        self.block_keys.truncate_to(self.tokens.len());
+    }
+
+    /// Drop the last `n` tokens — see [`Self::truncate_tokens`].
+    #[inline]
+    pub fn pop_tokens(&mut self, n: usize) {
+        let len = self.tokens.len().saturating_sub(n);
+        self.truncate_tokens(len);
+    }
+
     /// Phase 6.3 sliding-window helper: the absolute logical block index
     /// of `block_table[0]`. Returns 0 when `--high-speed-swap` is off
     /// (`disk_block_ids` is empty then; `block_table` is the full history).

@@ -104,7 +104,7 @@ pub fn step_verify_dflash(
         a.seq.seq_len = target_seq_len;
         let pop_n = to_drop.min(a.seq.tokens.len());
         for _ in 0..pop_n {
-            a.seq.tokens.pop();
+            a.seq.pop_tokens(1);
         }
     }
 

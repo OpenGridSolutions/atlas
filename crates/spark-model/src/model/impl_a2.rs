@@ -440,7 +440,7 @@ impl TransformerModel {
                     self.trim_proposer_state(seq, 1, 0)?;
                 } else {
                     seq.seq_len -= 1;
-                    seq.tokens.pop();
+                    seq.pop_tokens(1);
                     self.trim_proposer_state(seq, 0, 0)?;
                     self.start_rollback_and_checkpoint_async(seq, 1)?;
                 }
@@ -460,13 +460,13 @@ impl TransformerModel {
                     }
                     1 => {
                         seq.seq_len -= 1;
-                        seq.tokens.pop();
+                        seq.pop_tokens(1);
                         self.start_rollback_and_checkpoint_async(seq, 2)?;
                     }
                     _ => {
                         seq.seq_len -= 2;
-                        seq.tokens.pop();
-                        seq.tokens.pop();
+                        seq.pop_tokens(1);
+                        seq.pop_tokens(1);
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }
@@ -487,20 +487,20 @@ impl TransformerModel {
                     }
                     2 => {
                         seq.seq_len -= 1;
-                        seq.tokens.pop();
+                        seq.pop_tokens(1);
                         self.start_rollback_and_checkpoint_async(seq, 3)?;
                     }
                     1 => {
                         seq.seq_len -= 2;
-                        seq.tokens.pop();
-                        seq.tokens.pop();
+                        seq.pop_tokens(1);
+                        seq.pop_tokens(1);
                         self.start_rollback_and_checkpoint_async(seq, 2)?;
                     }
                     _ => {
                         seq.seq_len -= 3;
-                        seq.tokens.pop();
-                        seq.tokens.pop();
-                        seq.tokens.pop();
+                        seq.pop_tokens(1);
+                        seq.pop_tokens(1);
+                        seq.pop_tokens(1);
                         self.start_rollback_and_checkpoint_async(seq, 1)?;
                     }
                 }

@@ -216,11 +216,15 @@ impl BlockKeyChain {
             .collect()
     }
 
-    /// Extend `keys` to cover all full blocks of `tokens`.
+    /// Extend `keys` to cover all full blocks of `tokens`. A chain that
+    /// is LONGER than `tokens` is over-extended (the sequence shrank
+    /// since the last call) and is cut back first — its surplus keys
+    /// were hashed over tokens that are no longer part of the sequence.
     fn extend(&mut self, tokens: &[u32]) {
         if self.block_size == 0 {
             return;
         }
+        self.truncate_to(tokens.len());
         let bs = self.block_size;
         let full = tokens.len() / bs;
         while self.keys.len() < full {
@@ -241,6 +245,23 @@ impl BlockKeyChain {
     /// the computation is incremental and idempotent).
     pub fn extend_to(&mut self, tokens: &[u32]) {
         self.extend(tokens);
+    }
+
+    /// Drop every key that covers tokens beyond `token_len` (KV-8).
+    /// Call it whenever the sequence shrinks — rejected speculative
+    /// drafts, watchdog rollback — so a key hashed over tokens that are
+    /// no longer part of the sequence is never sealed, persisted or
+    /// looked up. `extend_to` cannot see a shrink-then-regrow on its own
+    /// (same length, different tokens): it only appends.
+    pub fn truncate_to(&mut self, token_len: usize) {
+        if self.block_size == 0 {
+            return;
+        }
+        let full = token_len / self.block_size;
+        if self.keys.len() > full {
+            self.keys.truncate(full);
+            self.consumed = full * self.block_size;
+        }
     }
 
     /// Borrowed view over the first `len` tokens. Requires the chain to
@@ -344,134 +365,5 @@ impl<'a> BlockKeysView<'a> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    const BS: usize = 4;
-
-    fn chain(tokens: &[u32], pad: u32, digests: &[MediaDigest]) -> BlockKeyChain {
-        BlockKeyChain::new(seed(b"model-A", &[7u8; 32]), BS, tokens, pad, digests)
-    }
-
-    #[test]
-    fn deterministic_and_prefix_stable() {
-        let toks: Vec<u32> = (0..13).collect();
-        let a = chain(&toks, 0, &[]);
-        let b = chain(&toks, 0, &[]);
-        let va = a.view(&toks, 13);
-        let keys_a: Vec<_> = va.full_keys().to_vec();
-        let tail_a = va.tail_key();
-        let vb = b.view(&toks, 13);
-        assert_eq!(keys_a, vb.full_keys());
-        assert_eq!(tail_a, vb.tail_key());
-        assert_eq!(keys_a.len(), 3);
-        assert!(tail_a.is_some());
-        // Shorter view exposes a strict prefix of the same keys.
-        let v8 = b.view(&toks, 8);
-        assert_eq!(&keys_a[..2], v8.full_keys());
-        assert_eq!(v8.tail_key(), None);
-    }
-
-    #[test]
-    fn different_seed_diverges_from_block_zero() {
-        let toks: Vec<u32> = (0..8).collect();
-        let a = BlockKeyChain::new(seed(b"model-A", &[7u8; 32]), BS, &toks, 0, &[]);
-        let b = BlockKeyChain::new(seed(b"model-B", &[7u8; 32]), BS, &toks, 0, &[]);
-        assert_ne!(a.view(&toks, 8).full_keys(), b.view(&toks, 8).full_keys());
-    }
-
-    #[test]
-    fn media_divergence_starts_at_first_media_block() {
-        // pad token 99, run at tokens [4..6) → block 1 is the first media block.
-        let toks: Vec<u32> = vec![1, 2, 3, 4, 99, 99, 7, 8, 9, 10, 11, 12];
-        let a = chain(&toks, 99, &[[1u8; 32]]);
-        let b = chain(&toks, 99, &[[2u8; 32]]);
-        let va = a.view(&toks, 12);
-        let vb = b.view(&toks, 12);
-        assert!(va.cacheable() && vb.cacheable());
-        // Block 0 (tokens 0..4, no media): shared.
-        assert_eq!(va.full_keys()[0], vb.full_keys()[0]);
-        // Block 1 (contains the pad run): diverges, and stays diverged.
-        assert_ne!(va.full_keys()[1], vb.full_keys()[1]);
-        assert_ne!(va.full_keys()[2], vb.full_keys()[2]);
-    }
-
-    #[test]
-    fn media_run_spanning_blocks_taints_every_touched_block() {
-        // run [2..6) touches blocks 0 and 1.
-        let toks: Vec<u32> = vec![1, 2, 99, 99, 99, 99, 7, 8];
-        let a = chain(&toks, 99, &[[1u8; 32]]);
-        let b = chain(&toks, 99, &[[2u8; 32]]);
-        let va = a.view(&toks, 8);
-        let vb = b.view(&toks, 8);
-        assert_ne!(va.full_keys()[0], vb.full_keys()[0]);
-        assert_ne!(va.full_keys()[1], vb.full_keys()[1]);
-    }
-
-    #[test]
-    fn missing_digests_make_chain_uncacheable() {
-        let toks: Vec<u32> = vec![1, 99, 99, 4, 5, 6, 7, 8];
-        let c = chain(&toks, 99, &[]); // one pad run, zero digests
-        assert!(!c.is_cacheable());
-        assert!(!c.view(&toks, 8).cacheable());
-        // No media, no digests: cacheable.
-        let plain: Vec<u32> = (1..9).collect();
-        let p = chain(&plain, 99, &[]);
-        assert!(p.view(&plain, 8).cacheable());
-    }
-
-    #[test]
-    fn default_chain_is_inert() {
-        let toks: Vec<u32> = (0..8).collect();
-        let c = BlockKeyChain::default();
-        let v = c.view(&toks, 8);
-        assert!(!v.cacheable());
-        assert_eq!(v.num_full_blocks(), 0);
-    }
-
-    #[test]
-    fn key_at_matches_view_boundaries() {
-        let toks: Vec<u32> = (0..10).collect();
-        let c = chain(&toks, 0, &[]);
-        let v = c.view(&toks, 10);
-        assert_eq!(v.key_at(4), v.full_keys()[0]);
-        assert_eq!(v.key_at(10), v.tail_key().unwrap());
-        assert_eq!(v.key_at(0), c.view(&toks, 0).key_at(0));
-    }
-
-    #[test]
-    fn tail_key_depends_on_tail_media() {
-        // 9 tokens, pad run in the tail (tokens 8..9).
-        let toks: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 99];
-        let a = chain(&toks, 99, &[[1u8; 32]]);
-        let b = chain(&toks, 99, &[[2u8; 32]]);
-        let ta = a.view(&toks, 9).tail_key();
-        let tb = b.view(&toks, 9).tail_key();
-        assert_ne!(ta, tb);
-    }
-
-    #[test]
-    fn hex_roundtrip() {
-        let k = seed(b"x", &[3u8; 32]);
-        assert_eq!(BlockKey::from_hex(&k.to_hex()), Some(k));
-        assert_eq!(BlockKey::from_hex("zz"), None);
-    }
-
-    #[test]
-    fn decode_extension_is_incremental() {
-        // Simulate decode: prompt of 6, then tokens appended one by one.
-        let mut toks: Vec<u32> = (0..6).collect();
-        let mut c = chain(&toks, 0, &[]);
-        let k_prompt = c.view(&toks, 6).full_keys().to_vec();
-        for t in 6..14 {
-            toks.push(t);
-            c.extend_to(&toks);
-        }
-        let v = c.view(&toks, 14);
-        assert_eq!(&v.full_keys()[..1], &k_prompt[..]);
-        assert_eq!(v.num_full_blocks(), 3);
-        // Same result as a fresh chain over the final tokens.
-        let fresh = chain(&toks, 0, &[]);
-        assert_eq!(v.full_keys(), fresh.view(&toks, 14).full_keys());
-    }
-}
+#[path = "block_keys_tests.rs"]
+mod tests;

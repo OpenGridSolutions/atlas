@@ -380,6 +380,9 @@ fn apply_rollback(a: &mut ActiveSeq, keep_len: usize, dropped: usize) {
         a.seq.seq_len,
         keep_len,
     );
+    // KV-8: keys sealed over the dropped tokens must not outlive them —
+    // the regrown positions get fresh keys at the next checkpoint/release.
+    a.seq.block_keys.truncate_to(a.seq.tokens.len());
 
     // 3. Restore the generation budget that the dropped tokens consumed
     //    (only content tokens decrement `remaining`; thinking is free,

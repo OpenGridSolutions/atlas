@@ -177,7 +177,7 @@ pub fn step_verify_k3(
         k3_record_outcome(2, a.seq.seq_len);
     } else if num_accepted == 1 {
         a.seq.seq_len -= 1;
-        a.seq.tokens.pop();
+        a.seq.pop_tokens(1);
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 1, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }
@@ -223,8 +223,8 @@ pub fn step_verify_k3(
         k3_record_outcome(1, a.seq.seq_len);
     } else {
         a.seq.seq_len -= 2;
-        a.seq.tokens.pop();
-        a.seq.tokens.pop();
+        a.seq.pop_tokens(1);
+        a.seq.pop_tokens(1);
         if let Err(e) = model.trim_proposer_state(&mut a.seq, 0, 0) {
             tracing::error!("trim_proposer_state: {e:#}");
         }

@@ -74,7 +74,7 @@ impl TransformerModel {
 
             // 3. Rewind to pre-draft state (SSM unchanged since we skipped SSM layers)
             seq.seq_len = seq_len_before_draft;
-            seq.tokens.truncate(tokens_before_draft);
+            seq.truncate_tokens(tokens_before_draft);
 
             // 4. Verify: run full model on [token_0, d1, ..., dK]
             let mut verify_tokens = vec![token_0];
@@ -117,7 +117,7 @@ impl TransformerModel {
                 let extra = seq.seq_len - expected_seq_len;
                 for _ in 0..extra {
                     seq.seq_len -= 1;
-                    seq.tokens.pop();
+                    seq.pop_tokens(1);
                 }
                 // +1 because token_0 is always accepted in the verify batch
                 self.rollback_ssm_states(seq, num_accepted + 1)?;
@@ -264,7 +264,7 @@ impl TransformerModel {
                 let extra = seq.seq_len - expected_seq_len;
                 for _ in 0..extra {
                     seq.seq_len -= 1;
-                    seq.tokens.pop();
+                    seq.pop_tokens(1);
                 }
                 // +1 because the verify batch begins with token_0 (always
                 // committed). `h_state_intermediates[i]` holds state after
