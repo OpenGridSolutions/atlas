@@ -279,13 +279,13 @@ pub trait Model: Send + Sync {
         Ok(Vec::new())
     }
 
-    /// Deepest block-aligned Marconi snapshot of this sequence as
-    /// `(token_count, payload)` — an interior NVMe resume point.
-    fn export_deepest_aligned_ssm_snapshot(
-        &self,
-        _seq: &SequenceState,
-    ) -> Result<Option<(usize, Vec<u8>)>> {
-        Ok(None)
+    /// Every block-aligned Marconi snapshot of this sequence as
+    /// `(token_count, payload)`, deepest first — the interior NVMe resume
+    /// points (SSM-4). More than one matters: a prompt-tail checkpoint
+    /// serves a replay of the prompt alone, a deeper decode checkpoint
+    /// serves the next turn that carries the answer.
+    fn export_aligned_ssm_snapshots(&self, _seq: &SequenceState) -> Result<Vec<(usize, Vec<u8>)>> {
+        Ok(Vec::new())
     }
 
     /// Import an NVMe `.ssm` payload as a Marconi resume point at

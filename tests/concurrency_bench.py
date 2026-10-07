@@ -67,7 +67,7 @@ def stream_chat(url, model, prompt, max_tokens, token, out, idx):
                 rec["error"] = chunk["error"].get("code") or chunk["error"].get("message")
                 break
             for ch in chunk.get("choices", []):
-                if ch.get("delta", {}).get("content"):
+                if ch.get("delta", {}).get("content") or ch.get("delta", {}).get("reasoning_content"):
                     if rec["ttft"] is None:
                         rec["ttft"] = time.monotonic() - t0
                     rec["tokens"] += 1

@@ -442,6 +442,7 @@ impl TransformerModel {
                     // surface async faults at the culprit kernel. Default-off.
                     || std::env::var("ATLAS_DEBUG_NO_GRAPH").as_deref() == Ok("1"),
             ),
+            nvme_tier_active: std::sync::atomic::AtomicBool::new(false),
             ssm_pool,
             ssm_snapshots,
             max_blocks_per_seq,

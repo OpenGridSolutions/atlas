@@ -80,8 +80,8 @@ und T-PRI-03 sind gestrichen.
 
 | ID | Szenario und Erwartung | Bezug | Stand |
 | --- | --- | --- | --- |
-| T-SSM-01 | P1 · On-Box – Ende an Blockgrenze mit Snapshot; Folge-Request setzt dort fort. | SSM-1, SSM-4 | offen |
-| T-SSM-04 | P1 · On-Box – KV bis Block 40, Snapshots bei 16 und 32. Resume bei 32, Blöcke 33–40 neu berechnet. | SSM-4 | offen |
+| T-SSM-01 | P1 · On-Box – Ende an Blockgrenze mit Snapshot; Folge-Request setzt dort fort. | SSM-1, SSM-4 | On-Box 2026-10-07 Qwen3-Next-80B (`tests/nvme_cold_cache_bench.py`, 7,7k-Token-Sessions): 28/28 Restores setzen am Prompt-Tail-Checkpoint (7680) fort, TTFT 0,31 s statt 8,5 s |
+| T-SSM-04 | P1 · On-Box – KV bis Block 40, Snapshots bei 16 und 32. Resume bei 32, Blöcke 33–40 neu berechnet. | SSM-4 | Unit `nvme_tier.rs::keeps_every_aligned_checkpoint_deepest_first`; Staging wählt den tiefsten `.ssm` im Bereich (On-Box indirekt über T-SSM-01) |
 | T-SSM-05 | P1 · Integration – Checksumme des Snapshots bei 32 manipuliert. Rückfall auf 16, Datei gelöscht. | SSM-5, NVM-6 | Unit `block_store` (Checksumme); Rückfall offen |
 | T-SSM-07 | P2 · Unit – Reines Attention-Modell: keine `.ssm`-Dateien, Tail nur KV. | SSM-8 | Unit `radix_tree/tests/snapshot.rs`; NVMe-Seite offen |
 | T-SSM-08 | P3 · On-Box – Snapshot-Dichte 1, 4, 16. | SSM-7, MEM-9 | offen |
@@ -138,7 +138,7 @@ des Prefix-Caches (persistierte Blöcke zuerst), dann Spill auf Platte.
 | ID | Szenario und Erwartung | Bezug | Stand |
 | --- | --- | --- | --- |
 | T-BAT-01 | P3 · On-Box – 30k-Prompt neben vier Streams; TBT unter `--tbt-deadline-ms`. | BAT-2 | offen |
-| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben laufenden Streams; Restore asynchron. | BAT-6 | On-Box 2026-10-07 (`tests/nvme_cold_cache_bench.py`): Upload auf eigenem Stream mit GPU-Fence, Import 35 ms; Warm-Stream unter Churn p50 unverändert, max. Stall 0,31 s (vorher 2,6 s), kalte TTFT 0,22 s (vorher 2,5 s), 22/22 Restores treffen |
+| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben laufenden Streams; Restore asynchron. | BAT-6 | On-Box 2026-10-07, Qwen3-VL-30B (2,8k): Import 35 ms, max. Stall 0,31 s (vorher 2,6 s), kalte TTFT 0,22 s (vorher 2,5 s), 22/22 Treffer. Qwen3-Next-80B (7,7k, hybrid): max. Stall 0,38 s (vorher 8,5 s), kalte TTFT 0,31 s (vorher 8,5 s), 28/28 Treffer mit SSM-Resume |
 | T-BAT-03 | P3 · Integration – Prefix kürzer als `nvme_restore_min_tokens`: Neuberechnung. | BAT-7 | offen |
 | T-BAT-04 | P2 · Integration – Priorisierter und normaler Request, ein Platz frei. | BAT-3, PRI-1 | Unit `queues.rs::grant_wakes_waiters_priority_first`; Admission offen |
 | T-BAT-06 | P2 · On-Box – Overcommit mit kleinem Pool: Cache-Verdrängung vor Spill, Spill-Resume funktioniert. | BAT-5 | On-Box 2026-10-07 (`tests/concurrency_bench.py`, `--kv-pool-gb 1`): N > Batch wartet, kein Reject/Drop; Fixes a721f36b, dfa141f0 |

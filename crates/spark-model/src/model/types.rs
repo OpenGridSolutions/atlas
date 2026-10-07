@@ -104,6 +104,11 @@ pub struct TransformerModel {
     /// When true, decode() skips CUDA graph capture/replay. Set during
     /// per-sequence batch decode to prevent SSM state pointer baking.
     pub(super) suppress_graphs: std::sync::atomic::AtomicBool,
+    /// True while the NVMe KV tier is installed (`set_kv_evict_guard(Some)`):
+    /// every finished sequence may be restored later, so cold prefills
+    /// pay the tail-checkpoint split to leave a block-aligned SSM resume
+    /// point behind (SSM-4).
+    pub(super) nvme_tier_active: std::sync::atomic::AtomicBool,
     /// MTP draft proposer (built from mtp_weights at init).
     pub(super) proposer: Option<Arc<dyn DraftProposer>>,
     /// Dedicated buffer for saving hidden state before MTP head runs.

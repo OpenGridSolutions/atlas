@@ -87,9 +87,14 @@ impl TransformerModel {
         // state (its cold turn 1 saved no tail checkpoint). On EP>1 the
         // split is unconditional instead: rank-local radix contents diverge,
         // and chunk sequences must be deterministic on (tokens, config)
-        // across ranks (bug #33 invariant). Skipped for vision prompts (pad
-        // runs must not straddle chunk boundaries) and non-SSM models
-        // (KV-only cache hits need no snapshot).
+        // across ranks (bug #33 invariant). With the NVMe tier active the
+        // split is unconditional too: every finished sequence is persisted
+        // and may be restored cold, and a restore without a block-aligned
+        // SSM resume point inside the prompt recomputes the whole prompt
+        // (measured on Qwen3-Next: 8.5 s instead of 0.3 s for 7.7k tokens).
+        // Skipped for vision prompts (pad runs must not straddle chunk
+        // boundaries) and non-SSM models (KV-only cache hits need no
+        // snapshot).
         if is_last_chunk
             && self.config.num_ssm_layers() > 0
             && self.ssm_snapshots.is_enabled()
@@ -100,9 +105,13 @@ impl TransformerModel {
             // One block below the last block boundary strictly under `total`.
             let cut = ((total.saturating_sub(1) / bs) * bs).saturating_sub(bs);
             let ep_active = self.comm.is_some() && self.config.ep_world_size > 1;
+            let tier_active = self
+                .nvme_tier_active
+                .load(std::sync::atomic::Ordering::Relaxed);
             if cut > chunk_start
                 && cut < total
                 && (ep_active
+                    || tier_active
                     || self
                         .prefix_cache
                         .peek_matched_tokens(&seq.block_keys.view(tokens, tokens.len()))

@@ -77,7 +77,7 @@ def chat(url, model, prompt, max_tokens, token, stream=True):
         if chunk.get("usage"):
             rec["usage"] = chunk["usage"]
         for ch in chunk.get("choices", []):
-            if ch.get("delta", {}).get("content"):
+            if ch.get("delta", {}).get("content") or ch.get("delta", {}).get("reasoning_content"):
                 now = time.monotonic()
                 if rec["ttft"] is None:
                     rec["ttft"] = now - t0

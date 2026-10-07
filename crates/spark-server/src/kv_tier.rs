@@ -223,28 +223,33 @@ impl KvTier {
 
         let hybrid = model.has_recurrent_state();
 
-        // Interior SSM resume point (SSM-1/2/7): the deepest block-aligned
-        // Marconi snapshot of this sequence, keyed by the chain key of the
-        // KV block it sits behind. `pred` is that same key's KV record, so
-        // the GC orphans the snapshot exactly when its KV chain dies.
+        // Interior SSM resume points (SSM-1/2/7): every block-aligned
+        // Marconi snapshot of this sequence, each keyed by the chain key
+        // of the KV block it sits behind. `pred` is that same key's KV
+        // record, so the GC orphans a snapshot exactly when its KV chain
+        // dies. The prompt-tail checkpoint serves a replay of the prompt
+        // alone; a deeper decode checkpoint serves the next turn.
         if hybrid && full > 0 {
-            match model.export_deepest_aligned_ssm_snapshot(seq) {
-                Ok(Some((tokens, payload))) => {
-                    let blk = tokens / bs;
-                    if blk >= 1 && blk <= full {
-                        let key = keys[blk - 1].0;
-                        if !self.store.contains(&key, Kind::Ssm) {
-                            self.submit(WriteJob {
-                                kind: Kind::Ssm,
-                                key,
-                                pred: key,
-                                token_count: tokens as u32,
-                                payload,
-                            });
+            match model.export_aligned_ssm_snapshots(seq) {
+                Ok(snaps) => {
+                    for (tokens, payload) in snaps {
+                        let blk = tokens / bs;
+                        if blk < 1 || blk > full {
+                            continue;
                         }
+                        let key = keys[blk - 1].0;
+                        if self.store.contains(&key, Kind::Ssm) {
+                            continue;
+                        }
+                        self.submit(WriteJob {
+                            kind: Kind::Ssm,
+                            key,
+                            pred: key,
+                            token_count: tokens as u32,
+                            payload,
+                        });
                     }
                 }
-                Ok(None) => {}
                 Err(e) => tracing::warn!("kv-tier: ssm snapshot export failed: {e:#}"),
             }
         }

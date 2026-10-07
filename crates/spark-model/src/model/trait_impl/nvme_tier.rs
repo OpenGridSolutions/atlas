@@ -52,29 +52,27 @@ impl TransformerModel {
     /// later conversation continuation does not have to replay the whole
     /// restored prefix through the SSM layers. `None` when Marconi is
     /// off, the model is attention-only, or no aligned snapshot exists.
-    pub(super) fn export_deepest_aligned_ssm_snapshot_dispatch(
+    pub(super) fn export_aligned_ssm_snapshots_dispatch(
         &self,
         seq: &SequenceState,
-    ) -> Result<Option<(usize, Vec<u8>)>> {
+    ) -> Result<Vec<(usize, Vec<u8>)>> {
         if self.config.num_ssm_layers() == 0 || !self.ssm_snapshots.is_enabled() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let bs = self.kv_cache.lock().block_size();
         if bs == 0 {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let view = seq.block_keys.view(&seq.tokens, seq.tokens.len());
-        let Some((snap_id, tokens)) =
+        let mut out = Vec::new();
+        for (snap_id, tokens) in aligned_snapshots(bs, seq.tokens.len(), |max| {
             self.prefix_cache
-                .peek_snapshot(&view, seq.tokens.len(), seq.session_hash)
-        else {
-            return Ok(None);
-        };
-        if tokens == 0 || !tokens.is_multiple_of(bs) {
-            return Ok(None);
+                .peek_snapshot(&view, max, seq.session_hash)
+        }) {
+            let bytes = self.ssm_snapshots.export_host(snap_id, self.gpu.as_ref())?;
+            out.push((tokens, bytes));
         }
-        let bytes = self.ssm_snapshots.export_host(snap_id, self.gpu.as_ref())?;
-        Ok(Some((tokens, bytes)))
+        Ok(out)
     }
 
     /// Import an NVMe `.ssm` payload: pool slot + Marconi-index entry at
@@ -121,5 +119,72 @@ impl TransformerModel {
         }
         tracing::info!("nvme-restore: SSM resume point registered at {token_count} tokens");
         Ok(true)
+    }
+}
+
+/// Every BLOCK-ALIGNED snapshot at or below `len` tokens, deepest first.
+/// `peek(max)` answers "deepest snapshot ≤ max" (any alignment); the
+/// chunk-end and finish-leaf snapshots sit at the exact prompt/sequence
+/// end, which is almost never aligned, so the walk steps below each hit
+/// until the index is exhausted. Only aligned ones are resume points.
+/// Without this a hybrid model persisted no `.ssm` record at all and
+/// every NVMe restore recomputed the whole prompt; with only the deepest
+/// one, a long answer's decode checkpoint hid the prompt-tail checkpoint
+/// that a replay of the prompt alone needs.
+pub(super) fn aligned_snapshots(
+    block_size: usize,
+    len: usize,
+    peek: impl Fn(usize) -> Option<(usize, usize)>,
+) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    if block_size == 0 {
+        return out;
+    }
+    let mut max = len;
+    while let Some((snap_id, tokens)) = peek(max) {
+        if tokens == 0 {
+            break;
+        }
+        if tokens.is_multiple_of(block_size) {
+            out.push((snap_id, tokens));
+        }
+        max = tokens - 1;
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::aligned_snapshots;
+
+    /// SSM-4: the persist path skips the unaligned prompt-end and
+    /// finish-leaf snapshots and keeps every interval/tail checkpoint —
+    /// the prompt-tail one (7680) AND the deeper decode one (8192).
+    #[test]
+    fn keeps_every_aligned_checkpoint_deepest_first() {
+        // leaf 8205, decode ckpt 8192, chunk end 7705, tail ckpt 7680, 4096.
+        let entries = [
+            (1usize, 8205usize),
+            (5, 8192),
+            (2, 7705),
+            (3, 7680),
+            (4, 4096),
+        ];
+        let peek = |max: usize| {
+            entries
+                .iter()
+                .filter(|(_, t)| *t <= max)
+                .max_by_key(|(_, t)| *t)
+                .copied()
+        };
+        assert_eq!(
+            aligned_snapshots(16, 8205, peek),
+            vec![(5, 8192), (3, 7680), (4, 4096)]
+        );
+        assert_eq!(aligned_snapshots(16, 7679, peek), vec![(4, 4096)]);
+        assert!(aligned_snapshots(16, 4000, peek).is_empty());
+        assert!(aligned_snapshots(0, 8205, peek).is_empty());
+        let only_end = |max: usize| (7705 <= max).then_some((2, 7705));
+        assert!(aligned_snapshots(16, 7717, only_end).is_empty());
     }
 }

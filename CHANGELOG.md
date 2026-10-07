@@ -39,6 +39,13 @@ behind specific subsystems — see the
   hit. An unpersisted block is only cache; its persist job holds a copy.
 - NVMe restore uploads run on their own stream with a GPU-side fence
   (import 1.2 s → 35 ms of scheduler time per 2.8k-token session).
+- Hybrid (SSM) restores never resumed: the persist path exported only the
+  deepest snapshot and rejected it when unaligned (the prompt-end and
+  finish-leaf snapshots always are), and a cold single-shot prefill saved
+  no block-aligned prompt-tail checkpoint at all. Every aligned snapshot
+  is persisted now, and the tail-checkpoint split is unconditional while
+  the tier is active. Qwen3-Next-80B, 7.7k-token sessions: restored TTFT
+  8.5 s → 0.31 s, warm-stream stall under churn 8.5 s → 0.38 s.
 - NVMe restore imports reclaim cache blocks too — a cache-full pool no
   longer shrinks every restore to one block.
 

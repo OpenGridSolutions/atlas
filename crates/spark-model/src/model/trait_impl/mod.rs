@@ -201,11 +201,8 @@ impl Model for TransformerModel {
     fn export_ssm_state(&self, seq: &SequenceState) -> Result<Vec<u8>> {
         self.export_ssm_state_dispatch(seq)
     }
-    fn export_deepest_aligned_ssm_snapshot(
-        &self,
-        seq: &SequenceState,
-    ) -> Result<Option<(usize, Vec<u8>)>> {
-        self.export_deepest_aligned_ssm_snapshot_dispatch(seq)
+    fn export_aligned_ssm_snapshots(&self, seq: &SequenceState) -> Result<Vec<(usize, Vec<u8>)>> {
+        self.export_aligned_ssm_snapshots_dispatch(seq)
     }
     fn import_ssm_snapshot(
         &self,
@@ -217,6 +214,8 @@ impl Model for TransformerModel {
         self.import_ssm_snapshot_dispatch(prompt_tokens, chain, token_count, payload)
     }
     fn set_kv_evict_guard(&self, guard: Option<spark_runtime::prefix_cache::EvictGuard>) {
+        self.nvme_tier_active
+            .store(guard.is_some(), std::sync::atomic::Ordering::Relaxed);
         self.prefix_cache.set_evict_guard(guard)
     }
     fn set_block_key_seed(&mut self, seed: spark_runtime::block_keys::BlockKey) {
