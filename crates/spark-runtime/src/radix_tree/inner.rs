@@ -315,6 +315,13 @@ impl RadixTreeInner {
     /// in the result is `u32::MAX` and the caller should ignore them; the
     /// public-trait wrapper filters those out into the returned
     /// `EvictedBlocks::disk_block_ids`.
+    ///
+    /// KV-7 is a PREFERENCE, not a veto: the first pass takes only
+    /// persisted blocks (per `guard`); when that cannot cover `num_blocks`
+    /// a second pass evicts the remaining LRU candidates regardless. A
+    /// not-yet-persisted block is only cache — its persist job already
+    /// holds a host copy — and losing it costs a recompute, whereas an
+    /// empty free list fails the request (`KV cache exhausted`).
     pub(super) fn evict(
         &mut self,
         num_blocks: usize,
@@ -325,6 +332,7 @@ impl RadixTreeInner {
         if num_blocks == 0 {
             return (freed_phys, freed_disk);
         }
+        let mut guard = guard;
 
         loop {
             if freed_phys.len() >= num_blocks {
@@ -384,6 +392,8 @@ impl RadixTreeInner {
                     self.nodes[node_id].tails = Vec::new();
                     self.free_nodes.push(node_id);
                 }
+                // Persisted candidates exhausted: fall back to unguarded LRU.
+                None if guard.is_some() => guard = None,
                 None => break,
             }
         }

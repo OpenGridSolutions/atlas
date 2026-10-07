@@ -4,4 +4,5 @@
 //! the combined test file exceeded the workspace 500-LoC budget.
 
 mod basic;
+mod evict_guard;
 mod snapshot;
