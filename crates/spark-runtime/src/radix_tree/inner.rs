@@ -316,12 +316,14 @@ impl RadixTreeInner {
     /// public-trait wrapper filters those out into the returned
     /// `EvictedBlocks::disk_block_ids`.
     ///
-    /// KV-7 is a PREFERENCE, not a veto: the first pass takes only
-    /// persisted blocks (per `guard`); when that cannot cover `num_blocks`
-    /// a second pass evicts the remaining LRU candidates regardless. A
-    /// not-yet-persisted block is only cache — its persist job already
-    /// holds a host copy — and losing it costs a recompute, whereas an
-    /// empty free list fails the request (`KV cache exhausted`).
+    /// Strict LRU. The KV-7 `guard` ("is this block persisted?") is
+    /// advisory only: an unpersisted block is still just cache — its
+    /// persist job holds a host copy — so skipping it would only invert
+    /// the LRU order. That inversion was observed on-box: while a
+    /// session's writes were still queued, its leaf (unpersisted tail)
+    /// was skipped and the freshly NVMe-restored chain — the newest
+    /// entry — was evicted first, so restores never hit. The guard now
+    /// only feeds the debug counter of unpersisted evictions.
     pub(super) fn evict(
         &mut self,
         num_blocks: usize,
@@ -332,7 +334,7 @@ impl RadixTreeInner {
         if num_blocks == 0 {
             return (freed_phys, freed_disk);
         }
-        let mut guard = guard;
+        let mut unpersisted = 0usize;
 
         loop {
             if freed_phys.len() >= num_blocks {
@@ -345,16 +347,6 @@ impl RadixTreeInner {
                     continue;
                 }
                 if node.ref_count <= 1 && node.children.is_empty() && node.block_idx != u32::MAX {
-                    // KV-7: a node (or any of its tails) that is not yet
-                    // persisted must stay in RAM — skip to the next LRU
-                    // candidate instead.
-                    if let Some(g) = guard {
-                        let node_ok = node.parent_key.as_ref().is_none_or(|k| g(&k.0, false));
-                        let tails_ok = node.tails.iter().all(|(tk, _, _)| g(&tk.0, true));
-                        if !node_ok || !tails_ok {
-                            continue;
-                        }
-                    }
                     match best {
                         None => best = Some((id, node.last_access)),
                         Some((_, best_access)) if node.last_access < best_access => {
@@ -367,6 +359,14 @@ impl RadixTreeInner {
 
             match best {
                 Some((node_id, _)) => {
+                    if let Some(g) = guard {
+                        let node = &self.nodes[node_id];
+                        let persisted = node.parent_key.as_ref().is_none_or(|k| g(&k.0, false))
+                            && node.tails.iter().all(|(tk, _, _)| g(&tk.0, true));
+                        if !persisted {
+                            unpersisted += 1;
+                        }
+                    }
                     let block = self.nodes[node_id].block_idx;
                     let disk = self.nodes[node_id].disk_block_id;
                     freed_phys.push(block);
@@ -392,10 +392,16 @@ impl RadixTreeInner {
                     self.nodes[node_id].tails = Vec::new();
                     self.free_nodes.push(node_id);
                 }
-                // Persisted candidates exhausted: fall back to unguarded LRU.
-                None if guard.is_some() => guard = None,
                 None => break,
             }
+        }
+        if unpersisted > 0 {
+            tracing::debug!(
+                requested = num_blocks,
+                freed = freed_phys.len(),
+                unpersisted,
+                "prefix-cache evict: LRU victims not yet on the NVMe tier (recompute later)"
+            );
         }
 
         (freed_phys, freed_disk)

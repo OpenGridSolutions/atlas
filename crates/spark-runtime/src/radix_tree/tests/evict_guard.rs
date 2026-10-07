@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! KV-7 eviction guard: persisted blocks leave RAM first; when nothing
-//! persisted is left the LRU pass runs unguarded, so a lagging NVMe write
-//! queue can never turn into `KV cache exhausted` (T-KV-10).
+//! KV-7 eviction guard is advisory: eviction is strict LRU whether or not
+//! a block is persisted, so a lagging NVMe write queue can neither turn
+//! into `KV cache exhausted` nor invert the LRU order against a freshly
+//! restored chain (T-KV-10, BAT-6).
 
 use std::sync::Arc;
 
@@ -17,7 +18,7 @@ fn chain(tokens: &[u32]) -> BlockKeyChain {
 }
 
 #[test]
-fn guard_prefers_persisted_blocks_then_falls_back_to_plain_lru() {
+fn eviction_is_lru_regardless_of_persistence() {
     let tree = RadixTree::new();
     let a: Vec<u32> = (0..16).collect();
     let b: Vec<u32> = (100..116).collect();
@@ -33,10 +34,9 @@ fn guard_prefers_persisted_blocks_then_falls_back_to_plain_lru() {
     let guard: EvictGuard = Arc::new(move |k: &[u8; 16], _tail: bool| *k == kb);
     tree.set_evict_guard(Some(guard));
 
-    // A is the LRU candidate but unpersisted → the persisted B goes first.
-    assert_eq!(tree.evict(1).physical, vec![20]);
-    // Nothing persisted remains → the fallback pass still frees A.
+    // A is older: it goes first although only B is persisted.
     assert_eq!(tree.evict(1).physical, vec![10]);
+    assert_eq!(tree.evict(1).physical, vec![20]);
     assert!(tree.evict(1).physical.is_empty());
 }
 

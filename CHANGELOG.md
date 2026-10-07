@@ -32,9 +32,13 @@ behind specific subsystems — see the
   guards now reclaim LRU prefix-cache blocks instead of spilling live
   sequences; swapped sequences resume from the idle branch; the drain
   polls while NVMe restores are staged (they complete on a channel).
-- KV-7 evict guard is a preference: when no persisted block is left, the
-  LRU pass runs unguarded instead of failing prefill with `KV cache
-  exhausted`.
+- KV-7 evict guard is advisory: eviction is strict LRU. Skipping
+  unpersisted blocks failed prefill with `KV cache exhausted` when the
+  write queue lagged, and — worse — evicted a freshly NVMe-restored chain
+  before older sessions whose tails were still queued, so restores never
+  hit. An unpersisted block is only cache; its persist job holds a copy.
+- NVMe restore uploads run on their own stream with a GPU-side fence
+  (import 1.2 s → 35 ms of scheduler time per 2.8k-token session).
 - NVMe restore imports reclaim cache blocks too — a cache-full pool no
   longer shrinks every restore to one block.
 

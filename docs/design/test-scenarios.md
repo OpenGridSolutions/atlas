@@ -138,7 +138,7 @@ des Prefix-Caches (persistierte Blöcke zuerst), dann Spill auf Platte.
 | ID | Szenario und Erwartung | Bezug | Stand |
 | --- | --- | --- | --- |
 | T-BAT-01 | P3 · On-Box – 30k-Prompt neben vier Streams; TBT unter `--tbt-deadline-ms`. | BAT-2 | offen |
-| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben drei Streams; Restore asynchron. | BAT-6 | On-Box 2026-10-07 (`tests/nvme_cold_cache_bench.py`): Lesen asynchron, Import + Rest-Prefill stallen laufende Streams 1,3–1,9 s pro 2,8k-Session |
+| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben laufenden Streams; Restore asynchron. | BAT-6 | On-Box 2026-10-07 (`tests/nvme_cold_cache_bench.py`): Upload auf eigenem Stream mit GPU-Fence, Import 35 ms; Warm-Stream unter Churn p50 unverändert, max. Stall 0,31 s (vorher 2,6 s), kalte TTFT 0,22 s (vorher 2,5 s), 22/22 Restores treffen |
 | T-BAT-03 | P3 · Integration – Prefix kürzer als `nvme_restore_min_tokens`: Neuberechnung. | BAT-7 | offen |
 | T-BAT-04 | P2 · Integration – Priorisierter und normaler Request, ein Platz frei. | BAT-3, PRI-1 | Unit `queues.rs::grant_wakes_waiters_priority_first`; Admission offen |
 | T-BAT-06 | P2 · On-Box – Overcommit mit kleinem Pool: Cache-Verdrängung vor Spill, Spill-Resume funktioniert. | BAT-5 | On-Box 2026-10-07 (`tests/concurrency_bench.py`, `--kv-pool-gb 1`): N > Batch wartet, kein Reject/Drop; Fixes a721f36b, dfa141f0 |

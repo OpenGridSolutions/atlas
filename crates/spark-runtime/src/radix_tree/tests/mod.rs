@@ -5,4 +5,5 @@
 
 mod basic;
 mod evict_guard;
+mod lru_order;
 mod snapshot;
