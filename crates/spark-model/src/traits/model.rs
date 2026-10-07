@@ -821,6 +821,15 @@ pub trait Model: Send + Sync {
         0
     }
 
+    /// Free blocks after reclaiming LRU prefix-cache blocks (refcount 0,
+    /// persisted when a tier is active) until at least `needed` are free
+    /// or nothing more is evictable. The scheduler's pool guards call this
+    /// instead of `num_free_blocks` so cache-held blocks never trigger a
+    /// disk spill (BAT-5) or stall a swap-in. Default: no cache to reclaim.
+    fn reclaim_free_blocks(&self, _needed: usize) -> usize {
+        self.num_free_blocks()
+    }
+
     /// `(entries, cached_blocks)` of the prefix cache — read-only, used by
     /// the ATLAS_MEM_DEBUG pool accounting (`memdebug` target). Default
     /// `(0, 0)` for models without a prefix cache (test mocks).

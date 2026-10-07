@@ -465,6 +465,7 @@ pub fn run(
             &*policy,
             slot_cap,
             reserved_priority_slots,
+            !swapped.is_empty(),
         );
 
         // ── NVMe-restore staging filter (BAT-6/BAT-7) ──
@@ -585,7 +586,8 @@ pub fn run(
             for req in &new_reqs {
                 let prompt_len = req.prompt_len();
                 let blocks_needed = prompt_len / block_size + 1;
-                while model.num_free_blocks() < blocks_needed && !active.is_empty() {
+                while model.reclaim_free_blocks(blocks_needed) < blocks_needed && !active.is_empty()
+                {
                     let victim_idx = active
                         .iter()
                         .enumerate()
@@ -647,7 +649,7 @@ pub fn run(
         // sequence that outgrew the pool gains nothing from swapping
         // itself out (its restore needs the same blocks back).
         if let Some(ref mut spill) = spill_manager {
-            while active.len() > 1 && model.num_free_blocks() < active.len() {
+            while active.len() > 1 && model.reclaim_free_blocks(active.len()) < active.len() {
                 let victim_idx = active
                     .iter()
                     .enumerate()
@@ -705,6 +707,28 @@ pub fn run(
         );
 
         if active.is_empty() {
+            // Swapped-out sequences must be able to come back without a
+            // new arrival — the swap-in below the decode step is skipped
+            // by this `continue`, so run it here (it reclaims cache blocks
+            // itself; before this, an idle arena with only swapped
+            // sequences hung forever).
+            if let Some(ref mut spill) = spill_manager
+                && !swapped.is_empty()
+            {
+                swap_in_ready(
+                    &*model,
+                    spill,
+                    &mut swapped,
+                    &mut active,
+                    max_batch_size,
+                    think_end_token,
+                    think_start_token,
+                );
+                if !active.is_empty() {
+                    SCHED_LOAD.store(active.len() + prefilling.len(), AtomicOrdering::Relaxed);
+                    continue;
+                }
+            }
             SCHED_LOAD.store(prefilling.len(), AtomicOrdering::Relaxed);
             // ATLAS_MEM_DEBUG: a prefill error can end the last live request
             // here (before the end-of-loop check is reached via `continue`).
@@ -883,36 +907,15 @@ pub fn run(
 
         // ── Swap-in: resume swapped sequences when blocks free up ──
         if let Some(ref mut spill) = spill_manager {
-            let mut resumed_any = true;
-            while resumed_any && !swapped.is_empty() && active.len() < max_batch_size {
-                resumed_any = false;
-                let free = model.num_free_blocks();
-                // Headroom term: resuming must leave one free block per
-                // then-active sequence, otherwise the decode-time guard
-                // fires again next step and the pair ping-pongs the same
-                // sequence through disk on every iteration.
-                if let Some(idx) = swapped
-                    .iter()
-                    .position(|s| s.num_blocks + active.len() < free)
-                {
-                    let s = swapped.remove(idx);
-                    match resume_swapped_seq(think_end_token, think_start_token, &*model, s, spill)
-                    {
-                        Ok(a) => {
-                            tracing::info!(
-                                "Swap-in: restored seq (seq_len={}, blocks={})",
-                                a.seq.seq_len,
-                                a.seq.block_table.len(),
-                            );
-                            active.push(a);
-                            resumed_any = true;
-                        }
-                        Err(e) => {
-                            tracing::error!("Swap-in failed: {e:#}");
-                        }
-                    }
-                }
-            }
+            swap_in_ready(
+                &*model,
+                spill,
+                &mut swapped,
+                &mut active,
+                max_batch_size,
+                think_end_token,
+                think_start_token,
+            );
         }
 
         SCHED_LOAD.store(active.len() + prefilling.len(), AtomicOrdering::Relaxed);

@@ -578,4 +578,18 @@ impl TransformerModel {
     pub(super) fn num_free_blocks_dispatch(&self) -> usize {
         self.kv_cache.lock().num_free_blocks()
     }
+
+    /// Same LRU eviction the allocation helpers fall back to, run ahead
+    /// of a pool-pressure decision: cache-held blocks are reclaimable
+    /// capacity, not occupancy.
+    pub(super) fn reclaim_free_blocks_dispatch(&self, needed: usize) -> usize {
+        let mut kv = self.kv_cache.lock();
+        let free = kv.num_free_blocks();
+        if free >= needed {
+            return free;
+        }
+        let evicted = self.prefix_cache.evict(needed - free);
+        super::super::block_mgmt::apply_evicted_blocks(evicted, &mut kv);
+        kv.num_free_blocks()
+    }
 }

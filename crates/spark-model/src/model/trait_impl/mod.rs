@@ -401,6 +401,9 @@ impl Model for TransformerModel {
     fn num_free_blocks(&self) -> usize {
         self.num_free_blocks_dispatch()
     }
+    fn reclaim_free_blocks(&self, needed: usize) -> usize {
+        self.reclaim_free_blocks_dispatch(needed)
+    }
     fn prefix_cache_stats(&self) -> (usize, usize) {
         self.prefix_cache.stats()
     }

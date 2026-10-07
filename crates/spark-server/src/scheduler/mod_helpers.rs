@@ -85,6 +85,9 @@ pub(super) fn drain_pending_requests(
     max_batch_size: usize,
     // PRI-7: slots normal requests must leave free for X-Priority: high.
     reserved_priority_slots: usize,
+    // Swapped-out sequences are waiting for pool blocks, not for a client:
+    // poll instead of parking so the caller's swap-in check keeps running.
+    swapped_pending: bool,
 ) -> Vec<InferenceRequest> {
     let (ref mtx, ref cv) = **pending;
     let mut g = mtx.lock();
@@ -93,6 +96,13 @@ pub(super) fn drain_pending_requests(
         // control command must wake the idle scheduler too — the caller
         // handles it at the top of the next loop iteration.
         while g.requests.is_empty() && !g.closed && g.control.is_empty() {
+            if swapped_pending {
+                cv.wait_for(&mut g, std::time::Duration::from_millis(50));
+                if g.requests.is_empty() {
+                    return Vec::new();
+                }
+                break;
+            }
             cv.wait(&mut g);
         }
         if !g.control.is_empty() {

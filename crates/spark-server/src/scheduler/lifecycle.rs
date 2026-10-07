@@ -298,6 +298,44 @@ pub fn swap_out_sequence(
 }
 
 /// Resume a swapped-out sequence by restoring its state from disk.
+/// Resume every swapped-out sequence the pool can take back, reclaiming
+/// LRU prefix-cache blocks first. The headroom term (+1 per then-active
+/// sequence) keeps the decode-time guard from re-spilling the same
+/// sequence on the next step (ping-pong).
+pub fn swap_in_ready(
+    model: &dyn Model,
+    spill: &mut KvSpillManager,
+    swapped: &mut Vec<SwappedSeq>,
+    active: &mut Vec<ActiveSeq>,
+    max_batch_size: usize,
+    think_end_token: Option<u32>,
+    think_start_token: Option<u32>,
+) {
+    let mut resumed_any = true;
+    while resumed_any && !swapped.is_empty() && active.len() < max_batch_size {
+        resumed_any = false;
+        let fits = |s: &SwappedSeq| {
+            let needed = s.num_blocks + active.len() + 1;
+            model.reclaim_free_blocks(needed) >= needed
+        };
+        if let Some(idx) = swapped.iter().position(fits) {
+            let s = swapped.remove(idx);
+            match resume_swapped_seq(think_end_token, think_start_token, model, s, spill) {
+                Ok(a) => {
+                    tracing::info!(
+                        "Swap-in: restored seq (seq_len={}, blocks={})",
+                        a.seq.seq_len,
+                        a.seq.block_table.len(),
+                    );
+                    active.push(a);
+                    resumed_any = true;
+                }
+                Err(e) => tracing::error!("Swap-in failed: {e:#}"),
+            }
+        }
+    }
+}
+
 pub fn resume_swapped_seq(
     _think_end_token: Option<u32>,
     _think_start_token: Option<u32>,
