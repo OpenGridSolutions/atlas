@@ -178,14 +178,14 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority:
             }
         };
         let prompt_tokens = encoded.tokens;
-        let token_limit = crate::slots::prompt_limit(state.max_seq_len);
-        if prompt_tokens.len() >= token_limit {
+        if prompt_tokens.len() >= state.max_seq_len {
             crate::metrics::REQUESTS_ACTIVE.dec();
             return openai_error_response(
                 StatusCode::BAD_REQUEST,
                 format!(
-                    "input {index}: {} tokens exceeds the per-sequence limit {token_limit}",
+                    "input {index}: {} tokens exceeds max_seq_len {}",
                     prompt_tokens.len(),
+                    state.max_seq_len
                 ),
             );
         }
@@ -195,7 +195,6 @@ async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority:
         let request = InferenceRequest::Blocking {
             prompt_tokens: Arc::new(prompt_tokens),
             session_hash,
-            priority,
             image_pixels: encoded.image_pixels,
             max_tokens: 1, // immediate finish: prefill + one discarded sample
             min_tokens: 0,

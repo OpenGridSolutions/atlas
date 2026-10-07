@@ -87,7 +87,7 @@ pub(super) async fn responses_endpoint_stream(
 
     // Run the chat-completions streaming handler (re-using the full
     // pipeline: scheduler, tool detection, thinking, logprobs, ...).
-    let chat_resp = chat_completions_inner(state.0, None, chat_req, None, false).await;
+    let chat_resp = chat_completions_inner(state.0, None, chat_req, None).await;
     let (parts, body) = chat_resp.into_parts();
     if !parts.status.is_success() {
         return Response::from_parts(parts, body);

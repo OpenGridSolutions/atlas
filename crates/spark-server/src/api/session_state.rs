@@ -7,10 +7,8 @@
 //! `messages` or a raw `prompt`) and the server reports what state that
 //! session's KV would be in RIGHT NOW, across every tier:
 //!
-//! - **slot**: how full the session is against the slot bound and how
-//!   much room remains for new context + output (today the bound is
-//!   `--max-seq-len`; it becomes the per-model `slot_tokens` with the
-//!   slot stage — the `source` field says which one applies).
+//! - **context**: how full the session is against the serving window
+//!   (`--max-seq-len`) and how much room remains for new context + output.
 //! - **ram_cache**: tokens the radix prefix cache would serve without
 //!   prefill, plus the deepest RAM SSM resume point (hybrid models).
 //! - **nvme**: persisted chain length in the block store, tail record
@@ -226,20 +224,11 @@ pub async fn session_state(
         )
     });
 
-    // ── Slot fit (SLOT-1/2): the active model's slot plan bounds the
-    //    session; without an explicit plan the bound is --max-seq-len,
-    //    and `source` says which applies ──
-    let plan = crate::slots::active();
-    let slot_tokens = plan
-        .as_ref()
-        .map(|p| p.slot_tokens)
-        .unwrap_or(state.max_seq_len);
-    let slot_source = match &plan {
-        Some(p) if p.explicit => "model",
-        _ => "max_seq_len",
-    };
+    // ── Context fit: the per-sequence bound is the serving window
+    //    (--max-seq-len); capacity across sequences is block-based ──
+    let context_tokens = state.max_seq_len;
     let planned_output = req.max_tokens.unwrap_or(0);
-    let remaining = slot_tokens.saturating_sub(tokens.len());
+    let remaining = context_tokens.saturating_sub(tokens.len());
 
     // Best reuse: RAM first; the NVMe extension counts when it clears
     // the restore threshold (BAT-7).
@@ -260,12 +249,12 @@ pub async fn session_state(
         "block_size": params.block_size,
         "cacheable": cacheable,
         "media_evaluated": !media_present && cacheable,
-        "slot": {
-            "slot_tokens": slot_tokens,
-            "source": slot_source,
+        "context": {
+            "max_tokens": context_tokens,
+            "source": "max_seq_len",
             "used_tokens": tokens.len(),
             "remaining_tokens": remaining,
-            "fits_with_max_tokens": tokens.len() + planned_output <= slot_tokens,
+            "fits_with_max_tokens": tokens.len() + planned_output <= context_tokens,
         },
         "ram_cache": {
             "cached_tokens": ram_cached,

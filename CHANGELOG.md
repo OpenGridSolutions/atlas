@@ -10,6 +10,34 @@ behind specific subsystems — see the
 
 ## [Unreleased]
 
+### Removed
+
+- **Session slots (E6)**: `--slot-tokens`, `--priority-reserved-slots`,
+  `[behavior].slot_tokens`, the `slots_total` admission cap and the
+  `X-Atlas-Context-Remaining` header are gone (32fb1126 reverted). Capacity
+  and concurrency are block-based: `--max-batch-size` bounds the batch, the
+  KV pool bounds residency, LRU reclaim of the prefix cache (persisted
+  blocks first) and the disk spill handle overcommit. The session probe's
+  `slot` fragment is now `context` (`max_tokens` = `--max-seq-len`).
+
+### Fixed
+
+- `/internal/state` and `POST /v1/atlas/session/state` were never routed
+  (the handler file was not even compiled).
+- **KV-8**: the block-key chain only ever appended; rejected speculative
+  drafts and watchdog rollbacks left stale keys that were sealed and
+  persisted for different content. `BlockKeyChain::truncate_to` +
+  `SequenceState::{pop_tokens, truncate_tokens}` keep it in step.
+- Scheduler hangs under pool pressure: the swap-in test and both pool
+  guards now reclaim LRU prefix-cache blocks instead of spilling live
+  sequences; swapped sequences resume from the idle branch; the drain
+  polls while NVMe restores are staged (they complete on a channel).
+- KV-7 evict guard is a preference: when no persisted block is left, the
+  LRU pass runs unguarded instead of failing prefill with `KV cache
+  exhausted`.
+- NVMe restore imports reclaim cache blocks too — a cache-full pool no
+  longer shrinks every restore to one block.
+
 ### Added
 
 - **NVMe KV tier** (`--nvme-cache-dir`): content-addressed block store for
@@ -38,19 +66,6 @@ behind specific subsystems — see the
 - **Priority tier** behind `--trust-proxy-headers` (`X-Priority: high`,
   loopback-bind enforced): priority requests are admitted first but never
   trigger a model switch.
-- **Fixed session slots (E6)**: per-model `slot_tokens` (CLI `--slot-tokens
-  [MODEL=]N` → MODEL.toml `[behavior].slot_tokens` → `--max-seq-len`) bound
-  input + output per session; admission takes at most `min(max_batch_size,
-  pool ÷ blocks-per-slot)` sequences, so steady-state preemption disappears
-  while unused blocks keep serving the prefix cache. Oversized prompts get
-  400 `context_length_exceeded`, `max_tokens` is clamped to
-  `slot_buffer_tokens` and the slot remainder, every response carries
-  `X-Atlas-Context-Remaining`, and `--priority-reserved-slots` keeps slots
-  reachable only for `X-Priority: high` (PRI-7). MOD-12 refuses a load whose
-  slot exceeds `--max-seq-len`, the model's position limit or the pool.
-- **Session KV-cache tracking** (`POST /v1/atlas/session/state`): read-only
-  probe reporting slot fit, RAM-cached prefix, NVMe-persisted prefix and
-  the estimated prefill remainder for a message list.
 - **Resident embed/rerank sidecars** (`--sidecar-small-max-gib`): small
   embed/rerank models load once beside the arena model with their own
   worker, tokenizer and fixed KV pool — no arena waits; their footprint

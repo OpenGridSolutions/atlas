@@ -141,13 +141,6 @@ pub struct ModelBehavior {
     pub thinking_default: bool,
     /// Default FP8 KV calibration tokens (0 = disabled).
     pub fp8_kv_calibration_tokens: usize,
-    /// Slot size per session in tokens (requirements E6/SLOT-1).
-    /// 0 = unset → the server uses `--max-seq-len`. Must not exceed
-    /// `--max-seq-len` or the model's position limit (MOD-12).
-    pub slot_tokens: usize,
-    /// Reserved share of the slot for new context + output (SLOT-1/4).
-    /// 0 = unset → 25 % of the effective slot size.
-    pub slot_buffer_tokens: usize,
     /// Default KV cache dtype from MODEL.toml (e.g., "bf16", "fp8").
     /// When non-empty, overrides the CLI default for models that need
     /// higher precision. User can still override with explicit --kv-cache-dtype.
@@ -295,8 +288,6 @@ impl Default for ModelBehavior {
             max_thinking_budget: 256,
             thinking_default: false,
             fp8_kv_calibration_tokens: 0,
-            slot_tokens: 0,
-            slot_buffer_tokens: 0,
             default_kv_dtype: "",
             default_mtp_quantization: "",
             default_num_drafts: 0,

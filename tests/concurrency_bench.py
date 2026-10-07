@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
 """
-slot_concurrency_bench.py — T-SLOT-01 on-box: raise the number of parallel
-sessions step by step past `slots_total` and record what happens to the
-surplus (reject / queue / drop).
+concurrency_bench.py — T-BAT-06 on-box: raise the number of parallel
+sessions step by step past the batch bound (`--max-batch-size`) and the
+KV pool, and record what happens to the surplus (reject / queue / drop).
 
 Each level launches N concurrent streaming chat requests with distinct
 prompts, samples `/internal/state` while they run, and reports HTTP
 status, TTFT and the peak number of admitted sequences.
 
 Usage:
-  python tests/slot_concurrency_bench.py --url http://127.0.0.1:8899 \
-      --model <id> --levels 1,2,4,6,8,12 [--token TOKEN]
+  python tests/concurrency_bench.py --url http://127.0.0.1:8899 \
+      --model <id> --levels 1,2,4,6,8,12 --max-batch 8 [--token TOKEN]
 """
 
 import argparse
@@ -92,11 +92,10 @@ def sample_state(url, token, stop, samples):
     while not stop.is_set():
         try:
             s = get_json(url, "/internal/state", token)
-            slots = s.get("slots") or {}
             sched = s.get("scheduler") or {}
             samples.append({
                 "t": time.monotonic(),
-                "occupied": slots.get("occupied", s["batch"]["scheduler_load"]),
+                "occupied": s["batch"]["scheduler_load"],
                 "queues": sum(q["priority_len"] + q["normal_len"] for q in sched.get("queues", [])),
             })
         except Exception:
@@ -112,13 +111,14 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=160)
     ap.add_argument("--prompt-words", type=int, default=900)
     ap.add_argument("--token", default=None)
+    ap.add_argument("--max-batch", type=int, default=None,
+                    help="the server's --max-batch-size; stops two levels past it")
     args = ap.parse_args()
 
     state = get_json(args.url, "/internal/state", args.token)
-    slots = state.get("slots") or {}
-    print("slots:", json.dumps(slots))
     print("kv_pool:", json.dumps(state.get("kv_pool")))
-    slots_total = slots.get("slots_total")
+    print("capacity_profile:", json.dumps(state.get("capacity_profile")))
+    bound = args.max_batch
 
     filler = ("Atlas serves many sessions and every session keeps its own context. "
               "Describe the water cycle, the carbon cycle and plate tectonics in detail. ")
@@ -164,11 +164,11 @@ def main():
         }
         results[level] = row
         print(json.dumps(row))
-        if slots_total and level >= 2 * slots_total:
+        if bound and level >= 2 * bound:
             break
 
     print("\n== summary")
-    print(f"slots_total={slots_total}")
+    print(f"max_batch={bound}")
     for level, row in results.items():
         verdict = "all admitted" if (row["peak_occupied"] or 0) >= level else \
             f"queued: peak {row['peak_occupied']} admitted, TTFT {row['ttft_min_s']}..{row['ttft_max_s']} s"

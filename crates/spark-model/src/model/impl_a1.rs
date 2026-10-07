@@ -49,8 +49,6 @@ impl TransformerModel {
         mtp_weights: Vec<MtpWeights>,
         gpu: Box<dyn GpuBackend>,
         max_seq_len: usize,
-        // MOD-12: per-sequence block-table bound = slot size (≤ max_seq_len).
-        slot_tokens: usize,
         max_batch_size: usize,
         mtp_quant: crate::layers::MtpQuantization,
         use_speculative: bool,
@@ -190,8 +188,7 @@ impl TransformerModel {
         }
 
         // Fixed metadata stride for CUDA graph compatibility
-        let max_blocks_per_seq =
-            (slot_tokens.clamp(1, max_seq_len) / kv_cache.block_size() + 1) as u32;
+        let max_blocks_per_seq = (max_seq_len / kv_cache.block_size() + 1) as u32;
 
         // Permanent dummy KV block for padding sequences. Must be explicitly
         // zeroed: `gpu.alloc()` returns uninitialized memory, and any kernel

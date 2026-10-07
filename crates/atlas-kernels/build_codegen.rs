@@ -158,8 +158,6 @@ pub(super) fn generate_target_ptx_rs(
              \x20               max_thinking_budget: {},\n\
              \x20               thinking_default: {},\n\
              \x20               fp8_kv_calibration_tokens: {},\n\
-             \x20               slot_tokens: {},\n\
-             \x20               slot_buffer_tokens: {},\n\
              \x20               default_kv_dtype: \"{}\",\n\
              \x20               default_mtp_quantization: \"{}\",\n\
              \x20               default_num_drafts: {},\n\
@@ -194,8 +192,6 @@ pub(super) fn generate_target_ptx_rs(
             target.behavior_max_thinking_budget,
             target.behavior_thinking_default,
             target.behavior_fp8_kv_calibration_tokens,
-            target.behavior_slot_tokens,
-            target.behavior_slot_buffer_tokens,
             target.behavior_default_kv_dtype,
             target.behavior_default_mtp_quantization,
             target.behavior_default_num_drafts,

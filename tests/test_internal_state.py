@@ -3,7 +3,7 @@
 test_internal_state.py — T-TEL-01: `/internal/state` and the session probe.
 
 Checks, against a live server, that the TEL-3 introspection surface is
-reachable, bearer-gated, and self-consistent with the slot/pool state,
+reachable, bearer-gated, and self-consistent with the batch/pool state,
 and that `POST /v1/atlas/session/state` answers for the active model.
 
 Usage:
@@ -47,7 +47,7 @@ def main():
     print("== /internal/state (TEL-3)")
     status, state = call(args.url, "/internal/state", args.token)
     check(status == 200, f"GET /internal/state → {status}")
-    for field in ("arena", "sidecars", "capacity_profile", "kv_pool", "slots",
+    for field in ("arena", "sidecars", "capacity_profile", "kv_pool",
                   "batch", "scheduler", "swap_costs", "nvme_store"):
         check(field in state, f"field '{field}' present")
 
@@ -56,14 +56,6 @@ def main():
         check(pool["used_blocks"] <= pool["total_blocks"], "kv_pool.used ≤ total")
         check(pool["free_blocks"] == pool["total_blocks"] - pool["used_blocks"],
               "kv_pool.free = total − used")
-
-    slots = state.get("slots")
-    if slots:
-        check(slots["occupied"] <= slots["slots_total"], "slots.occupied ≤ slots_total")
-        check(slots["slot_buffer_tokens"] < slots["slot_tokens"], "slot buffer < slot tokens")
-        check(slots["priority_reserved"] < slots["slots_total"], "reserved < slots_total")
-        check(slots["occupied"] == state["batch"]["scheduler_load"],
-              "slots.occupied matches batch.scheduler_load")
 
     profile = state.get("capacity_profile")
     if profile:
@@ -77,10 +69,12 @@ def main():
             check(q["priority_len"] >= 0 and q["normal_len"] >= 0, f"queue '{q['model']}' lengths")
 
     print("== /v1/atlas/session/state (E2)")
-    probe = {"messages": [{"role": "user", "content": "ping"}]}
+    status, health = call(args.url, "/health", args.token)
+    check(status == 200 and health.get("model"), "/health names the active model")
+    probe = {"model": health["model"], "messages": [{"role": "user", "content": "ping"}]}
     status, body = call(args.url, "/v1/atlas/session/state", args.token, probe)
     check(status == 200, f"POST /v1/atlas/session/state → {status}")
-    for field in ("slot", "ram_cache", "nvme"):
+    for field in ("context", "ram_cache", "nvme"):
         check(field in body, f"probe field '{field}' present")
 
     print("== TEL-7: bearer gate")

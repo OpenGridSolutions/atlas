@@ -116,12 +116,11 @@ pub async fn completions(
     // Lazy multi-model swap (Task 6 Phase 3): must run BEFORE the
     // per-model snapshot below — the requested model's tokenizer has to
     // be the one that encodes this prompt.
-    let priority = prio.map(|p| p.0.0).unwrap_or(false);
     let swap_ms = match super::lazy_swap::ensure_model_active(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
-        priority,
+        prio.map(|p| p.0.0).unwrap_or(false),
         req.stream,
     )
     .await
@@ -147,30 +146,18 @@ pub async fn completions(
             ),
         );
     }
-    // SLOT-4: cap the generation budget by the slot buffer and the room
-    // the slot has left (falls back to the max_seq_len clamp without a
-    // slot plan — Plan.md 2.1).
-    let max_tokens = match crate::slots::fit_request(prompt_len, req.max_tokens, state.max_seq_len)
-    {
-        crate::slots::Fit::Ok { granted_max_tokens } => granted_max_tokens,
-        crate::slots::Fit::PromptTooLarge { slot_tokens } => {
-            return super::compact::openai_error_response_with_param(
-                StatusCode::BAD_REQUEST,
-                format!(
-                    "Prompt too long: {prompt_len} tokens exceeds the model's slot size \
-                     {slot_tokens}"
-                ),
-                Some("prompt"),
-                Some("context_length_exceeded"),
-            );
-        }
-    };
+    // Clamp the generation budget to the context that is actually left
+    // (Plan.md 2.1). Nothing downstream bounds prompt + max_tokens: an
+    // unclamped budget runs the sequence past the context window until
+    // the KV pool starves — which kills the whole decode batch with an
+    // untyped stream error instead of a clean `finish_reason: "length"`.
+    let max_tokens = req.max_tokens.min(state.max_seq_len - prompt_len);
     if max_tokens < req.max_tokens {
         tracing::info!(
             requested = req.max_tokens,
             clamped = max_tokens,
             prompt_len,
-            "max_tokens clamped to the slot (SLOT-4, max_seq_len {})",
+            "max_tokens clamped to remaining context (max_seq_len {})",
             state.max_seq_len
         );
     }
@@ -211,7 +198,6 @@ pub async fn completions(
             stop_tokens,
             req.seed,
             req.repetition_detection,
-            priority,
         )
         .await
         {
@@ -225,7 +211,6 @@ pub async fn completions(
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Blocking {
-        priority,
         prompt_tokens: std::sync::Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),
@@ -332,17 +317,13 @@ pub async fn completions(
     };
 
     super::lazy_swap::attach_swap_header(
-        super::lazy_swap::attach_context_remaining(
-            Json(CompletionResponse::new(
-                &rt.model_name,
-                output_text,
-                usage,
-                &response.finish_reason,
-            ))
-            .into_response(),
-            prompt_len + num_completion,
-            state.max_seq_len,
-        ),
+        Json(CompletionResponse::new(
+            &rt.model_name,
+            output_text,
+            usage,
+            &response.finish_reason,
+        ))
+        .into_response(),
         swap_ms,
     )
 }
@@ -365,7 +346,6 @@ pub(super) async fn completions_stream(
     stop_tokens: Vec<u32>,
     seed: Option<u64>,
     repetition_detection: Option<crate::openai::RepetitionDetectionParams>,
-    priority: bool,
 ) -> Result<Response, (StatusCode, String)> {
     // Match chat_stream/mod.rs sizing; see comment there.
     let (token_tx, token_rx) = tokio::sync::mpsc::channel::<StreamEvent>(1024);
@@ -373,7 +353,6 @@ pub(super) async fn completions_stream(
 
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Streaming {
-        priority,
         prompt_tokens: std::sync::Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),
@@ -486,13 +465,9 @@ pub(super) async fn completions_stream(
     });
     let full_stream = token_stream.chain(done_event);
 
-    Ok(super::lazy_swap::attach_context_remaining(
-        Sse::new(full_stream)
-            .keep_alive(KeepAlive::default())
-            .into_response(),
-        prompt_len + max_tokens,
-        state.max_seq_len,
-    ))
+    Ok(Sse::new(full_stream)
+        .keep_alive(KeepAlive::default())
+        .into_response())
 }
 
 /// GET /v1/models — every registered model (boot model + preseed list) in

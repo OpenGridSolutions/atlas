@@ -167,7 +167,6 @@ pub async fn translate(
             );
         }
     };
-    let priority = prio.as_ref().map(|p| p.0.0).unwrap_or(false);
     if req.text.trim().is_empty() {
         return openai_error_response(StatusCode::BAD_REQUEST, "'text' is empty".into());
     }
@@ -229,7 +228,7 @@ pub async fn translate(
         &state,
         &model_id,
         ModelCategory::Translate,
-        priority,
+        prio.map(|p| p.0.0).unwrap_or(false),
         false,
     )
     .await
@@ -276,7 +275,7 @@ pub async fn translate(
     let max_tokens = req
         .max_tokens
         .unwrap_or(1024)
-        .min(crate::slots::prompt_limit(state.max_seq_len).saturating_sub(prompt_len));
+        .min(state.max_seq_len.saturating_sub(prompt_len));
     // <end_of_turn> terminates the model turn (generation_config eos
     // [1, 106]; the scheduler's implicit eos covers id 1).
     let stop_tokens: Vec<u32> = rt
@@ -289,7 +288,6 @@ pub async fn translate(
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
     let request = InferenceRequest::Blocking {
-        priority,
         prompt_tokens: Arc::new(prompt_tokens),
         session_hash,
         image_pixels: Vec::new(),

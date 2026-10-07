@@ -52,7 +52,6 @@ pub(super) async fn dispatch_streaming(
     grammar_spec: Option<GrammarSpec>,
     top_logprobs: Option<u8>,
     timeout_at: Option<std::time::Instant>,
-    priority: bool,
 ) -> Response {
     if req.n > 1 {
         crate::metrics::REQUESTS_ACTIVE.dec();
@@ -108,7 +107,6 @@ pub(super) async fn dispatch_streaming(
         req.seed,
         top_logprobs,
         timeout_at,
-        priority,
         stop_strings,
         stream_include_usage,
         req_return_token_ids,

@@ -474,8 +474,6 @@ Umsetzung des Anforderungsdokuments vom 2026-10-05 (Analyse:
 | Warte-SSE (`: queued`/`: waiting`) | `api/queued_sse.rs` |
 | Embed/Rerank-Sidecars | `main_modules/text_sidecar.rs` |
 | `/internal/state`, neue Metriken | `api/internal_state.rs`, `metrics.rs` |
-| Feste Session-Slots (E6: Resolution, Fit, Plan) | `spark-server/src/slots.rs`, Admission in `scheduler/mod_helpers.rs` |
-| Session-KV-Tracking `POST /v1/atlas/session/state` | `api/session_state.rs`, `main_modules/cache_registry.rs` |
 
 Ablauf eines Modellwechsels (Abschnitt 10 des Dokuments): Gate
 (`api/lazy_swap.rs`) reiht Tickets ein → Dispatcher entscheidet
@@ -485,23 +483,6 @@ Ablauf eines Modellwechsels (Abschnitt 10 des Dokuments): Gate
 Laufende Requests werden nach `--drain-grace-ms` mit
 `finish_reason="model_swap"` beendet; ihr KV/SSM-Zustand ist zuvor
 persistiert (E1), sodass der Folge-Request den Prefix wiederfindet.
-
-Feste Slots (E6): `slots::resolve` löst beim (Re-)Load
-CLI `--slot-tokens` → MODEL.toml `[behavior].slot_tokens` →
-`--max-seq-len` auf (MOD-12 verweigert den Load bei Verstoß),
-`publish_from_pool` leitet `slots_total` aus der echten Pool-Geometrie
-ab. Slots sind logisch: Blöcke bleiben demand-paged, unbenutzte Blöcke
-dienen dem Prefix-Cache (SLOT-3). Die Admission nimmt höchstens
-`min(max_batch_size, slots_total)` Sequenzen an (BAT-8; Staging zählt
-mit), normale Requests lassen `--priority-reserved-slots` frei (PRI-7),
-Priority-Requests werden zuerst zugelassen (PRI-1). `max_blocks_per_seq`
-der Attention ist auf die Slot-Größe dimensioniert — jede
-Handler-Längenprüfung nutzt daher die Slot-Grenze (`slots::prompt_limit`).
-Requests über der Slot-Grenze: Prompt zu groß → 400
-`context_length_exceeded` (SLOT-4); `max_tokens` wird auf
-`slot_buffer_tokens` und den Slot-Rest geklemmt; jede Antwort trägt
-`X-Atlas-Context-Remaining` (SLOT-6; Streaming konservativ
-Prompt+Budget, Blocking exakt).
 
 Bewusst offen (Stufe 2 / SOLL): Write-through (NVM-13, inkl.
 `--write-batch-interval-ms`), KV-9 (CoW für angebrochene Blöcke),

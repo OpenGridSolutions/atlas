@@ -45,10 +45,6 @@ pub(crate) struct PreparedSwap {
     pub hss_cache_blocks_per_seq: Option<u32>,
     /// MODEL.toml `default_mtp_quantization` of the target (may be "").
     pub default_mtp_quantization: &'static str,
-    /// MODEL.toml `[behavior].slot_tokens` / `slot_buffer_tokens`
-    /// (0 = unset; resolution + MOD-12 happen in `slots::resolve`).
-    pub behavior_slot_tokens: usize,
-    pub behavior_slot_buffer_tokens: usize,
 }
 
 /// Stable registry key for a kernel target.
@@ -204,7 +200,5 @@ pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Resu
         layer_dtypes: kv.layer_dtypes,
         hss_cache_blocks_per_seq: kv.hss_cache_blocks_per_seq,
         default_mtp_quantization: ptx_set.behavior.default_mtp_quantization,
-        behavior_slot_tokens: ptx_set.behavior.slot_tokens,
-        behavior_slot_buffer_tokens: ptx_set.behavior.slot_buffer_tokens,
     })
 }

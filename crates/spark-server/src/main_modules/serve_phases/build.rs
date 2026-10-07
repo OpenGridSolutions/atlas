@@ -78,7 +78,6 @@ pub(crate) fn compute_kv_identity(
 pub(crate) fn build_model(
     args: &cli::ServeArgs,
     model_identity: &str,
-    slot_config: crate::slots::SlotConfig,
     config: &ModelConfig,
     store: &spark_runtime::weights::WeightStore,
     gpu: Box<dyn spark_runtime::gpu::GpuBackend>,
@@ -158,7 +157,6 @@ pub(crate) fn build_model(
         args.kv_pool_gb
             .filter(|&gb| gb > 0.0)
             .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as usize),
-        slot_config.slot_tokens,
     )
     .context("Failed to build model")?;
     model.set_block_key_seed(seed);

@@ -28,6 +28,15 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | T-SSM-02, 03, 06 | Die `.tail`-Datei wird geschrieben, der Restore daraus ist nicht implementiert. Heute ist der korrekte Rückfall der letzte blockalignierte Snapshot; das prüft T-SSM-04. |
 | T-NVM-13 (Teil `--high-speed-swap`) | Zählung der Swap-Schreibvorgänge im Schreibbudget ist nicht vorgesehen. Der Budget-Zähler selbst bleibt (siehe T-NVM-13). |
 
+### Entfallen durch Architekturentscheidung (2026-10-07)
+
+Die Session-Slots (E6: `slots_total`, `slot_tokens`, MOD-12, PRI-7) wurden
+zurückgenommen. Kapazität und Nebenläufigkeit sind rein blockbasiert
+(`--max-batch-size`, KV-Pool, LRU-Verdrängung, Spill). Damit entfällt
+Invariante 5 „Speicherzaun“ in ihrer Slot-Form: Overcommit führt zu
+Verdrängung und Spill, nicht zu Warteschlange. T-SLOT-01 bis 06, T-MOD-09
+und T-PRI-03 sind gestrichen.
+
 ### Umformuliert
 
 - **Determinismus-Vergleich.** „Tokenidentisch“ ist bei gebatchtem Decode
@@ -49,7 +58,7 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | --- | --- | --- |
 | T-KV-11 | P1 · Integration – Modellfile unter gleichem Namen ersetzt (neuer Snapshot-Hash). Erwartet: keine Treffer auf NVMe-Einträge der alten Revision. | Die Cache-Identität nutzt die Modell-ID, nicht den Snapshot-Hash (`compute_kv_identity`). Loch unter Invariante 1. |
 | T-KV-12 | P1 · Unit – Generierte Token-IDs gegen die Retokenisierung des zurückgeschickten Assistant-Textes. | T-DRN-03 prüft das nur implizit; ein Unit-Test trifft das Risiko aus `nvme-tier-analysis.md` §1.3 direkt. |
-| T-API-01 | P1 · Integration – Jeder Header-Test (`X-Atlas-Context-Remaining`, `X-Atlas-Model-Swap`) auch auf `/v1/messages`. | Protokolldrift zwischen OpenAI- und Anthropic-Pfad ist laut AGENTS.md ein wiederkehrender Fehler. |
+| T-API-01 | P1 · Integration – Jeder Header-Test (`X-Atlas-Model-Swap`, `X-Atlas-Compacted` sobald vorhanden) auch auf `/v1/messages`. | Protokolldrift zwischen OpenAI- und Anthropic-Pfad ist laut AGENTS.md ein wiederkehrender Fehler. |
 
 ## 1. Prefix-Cache und Block-Schlüssel
 
@@ -102,14 +111,13 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | --- | --- | --- | --- |
 | T-MEM-01 | P1 · Unit – Replay von `c847244` mit großem `SwapFree`. | MEM-4 | Unit `kv_budget.rs` (SwapFree-Ausschluss); Replay-Fall prüfen |
 | T-MEM-02 | P2 · On-Box – Fremdprozess belegt und beendet; Budget nutzt Baseline. | MEM-5 | offen |
-| T-MEM-03 | P2 · On-Box – Whisper, Qwen-Image, Embed nacheinander; `slots_total` sinkt. | MEM-1, MEM-6, SLOT-2 | offen |
+| T-MEM-03 | P2 · On-Box – Whisper, Qwen-Image, Embed nacheinander; Budget wird neu berechnet, kein OOM. | MEM-1, MEM-6 | offen |
 | T-MEM-04 | P2 · Unit – Gemischte Layer-Dtypes; Bytes/Token = Summe. | MEM-3, MEM-9 | Unit `kv_budget.rs` teilweise |
 | T-MOD-01 bis 04 | P2 – Messung, Persistenz, Verwurf bei neuem Hash, EWMA. | MOD-5..8 | Unit `swap_costs.rs` teilweise; On-Box offen |
 | T-MOD-05 | P2 · Integration – Laden schlägt fehl; vorheriges Modell zurück, Wartende 503. | MOD-10 | Unit **neu** `queued_sse_tests.rs::rejected_ticket_reports_the_failed_load` (Stream-Seite); Integration offen |
 | T-MOD-06 | P2 · Integration – Embed unter `sidecar_small_max_gib` als Sidecar, Arena unverändert. | MOD-3, MOD-4 | offen (`text_sidecar.rs` ohne Tests) |
 | T-MOD-07 | P2 · Integration – Embed über der Grenze in die Arena-Queue. | MOD-4, SCH-2 | offen |
 | T-MOD-08 | P2 · Integration – Unbekanntes Modell: 404 mit Liste. | MOD-9 | offen |
-| T-MOD-09 | P2 · Integration – `slot_tokens` > `--max-seq-len`: Laden verweigert. | MOD-12, SLOT-1 | Unit `slots.rs` |
 
 ## 5. Scheduler und Modellwechsel-Entscheidung
 
@@ -121,21 +129,20 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | T-SCH-11 | P2 · Integration – Translate/OCR für nicht geladenes Modell werden eingereiht. | SCH-2 | offen |
 | T-SCH-12 | P2 · Integration – Header `X-Atlas-Model-Swap` mit Wartezeit. | SCH-9 | Schätzung Unit **neu** `decision.rs::wait_tests`; Header offen |
 
-## 6. Slots, Batching und Admission
+## 6. Batching und Admission (blockbasiert)
+
+Seit 2026-10-07 gibt es keine Session-Slots mehr (E6 wurde zurückgenommen).
+Nebenläufigkeit ist `--max-batch-size`, Kapazität ist der KV-Pool: LRU-Verdrängung
+des Prefix-Caches (persistierte Blöcke zuerst), dann Spill auf Platte.
 
 | ID | Szenario und Erwartung | Bezug | Stand |
 | --- | --- | --- | --- |
-| T-SLOT-01 | P2 · Integration – `slots_total` + 2 Requests; genau `slots_total` laufen. | SLOT-3, BAT-3 | offen |
-| T-SLOT-02 | P2 · On-Box – Alle Slots wachsen bis `slot_tokens`; kein OOM. | SLOT-2, SLOT-3, BAT-5 | offen |
-| T-SLOT-03 | P2 · Integration – `max_tokens` > `slot_buffer_tokens` wird geklemmt. | SLOT-4 | Unit `slots.rs`; Integration offen |
-| T-SLOT-04 | P2 · Integration – Ausgabe erreicht `slot_tokens`: `finish_reason="length"`. | SLOT-5 | offen |
-| T-SLOT-05 | P2 · Integration – `X-Atlas-Context-Remaining` korrekt. | SLOT-6 | offen (dazu T-API-01) |
-| T-SLOT-06 | P2 · Integration – `slots_total` = 3, `max_batch_size` = 8: Batch ≤ 3. | BAT-8 | offen |
 | T-BAT-01 | P3 · On-Box – 30k-Prompt neben vier Streams; TBT unter `--tbt-deadline-ms`. | BAT-2 | offen |
-| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben drei Streams; Restore asynchron. | BAT-6 | offen |
+| T-BAT-02 | P2 · On-Box – Langer NVMe-Prefix neben drei Streams; Restore asynchron. | BAT-6 | On-Box 2026-10-07 (`tests/nvme_cold_cache_bench.py`): Lesen asynchron, Import + Rest-Prefill stallen laufende Streams 1,3–1,9 s pro 2,8k-Session |
 | T-BAT-03 | P3 · Integration – Prefix kürzer als `nvme_restore_min_tokens`: Neuberechnung. | BAT-7 | offen |
-| T-BAT-04 | P2 · Integration – Priorisierter und normaler Request, ein Slot frei. | BAT-3, PRI-1 | Unit `queues.rs::grant_wakes_waiters_priority_first`; Admission offen |
-| T-BAT-06 | P2 · On-Box – Präemption mit bewusst kleinem Pool. | BAT-5 | offen |
+| T-BAT-04 | P2 · Integration – Priorisierter und normaler Request, ein Platz frei. | BAT-3, PRI-1 | Unit `queues.rs::grant_wakes_waiters_priority_first`; Admission offen |
+| T-BAT-06 | P2 · On-Box – Overcommit mit kleinem Pool: Cache-Verdrängung vor Spill, Spill-Resume funktioniert. | BAT-5 | On-Box 2026-10-07 (`tests/concurrency_bench.py`, `--kv-pool-gb 1`): N > Batch wartet, kein Reject/Drop; Fixes a721f36b, dfa141f0 |
+| T-BAT-07 | P2 · Integration – Prefill-Allokation bei Pool voll mit Cache: Verdrängung greift, kein `KV cache exhausted`. | KV-6, KV-7 | Unit `radix_tree/tests/evict_guard.rs` |
 
 ## 7. Ablauf eines Modellwechsels
 
@@ -174,17 +181,16 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | T-SEC-09 | P1 · On-Box – `/internal/state` und `/admin` ohne Token: 401. | TEL-7 | Unit **neu** `middleware_tests.rs::introspection_and_admin_paths_need_auth`; Integration `tests/test_internal_state.py` |
 | T-PRI-01 | P2 · Integration – Zehn normale, dann ein priorisierter: der wird als nächster aufgenommen. | PRI-1 | Unit `queues.rs::grant_wakes_waiters_priority_first` |
 | T-PRI-02 | P2 · Integration – Priorisiert für nicht geladenes Modell: 503 nach `priority_max_wait`. | PRI-4 | Unit `queues.rs` (Expiry) + **neu** `queued_sse_tests.rs::expired_ticket_ends_the_stream_with_an_sse_error` |
-| T-PRI-03 | P2 · Integration – `priority_reserved_slots` = 1 hält einen Slot frei. | PRI-7 | offen (`scheduler/mod_helpers.rs`) |
 
 ## 10. Telemetrie und Health
 
 | ID | Szenario und Erwartung | Bezug | Stand |
 | --- | --- | --- | --- |
-| T-TEL-01 | P2 · Integration – `/internal/state` unter Last: alle TEL-3-Felder, konsistent mit Slots und Pool. | TEL-3 | **neu** Unit `internal_state.rs::capacity_profile_derives_from_pool_geometry`; Integration `tests/test_internal_state.py`. Hinweis: die Route fehlte bis 2026-10-07 im Router. |
+| T-TEL-01 | P2 · Integration – `/internal/state` unter Last: alle TEL-3-Felder, konsistent mit Batch und Pool. | TEL-3 | **neu** Unit `internal_state.rs::capacity_profile_derives_from_pool_geometry`; Integration `tests/test_internal_state.py`. Hinweis: die Route fehlte bis 2026-10-07 im Router. |
 | T-TEL-02 | P2 · On-Box – Drei Wechsel mit verschiedenen Auslösern: je ein Swap-Event. | TEL-4 | offen |
 | T-TEL-03 | P2 · Integration – Metriken gegen gezählte Werte. | TEL-5, TEL-6, TEL-8 | offen |
 | T-TEL-04 | P3 · On-Box – 10 Abfragen/s auf `/internal/state` und `/metrics` ohne TPS-Einbruch. | TEL-3 | offen |
-| T-TEL-05 | P2 · Integration – Kapazitätsprofil gegen unabhängige Nachrechnung. | MEM-9, SLOT-2 | Unit **neu** (siehe T-TEL-01); Nachrechnung offen |
+| T-TEL-05 | P2 · Integration – Kapazitätsprofil gegen unabhängige Nachrechnung. | MEM-9 | Unit **neu** (siehe T-TEL-01); Nachrechnung offen |
 
 ## 11. Fehlerinjektion und Dauerlast
 
@@ -197,7 +203,7 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | T-LOAD-05 | P2 · Last – NVMe wechselt zwischen voll und gedrosselt. | NVM-11 | offen |
 | T-LOAD-06 | P2 · Last – NVMe läuft voll; GC räumt, Persistierung scheitert kontrolliert. | NVM-10 | offen |
 | T-LOAD-07 | P2 · Last – 50 Requests in 2 s für ein nicht geladenes Modell: genau ein Wechsel. | SCH-4 | offen |
-| T-LOAD-08 | P2 · Last – 50 % der Streams brechen ab; Slots werden frei. | DRN-5, SLOT-3 | Unit `queues.rs::dropped_ticket_leaves_the_queue`; Last offen |
+| T-LOAD-08 | P2 · Last – 50 % der Streams brechen ab; Plätze und Blöcke werden frei. | DRN-5 | Unit `queues.rs::dropped_ticket_leaves_the_queue`; Last offen |
 | T-LOAD-09 | P1 · Last – Komplette Rust-Unit-Suite und Qualitäts-Suite (FP8-KV) grün. | Bestand | `cargo test --workspace`, `tests/gate_results.py` |
 
 ## P1-Prüfpfad (bereinigt)

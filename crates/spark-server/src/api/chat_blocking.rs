@@ -54,8 +54,6 @@ pub(super) struct BlockingPathArgs {
     pub grammar_spec: Option<GrammarSpec>,
     pub top_logprobs: Option<u8>,
     pub timeout_at: Option<std::time::Instant>,
-    /// PRI-7: may occupy the reserved priority slots.
-    pub priority: bool,
     pub cwd_hint: Option<String>,
     pub prompt_len: usize,
 }
@@ -93,7 +91,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         grammar_spec,
         top_logprobs,
         timeout_at,
-        priority,
         cwd_hint,
         prompt_len,
     } = args;
@@ -116,7 +113,6 @@ pub(super) async fn run_blocking_path(args: BlockingPathArgs) -> Response {
         let request = InferenceRequest::Blocking {
             prompt_tokens: prompt_tokens.clone(),
             session_hash,
-            priority,
             image_pixels: if choice_idx == 0 {
                 image_pixels.clone()
             } else {
@@ -540,9 +536,5 @@ fn finalize_response(
         dump.dump_response("/v1/chat/completions", seq, &completion, false);
     }
 
-    super::lazy_swap::attach_context_remaining(
-        Json(completion).into_response(),
-        prompt_len + total_completion_tokens,
-        state.max_seq_len,
-    )
+    Json(completion).into_response()
 }

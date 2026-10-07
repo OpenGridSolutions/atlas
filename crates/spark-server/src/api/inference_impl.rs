@@ -47,14 +47,6 @@ impl InferenceRequest {
         }
     }
 
-    /// PRI-7: whether this request may occupy the reserved priority slots.
-    pub fn priority(&self) -> bool {
-        match self {
-            InferenceRequest::Blocking { priority, .. } => *priority,
-            InferenceRequest::Streaming { priority, .. } => *priority,
-        }
-    }
-
     /// BLAKE3 digest per preprocessed image (KV-4). Hashes the patchified
     /// pixel data plus the grid — a pure function of the raw media bytes
     /// and every preprocessing parameter (resize, crop, patch/merge
