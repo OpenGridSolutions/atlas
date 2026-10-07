@@ -145,6 +145,13 @@ pub struct TransformerModel {
     pub(super) secondary_stream: u64,
     /// CUDA event for GPU-side inter-stream synchronization (avoids CPU-blocking sync).
     pub(super) secondary_event: u64,
+    /// NVMe-restore upload stream (BAT-6): block payloads are copied H2D
+    /// here so a restore never serializes with decode on the default
+    /// stream. `restore_event` is recorded after each import; consumers
+    /// (default stream inside the import, the prefill stream via
+    /// `restore_fence`) wait on it GPU-side.
+    pub(super) restore_stream: u64,
+    pub(super) restore_event: u64,
     /// CUDA event ordering SSM-snapshot SAVES (on the default stream) before a
     /// later warm Marconi RESTORE (on the prefill stream). Marconi saves
     /// (`decode_marconi_checkpoint`, `finish_leaf_snapshot`, prefill-time

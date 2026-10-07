@@ -427,6 +427,11 @@ pub fn run(
                         let bs = st.chain.block_size().max(1);
                         crate::metrics::NVME_RESTORED_TOKENS_TOTAL
                             .inc_by((st.payloads.len() * bs) as u64);
+                        // The upload runs on the model's restore stream;
+                        // prefill must not read the blocks before it lands.
+                        if let Err(e) = model.restore_fence(prefill_stream) {
+                            tracing::warn!("nvme-restore: prefill fence failed: {e:#}");
+                        }
                     }
                     if covered == 0 && !st.payloads.is_empty() {
                         // Pool pressure or RAM-match drift — don't re-stage

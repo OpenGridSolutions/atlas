@@ -244,6 +244,9 @@ impl TransformerModel {
         // Secondary stream + event for pipelining checkpoint D2D with MTP propose.
         let secondary_stream = gpu.create_stream()?;
         let secondary_event = gpu.create_event()?;
+        // NVMe-restore uploads (BAT-6) get their own stream + fence event.
+        let restore_stream = gpu.create_stream()?;
+        let restore_event = gpu.create_event()?;
         // Event ordering SSM-snapshot saves (default stream) before a warm
         // Marconi restore (prefill stream). See `snapshot_event` doc in types.rs.
         let snapshot_event = gpu.create_event()?;
@@ -457,6 +460,8 @@ impl TransformerModel {
             block_key_seed: spark_runtime::block_keys::BlockKey::ZERO,
             secondary_stream,
             secondary_event,
+            restore_stream,
+            restore_event,
             snapshot_event,
             comm,
             ep_cmd_buf,

@@ -477,6 +477,27 @@ impl PagedKvCache {
         Ok((k_data, v_data))
     }
 
+    /// Async variant of [`Self::write_block`]: enqueue both copies on
+    /// `stream` and return without synchronizing. Pageable source memory
+    /// is staged by the driver before the call returns, so the caller may
+    /// drop `k_data`/`v_data` afterwards; consumers of the block must
+    /// fence on an event recorded on `stream`.
+    pub fn write_block_async(
+        &self,
+        layer_idx: usize,
+        block_idx: u32,
+        k_data: &[u8],
+        v_data: &[u8],
+        gpu: &dyn GpuBackend,
+        stream: u64,
+    ) -> Result<()> {
+        let k_ptr = self.k_cache_ptr(layer_idx, block_idx);
+        let v_ptr = self.v_cache_ptr(layer_idx, block_idx);
+        gpu.copy_h2d_async(k_data, k_ptr, stream)?;
+        gpu.copy_h2d_async(v_data, v_ptr, stream)?;
+        Ok(())
+    }
+
     /// Write K and V data for one block at one layer from host to GPU.
     pub fn write_block(
         &self,

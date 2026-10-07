@@ -260,6 +260,13 @@ pub trait Model: Send + Sync {
         Ok(0)
     }
 
+    /// Make `stream` wait (GPU-side) for every restore upload issued so
+    /// far — call it on the prefill stream before a restored request
+    /// enters prefill. Default: nothing to fence.
+    fn restore_fence(&self, _stream: u64) -> Result<()> {
+        Ok(())
+    }
+
     /// Whether this model carries recurrent (SSM/linear-attention) state
     /// alongside the paged KV cache. Default: false.
     fn has_recurrent_state(&self) -> bool {

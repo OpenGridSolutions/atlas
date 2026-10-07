@@ -189,6 +189,9 @@ impl Model for TransformerModel {
     ) -> Result<usize> {
         self.import_cached_blocks_dispatch(prompt_tokens, chain, payloads)
     }
+    fn restore_fence(&self, stream: u64) -> Result<()> {
+        self.gpu.stream_wait_event(stream, self.restore_event)
+    }
     fn export_kv_block(&self, seq: &SequenceState, logical_block: usize) -> Result<Vec<u8>> {
         self.export_kv_block_dispatch(seq, logical_block)
     }

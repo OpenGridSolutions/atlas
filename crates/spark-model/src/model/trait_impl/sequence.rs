@@ -381,6 +381,7 @@ impl TransformerModel {
         // reads block_table[i] for pre-existing nodes.
         let mut block_table = vec![u32::MAX; ram_blocks];
         let mut imported = 0usize;
+        let t0 = std::time::Instant::now();
         {
             let gpu = self.gpu.as_ref();
             let mut kv = self.kv_cache.lock();
@@ -416,12 +417,13 @@ impl TransformerModel {
                 let mut write_ok = true;
                 for l in 0..kv.num_layers() {
                     let stride = kv.block_stride_bytes_for_layer(l);
-                    if let Err(e) = kv.write_block(
+                    if let Err(e) = kv.write_block_async(
                         l,
                         block_idx,
                         &payload[off..off + stride],
                         &payload[off + stride..off + 2 * stride],
                         gpu,
+                        self.restore_stream,
                     ) {
                         tracing::error!("nvme-restore: write_block failed: {e:#}");
                         write_ok = false;
@@ -440,15 +442,23 @@ impl TransformerModel {
         if imported == 0 {
             return Ok(0);
         }
+        // Fence: everything queued on the restore stream becomes visible
+        // to the default stream GPU-side; the prefill stream fences via
+        // `restore_fence` before the request is admitted. No host sync.
+        let gpu = self.gpu.as_ref();
+        gpu.record_event(self.restore_event, self.restore_stream)?;
+        gpu.stream_wait_event(gpu.default_stream(), self.restore_event)?;
         let covered = (ram_blocks + imported) * bs;
         // Register as cache-owned (matched_tokens = covered → no
         // seq-owned ref bump; nodes settle at the cache baseline).
         let v = chain.view(prompt_tokens, covered);
         let _ = self.prefix_cache.insert(&v, &block_table, &[], covered);
         tracing::info!(
-            "nvme-restore: imported {imported} block(s) ({} tokens cached, {} from RAM)",
+            "nvme-restore: imported {imported} block(s) ({} tokens cached, {} from RAM) \
+             in {:.1} ms (async, fenced)",
             covered,
             ram_blocks * bs,
+            t0.elapsed().as_secs_f64() * 1e3,
         );
         Ok(covered)
     }
