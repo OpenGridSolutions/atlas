@@ -458,6 +458,12 @@ pub fn run(
         let slot_cap = slots_total
             .min(max_batch_size)
             .saturating_sub(staging_in_flight + restored_ready.len());
+        // Work that arrives without a client signal — swapped-out sequences,
+        // NVMe restores in flight (they complete on an mpsc channel) and
+        // restores already imported — must keep the loop polling instead
+        // of parking on the request condvar.
+        let background_work =
+            !swapped.is_empty() || staging_in_flight > 0 || !restored_ready.is_empty();
         let mut new_reqs = drain_pending_requests(
             &pending,
             &active,
@@ -465,7 +471,7 @@ pub fn run(
             &*policy,
             slot_cap,
             reserved_priority_slots,
-            !swapped.is_empty(),
+            background_work,
         );
 
         // ── NVMe-restore staging filter (BAT-6/BAT-7) ──

@@ -398,8 +398,19 @@ impl TransformerModel {
                     );
                     break;
                 }
-                let Ok(block_idx) = kv.alloc_block() else {
-                    break; // pool pressure — keep what we have
+                // Pool pressure: reclaim LRU prefix-cache blocks (persisted
+                // first) before giving up — a cache-full pool otherwise
+                // shrinks every restore to the handful of free blocks.
+                let block_idx = match kv.try_alloc_block() {
+                    Some(b) => b,
+                    None => {
+                        let evicted = self.prefix_cache.evict(1);
+                        super::super::block_mgmt::apply_evicted_blocks(evicted, &mut kv);
+                        match kv.alloc_block() {
+                            Ok(b) => b,
+                            Err(_) => break, // truly exhausted — keep what we have
+                        }
+                    }
                 };
                 let mut off = 0usize;
                 let mut write_ok = true;
