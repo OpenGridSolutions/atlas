@@ -321,6 +321,23 @@ pub struct ModelTypeMatch {
 }
 
 /// DFlash speculative-decoding pairing for a target model.
+/// Runtime cost constants from `[estimate]` in MODEL.toml — the SSOT the
+/// admission estimate (`accepted_processing_time`) reads. Calibrated
+/// once on the box with `tests/estimate_calibration.py`, committed, never
+/// learned at runtime. A field left at 0 means "not calibrated": an
+/// estimate that needs it is unavailable rather than guessed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EstimateProfile {
+    /// Prefill throughput (prompt tokens per second, batch 1).
+    pub prefill_tok_s: f64,
+    /// Decode step time in ms at batch sizes 1, 2, 4, 8.
+    pub decode_step_ms: [f64; 4],
+    /// OCR: p90 wall time per page (seconds), one page in flight.
+    pub ocr_page_secs_p90: f64,
+    /// OCR: p90 generated tokens per page (informational).
+    pub ocr_page_tokens_p90: u32,
+}
+
 /// Parsed from `[dflash]` in MODEL.toml at build time. `None` when the
 /// model has no DFlash drafter associated.
 #[derive(Debug, Clone)]
@@ -360,6 +377,18 @@ pub struct TargetPtxSet {
     /// no `[dflash]` section. Consumed by spark-server when `--dflash` is
     /// set without an explicit `--draft-model` flag.
     pub dflash: Option<DflashConfig>,
+    /// `[estimate]` cost constants; `None` when the MODEL.toml has none.
+    pub estimate: Option<EstimateProfile>,
+}
+
+/// The `[estimate]` profile of the target whose `[model].hf_id` equals
+/// `hf_id` exactly. `None` when no target matches or the target carries
+/// no profile.
+pub fn estimate_for_hf_id(hf_id: &str) -> Option<EstimateProfile> {
+    all_ptx_sets()
+        .into_iter()
+        .find(|t| !t.hf_id.is_empty() && t.hf_id == hf_id)
+        .and_then(|t| t.estimate)
 }
 
 /// All compiled kernel targets and their PTX module sets.

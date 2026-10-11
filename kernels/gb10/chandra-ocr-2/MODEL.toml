@@ -111,6 +111,18 @@ default_num_drafts = 1
 # no k/v scales).
 default_kv_dtype = "bf16"
 
+# Admission estimate (docs/design/deadline-admission.md, PR A). Measured
+# 2026-10-11 on GB10 via /convert: 12.0 s for one text page (A4, Helvetica,
+# ~5 blocks), 28.9-36.4 s for three pages with --ocr-page-parallelism 3 —
+# fan-out barely helps, pages are costed sequentially. p90 over that
+# sample is 12.5 s; handwriting-heavy pages (290 s in the smoke test)
+# are NOT covered and end as deadline_exceeded instead. Recalibrate with
+# tests/estimate_calibration.py --ocr once a representative PDF set
+# exists. Token constants are unset: Chandra is not served as a chat
+# model, so prefill/decode estimates are not needed.
+[estimate]
+ocr_page_secs_p90 = 12.5
+
 # NO [[model_types]] entries — deliberate. Chandra's (qwen3_5, 2560)
 # pair is identical to holo-3.1-4b's, and this directory sorts BEFORE
 # holo-3.1-4b in the generated table, so declaring the pair would steal

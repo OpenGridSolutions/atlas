@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use super::{DflashRaw, ModelTypeMatch, SamplingCat};
+use super::{DflashRaw, EstimateRaw, ModelTypeMatch, SamplingCat};
 
 pub(super) fn parse_kernel_toml(
     kernel_dir: &std::path::Path,
@@ -431,5 +431,59 @@ pub(super) fn parse_dflash(model_dir: &std::path::Path) -> Option<DflashRaw> {
         window_size,
         mask_token_id,
         target_layer_ids,
+    })
+}
+
+/// Parse `[estimate]` from MODEL.toml. `None` when the section is absent.
+/// `decode_step_ms` must have exactly four entries (batch 1, 2, 4, 8) when
+/// present; a malformed section is a build error, never a silent default.
+pub(super) fn parse_estimate(model_dir: &std::path::Path) -> Option<EstimateRaw> {
+    let model_toml_path = model_dir.join("MODEL.toml");
+    if !model_toml_path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(&model_toml_path).unwrap_or_default();
+    let toml: toml::Value = toml::from_str(&content).ok()?;
+    let est = toml.get("estimate")?;
+    let num = |key: &str| -> f64 {
+        est.get(key)
+            .and_then(|v| v.as_float().or_else(|| v.as_integer().map(|i| i as f64)))
+            .unwrap_or(0.0)
+    };
+    let mut decode_step_ms = [0.0f64; 4];
+    if let Some(arr) = est.get("decode_step_ms") {
+        let vals: Vec<f64> = arr
+            .as_array()
+            .unwrap_or_else(|| {
+                panic!(
+                    "{}: [estimate].decode_step_ms must be an array",
+                    model_toml_path.display()
+                )
+            })
+            .iter()
+            .map(|v| {
+                v.as_float()
+                    .or_else(|| v.as_integer().map(|i| i as f64))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "{}: [estimate].decode_step_ms entries must be numbers",
+                            model_toml_path.display()
+                        )
+                    })
+            })
+            .collect();
+        assert!(
+            vals.len() == 4,
+            "{}: [estimate].decode_step_ms needs 4 entries (batch 1, 2, 4, 8), got {}",
+            model_toml_path.display(),
+            vals.len()
+        );
+        decode_step_ms.copy_from_slice(&vals);
+    }
+    Some(EstimateRaw {
+        prefill_tok_s: num("prefill_tok_s"),
+        decode_step_ms,
+        ocr_page_secs_p90: num("ocr_page_secs_p90"),
+        ocr_page_tokens_p90: num("ocr_page_tokens_p90") as u32,
     })
 }

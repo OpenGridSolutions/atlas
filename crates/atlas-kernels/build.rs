@@ -100,6 +100,17 @@ struct Target {
     /// block-diffusion speculative decoding. `None` when the model has no
     /// associated DFlash drafter checkpoint.
     dflash: Option<DflashRaw>,
+    /// `[estimate]` section if present in MODEL.toml — admission cost
+    /// constants (see `EstimateProfile` in lib.rs).
+    estimate: Option<EstimateRaw>,
+}
+
+#[derive(Default, Clone)]
+struct EstimateRaw {
+    prefill_tok_s: f64,
+    decode_step_ms: [f64; 4],
+    ocr_page_secs_p90: f64,
+    ocr_page_tokens_p90: u32,
 }
 
 #[derive(Default, Clone)]
@@ -763,6 +774,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
+            let estimate = parse_estimate(&model_dir);
             let hf_id = parse_hf_id(&model_dir);
 
             targets.push(Target {
@@ -809,6 +821,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 hf_id,
                 model_type_matches,
                 dflash,
+                estimate,
             });
         }
     }
@@ -838,8 +851,8 @@ fn list_subdirs(dir: &std::path::Path) -> Vec<String> {
 #[path = "build_parse.rs"]
 mod build_parse;
 use build_parse::{
-    parse_behavior, parse_dflash, parse_hf_id, parse_kernel_toml, parse_model_types,
-    parse_sampling_presets,
+    parse_behavior, parse_dflash, parse_estimate, parse_hf_id, parse_kernel_toml,
+    parse_model_types, parse_sampling_presets,
 };
 
 /// Collect kernel-source files with shadowing: common dir provides the

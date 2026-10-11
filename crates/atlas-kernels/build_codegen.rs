@@ -182,6 +182,7 @@ pub(super) fn generate_target_ptx_rs(
              \x20           hf_id: \"{}\",\n\
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
+             \x20           estimate: {},\n\
              \x20       }},\n",
             target.model, target.quant,
             fmt_cat(&target.sampling_thinking_text),
@@ -226,6 +227,14 @@ pub(super) fn generate_target_ptx_rs(
                     "Some(DflashConfig {{ draft_model: \"{}\", gamma: {}, window_size: {}, mask_token_id: {}, target_layer_ids: &[{}] }})",
                     d.draft_model, d.gamma, d.window_size, d.mask_token_id,
                     d.target_layer_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", "),
+                ),
+            },
+            match &target.estimate {
+                None => "None".to_string(),
+                Some(e) => format!(
+                    "Some(EstimateProfile {{ prefill_tok_s: {:?}, decode_step_ms: [{:?}, {:?}, {:?}, {:?}], ocr_page_secs_p90: {:?}, ocr_page_tokens_p90: {} }})",
+                    e.prefill_tok_s, e.decode_step_ms[0], e.decode_step_ms[1], e.decode_step_ms[2], e.decode_step_ms[3],
+                    e.ocr_page_secs_p90, e.ocr_page_tokens_p90,
                 ),
             },
         ));
