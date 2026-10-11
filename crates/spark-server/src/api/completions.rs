@@ -113,11 +113,34 @@ pub async fn completions(
             );
         }
     };
+    let admission = match super::admission::admit(
+        &state,
+        &req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: super::admission::prompt_tokens_guess(&req.prompt),
+            output_tokens: req.max_tokens,
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&req.model, r),
+    };
+    let resp = completions_admitted(&state, prio, req, &admission).await;
+    admission.attach_header(&state, resp)
+}
+
+async fn completions_admitted(
+    state: &Arc<AppState>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
+    req: CompletionRequest,
+    admission: &super::admission::Admission,
+) -> Response {
     // Lazy multi-model swap (Task 6 Phase 3): must run BEFORE the
     // per-model snapshot below — the requested model's tokenizer has to
     // be the one that encodes this prompt.
     let swap_ms = match super::lazy_swap::ensure_model_active(
-        &state,
+        state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
         prio.map(|p| p.0.0).unwrap_or(false),
@@ -182,7 +205,7 @@ pub async fn completions(
 
     if req.stream {
         let resp = match completions_stream(
-            state,
+            Arc::clone(state),
             rt,
             prompt_tokens,
             max_tokens,
@@ -244,14 +267,14 @@ pub async fn completions(
         grammar_spec: None,
         seed: req.seed,
         top_logprobs: None,
-        timeout_at: {
+        timeout_at: admission.clamp_timeout({
             let secs = state.request_timeout as f32;
             if secs > 0.0 {
                 Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
             } else {
                 None
             }
-        },
+        }),
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,

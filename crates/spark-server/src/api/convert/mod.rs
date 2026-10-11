@@ -186,14 +186,81 @@ pub async fn submit(
             "file is neither a PDF nor a supported image",
         );
     }
-    if crate::api::ocr::resolve_ocr_model(&state).is_none() {
+    let Some(model_id) = crate::api::ocr::resolve_ocr_model(&state) else {
         return datalab_error(
             StatusCode::SERVICE_UNAVAILABLE,
             "unavailable",
             "no OCR model registered (ATLAS_PRESEED_OCR)",
         );
-    }
+    };
     let svc = Arc::clone(&state.convert);
+    // Page count + selection synchronously (design doc Teil 2 §7): the
+    // estimate needs it, and a bad document is refused right here.
+    let pages = match worker::count_and_select(&params).await {
+        Ok(p) => p,
+        Err((code, msg)) => {
+            let status = if code == "unprocessable_document" {
+                StatusCode::BAD_REQUEST
+            } else {
+                StatusCode::SERVICE_UNAVAILABLE
+            };
+            return datalab_error(status, code, msg);
+        }
+    };
+    if pages.len() > svc.cfg.max_pages {
+        return datalab_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "document_too_large",
+            format!(
+                "{} pages selected, server limit is {} (--ocr-max-pages)",
+                pages.len(),
+                svc.cfg.max_pages
+            ),
+        );
+    }
+    let admission = match crate::api::admission::admit(
+        &state,
+        &model_id,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: 0,
+            output_tokens: 0,
+            pages: pages.len(),
+        },
+        params.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(crate::api::admission::Refusal::Capacity {
+            estimate_secs,
+            budget_secs,
+        }) => {
+            let body = json!({
+                "success": false,
+                "error": format!(
+                    "estimated completion time {estimate_secs:.1}s exceeds \
+                     accepted_processing_time {budget_secs:.1}s"
+                ),
+                "error_code": "capacity_exceeded",
+                "estimated_seconds": estimate_secs.ceil(),
+            });
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [(
+                    axum::http::header::RETRY_AFTER,
+                    format!("{:.0}", (estimate_secs - budget_secs).clamp(1.0, 600.0)),
+                )],
+                Json(body),
+            )
+                .into_response();
+        }
+        Err(crate::api::admission::Refusal::Unavailable(e)) => {
+            return datalab_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                crate::api::admission::unavailable_message(&model_id, e),
+            );
+        }
+    };
+    let estimated_seconds = admission.estimated_secs(&state);
     let id = match job_store::new_job_id() {
         Ok(id) => id,
         Err(e) => {
@@ -239,16 +306,19 @@ pub async fn submit(
         worker::JobSpec {
             id: id.clone(),
             params,
+            pages,
+            model_id,
             cancel,
             deadline,
             submitted: now,
+            admission: Some(admission),
         },
     ));
     Json(json!({
         "success": true,
         "request_id": id,
         "request_check_url": url,
-        "estimated_seconds": null,
+        "estimated_seconds": estimated_seconds.map(f64::ceil),
     }))
     .into_response()
 }

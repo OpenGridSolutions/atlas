@@ -95,6 +95,30 @@ pub async fn rerank(
 }
 
 async fn rerank_core(state: Arc<AppState>, req: RerankRequest, priority: bool) -> Response {
+    let admission = match super::admission::admit(
+        &state,
+        &req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: super::admission::prompt_tokens_guess(&(&req.query, &req.documents)),
+            output_tokens: 1,
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&req.model, r),
+    };
+    let st = Arc::clone(&state);
+    let resp = rerank_admitted(state, req, priority, &admission).await;
+    admission.attach_header(&st, resp)
+}
+
+async fn rerank_admitted(
+    state: Arc<AppState>,
+    req: RerankRequest,
+    priority: bool,
+    admission: &super::admission::Admission,
+) -> Response {
     if req.documents.is_empty() {
         return openai_error_response(
             StatusCode::BAD_REQUEST,
@@ -143,14 +167,14 @@ async fn rerank_core(state: Arc<AppState>, req: RerankRequest, priority: bool) -
 
     let instruction = req.instruction.as_deref().unwrap_or(DEFAULT_INSTRUCTION);
 
-    let timeout_at = if state.request_timeout > 0 {
+    let timeout_at = admission.clamp_timeout(if state.request_timeout > 0 {
         Some(
             std::time::Instant::now()
                 + std::time::Duration::from_secs(state.request_timeout as u64),
         )
     } else {
         None
-    };
+    });
 
     // Enqueue every (query, document) pair before awaiting any reply so
     // concurrent prefills can batch.

@@ -721,6 +721,18 @@ pub struct ServeArgs {
     /// Size cap (GiB) of the `/convert` result cache; pruned oldest-first.
     #[arg(long, default_value_t = 10.0)]
     pub ocr_cache_max_gb: f64,
+
+    // ── accepted_processing_time admission (docs/design/deadline-admission.md) ──
+    /// Multiplier applied to the deterministic completion-time estimate
+    /// before it is compared with a request's `accepted_processing_time`.
+    #[arg(long, default_value_t = 1.25)]
+    pub estimate_safety_factor: f64,
+
+    /// Backstop expiry of a capacity reservation, in multiples of its
+    /// estimate (a streaming body that outlives its handler cannot pin
+    /// capacity forever).
+    #[arg(long, default_value_t = 2.0)]
+    pub estimate_reservation_grace: f64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

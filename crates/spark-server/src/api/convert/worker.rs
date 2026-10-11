@@ -28,9 +28,49 @@ use crate::ocr;
 pub struct JobSpec {
     pub id: String,
     pub params: ConvertParams,
+    /// Pages selected at submit time (0-based PDF indices).
+    pub pages: Vec<usize>,
+    pub model_id: String,
     pub cancel: Arc<AtomicBool>,
     pub deadline: Option<Instant>,
     pub submitted: Instant,
+    /// Capacity reservation; lives as long as the job runs.
+    pub admission: Option<crate::api::admission::Admission>,
+}
+
+/// Synchronous pre-flight for `submit`: document kind, page count,
+/// page selection. `Err((error_code, message))` names the fault.
+pub async fn count_and_select(
+    params: &ConvertParams,
+) -> Result<Vec<usize>, (&'static str, String)> {
+    let Some(kind) = sniff(&params.file) else {
+        return Err((
+            "unprocessable_document",
+            "file is neither a PDF nor a supported image".into(),
+        ));
+    };
+    let page_count = match kind {
+        InputKind::Pdf => {
+            let f = params.file.clone();
+            match tokio::task::spawn_blocking(move || ocr::input::pdf_page_count(&f)).await {
+                Ok(Ok(n)) => n,
+                Ok(Err(e)) if ocr::input::is_pdfium_missing(&e) => {
+                    return Err(("pdfium_unavailable", format!("{e:#}")));
+                }
+                Ok(Err(e)) => return Err(("unprocessable_document", format!("{e:#}"))),
+                Err(e) => return Err(("internal_error", format!("page count task failed: {e}"))),
+            }
+        }
+        InputKind::Image => 1,
+    };
+    let pages = select_pages(page_count, params.page_range.as_deref(), params.max_pages);
+    if pages.is_empty() {
+        return Err((
+            "unprocessable_document",
+            format!("document has {page_count} pages; the requested page_range selects none"),
+        ));
+    }
+    Ok(pages)
 }
 
 const PROMPT_TYPE: &str = "ocr_layout";
@@ -73,72 +113,19 @@ pub fn select_pages(
 }
 
 /// Entry point spawned by the submit handler.
-pub async fn run_job(state: Arc<AppState>, svc: Arc<ConvertService>, spec: JobSpec) {
+pub async fn run_job(state: Arc<AppState>, svc: Arc<ConvertService>, mut spec: JobSpec) {
     let id = spec.id.clone();
     let fail = |code: &str, msg: String| {
         tracing::warn!("convert {id}: failed ({code}): {msg}");
         svc.jobs.fail(&id, code, msg, Instant::now());
     };
 
-    let Some(kind) = sniff(&spec.params.file) else {
-        fail(
-            "unprocessable_document",
-            "file is neither a PDF nor a supported image".into(),
-        );
-        return;
-    };
-    let file = Arc::new(spec.params.file);
-    let page_count = match kind {
-        InputKind::Pdf => {
-            let f = Arc::clone(&file);
-            match tokio::task::spawn_blocking(move || ocr::input::pdf_page_count(&f)).await {
-                Ok(Ok(n)) => n,
-                Ok(Err(e)) if ocr::input::is_pdfium_missing(&e) => {
-                    fail("pdfium_unavailable", format!("{e:#}"));
-                    return;
-                }
-                Ok(Err(e)) => {
-                    fail("unprocessable_document", format!("{e:#}"));
-                    return;
-                }
-                Err(e) => {
-                    fail("internal_error", format!("page count task failed: {e}"));
-                    return;
-                }
-            }
-        }
-        InputKind::Image => 1,
-    };
-    let pages = select_pages(
-        page_count,
-        spec.params.page_range.as_deref(),
-        spec.params.max_pages,
-    );
-    if pages.is_empty() {
-        fail(
-            "unprocessable_document",
-            format!("document has {page_count} pages; the requested page_range selects none"),
-        );
-        return;
-    }
-    if pages.len() > svc.cfg.max_pages {
-        fail(
-            "document_too_large",
-            format!(
-                "{} pages selected, server limit is {} (--ocr-max-pages)",
-                pages.len(),
-                svc.cfg.max_pages
-            ),
-        );
-        return;
-    }
-    let Some(model_id) = crate::api::ocr::resolve_ocr_model(&state) else {
-        fail(
-            "model_unavailable",
-            "no OCR model registered (ATLAS_PRESEED_OCR)".into(),
-        );
-        return;
-    };
+    // `submit` already sniffed, counted and selected; the reservation in
+    // `spec.admission` is released when this function returns.
+    let is_pdf = ocr::input::is_pdf(&spec.params.file);
+    let file = Arc::new(std::mem::take(&mut spec.params.file));
+    let pages = std::mem::take(&mut spec.pages);
+    let model_id = std::mem::take(&mut spec.model_id);
 
     // Result cache (design doc §2b.1): a hit is byte-identical, no GPU.
     let key = cache_key(&file, &model_id, PROMPT_TYPE, &pages);
@@ -158,7 +145,6 @@ pub async fn run_job(state: Arc<AppState>, svc: Arc<ConvertService>, spec: JobSp
     }
 
     svc.jobs.set_processing(&id);
-    let is_pdf = matches!(kind, InputKind::Pdf);
     let results: Vec<Result<PageNode, PageFailure>> = futures::stream::iter(pages.clone())
         .map(|idx| {
             let ctx = PageCtx {

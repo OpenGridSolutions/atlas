@@ -76,6 +76,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--ocr-page-parallelism` / `--ocr-max-pages` | 4 / 500 | Seiten-Fan-out je Job; Seitenlimit (`document_too_large`) |
 | `--ocr-max-failed-pages-pct` | 0 | Toleranz fehlgeschlagener Seiten, 0 = jede ⇒ `failed` |
 | `--ocr-cache-dir` / `--ocr-cache-ttl-days` / `--ocr-cache-max-gb` | aus / 90 / 10 | inhaltsadressierter `/convert`-Ergebnis-Cache (ID-Stabilität) |
+| `--estimate-safety-factor` / `--estimate-reservation-grace` | 1.25 / 2.0 | `accepted_processing_time`: Aufschlag auf die Schätzung; Backstop-Ablauf einer Reservierung (× Schätzung) |
 | `--oom-guard-mb` | 4096 | Lade-Abbruchschwelle |
 | `--dump` | aus | Request/Response-Mitschnitt (Debug) |
 

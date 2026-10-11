@@ -155,6 +155,15 @@ lazy_static::lazy_static! {
     )
     .unwrap();
 
+    /// Budgeted requests refused at admission (`accepted_processing_time`),
+    /// by model and reason ∈ {capacity_exceeded, estimate_unavailable}.
+    pub static ref ADMISSION_REJECTED_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "atlas_admission_rejected_total",
+        "Requests refused by the completion-time admission estimate",
+        &["model", "reason"]
+    )
+    .unwrap();
+
     /// Bytes handed to the NVMe block-store write queue (TEL-6).
     pub static ref NVME_WRITE_BYTES_TOTAL: IntCounter = register_int_counter!(
         "atlas_nvme_write_bytes_total",

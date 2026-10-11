@@ -75,8 +75,24 @@ pub async fn chat_completions(
     // active one BEFORE the per-request ModelRuntime snapshot inside
     // `chat_completions_inner` — otherwise this request would render with
     // the previous model's tokenizer.
+    // accepted_processing_time: estimate + reserve BEFORE anything is
+    // enqueued, so a budget the server cannot meet is a synchronous 503.
+    let admission = match super::admission::admit(
+        &state,
+        &req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: super::admission::prompt_tokens_guess(&req.messages),
+            output_tokens: req.max_tokens,
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&req.model, r),
+    };
+    let est_header = admission.header_secs(&state);
     let priority = prio.map(|p| p.0.0).unwrap_or(false);
-    match super::lazy_swap::prepare_model_gate(
+    let resp = match super::lazy_swap::prepare_model_gate(
         &state,
         &req.model,
         crate::main_modules::hotswap::ModelCategory::Generative,
@@ -91,14 +107,16 @@ pub async fn chat_completions(
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) if req.stream => {
             // WAIT-1/2/5: answer 200 + SSE immediately; the real handler
-            // runs once the dispatcher grants the ticket.
+            // runs once the dispatcher grants the ticket. The reservation
+            // rides along until the inner handler returns.
             let keepalive = state.sse_keepalive;
             super::queued_sse::respond(
                 ticket,
                 keepalive,
-                Box::pin(
-                    async move { chat_completions_inner(state, req_ctx, req, dump_seq).await },
-                ),
+                Box::pin(async move {
+                    let _hold = admission;
+                    chat_completions_inner(state, req_ctx, req, dump_seq).await
+                }),
             )
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) => match ticket.wait().await {
@@ -110,7 +128,8 @@ pub async fn chat_completions(
             outcome => super::lazy_swap::wait_outcome_response(outcome, &req.model),
         },
         Err(resp) => resp,
-    }
+    };
+    super::admission::attach_estimate_header(resp, est_header)
 }
 
 /// Internal entry for the parsed-request path. Called by

@@ -119,6 +119,12 @@ pub struct ChatCompletionRequest {
     /// Request timeout in seconds. None = server default.
     #[serde(default)]
     pub timeout: Option<f32>,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
     /// Number of chat completion choices to generate (default 1).
     /// Only supported in blocking (non-streaming) mode.
     #[serde(default = "default_n")]

@@ -20,6 +20,7 @@
 //! - `stored`             — stored-completion / response retrieval
 //! - `conversations`      — `/v1/conversations` CRUD
 //! - `convert/`           — Datalab-compatible `/convert` OCR jobs (submit/poll/cancel)
+//! - `admission`          — `accepted_processing_time` estimate + capacity reservation
 //! - `misc_handlers`      — cancel / metrics / health / tokenize / detokenize
 //! - `internal_state`     — `GET /internal/state` (TEL-3 introspection)
 //! - `session_state`      — `POST /v1/atlas/session/state` (per-session KV probe)
@@ -31,6 +32,7 @@
 //! - `tests/`             — extracted `sanitizer_tests` module split four ways
 
 pub mod admin;
+pub mod admission;
 pub mod audio;
 pub mod chat;
 pub mod chat_blocking;

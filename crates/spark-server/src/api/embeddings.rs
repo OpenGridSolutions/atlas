@@ -90,6 +90,29 @@ pub async fn embeddings(
 }
 
 async fn embeddings_core(state: Arc<AppState>, req: EmbeddingsRequest, priority: bool) -> Response {
+    let admission = match super::admission::admit(
+        &state,
+        &req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: super::admission::prompt_tokens_guess(&req.input),
+            output_tokens: 1,
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&req.model, r),
+    };
+    let st = Arc::clone(&state);
+    let resp = embeddings_admitted(state, req, priority).await;
+    admission.attach_header(&st, resp)
+}
+
+async fn embeddings_admitted(
+    state: Arc<AppState>,
+    req: EmbeddingsRequest,
+    priority: bool,
+) -> Response {
     if let Some(fmt) = req.encoding_format.as_deref()
         && fmt != "float"
     {

@@ -65,6 +65,9 @@ pub struct ImageRequest {
     seed: Option<u64>,
     #[serde(alias = "steps")]
     num_inference_steps: Option<usize>,
+    /// Atlas extension, see `api::admission`.
+    #[serde(default)]
+    accepted_processing_time: Option<f64>,
 }
 
 pub(super) struct Sidecar {
@@ -480,6 +483,19 @@ pub async fn generations(
     if req.prompt.trim().is_empty() {
         return bad_request("'prompt' is required".into());
     }
+    let _admission = match super::admission::admit(
+        &state,
+        &model_id,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: 0,
+            output_tokens: 0,
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&model_id, r),
+    };
     let n = req.n.unwrap_or(1);
     if !(1..=MAX_IMAGES).contains(&n) {
         return bad_request(format!("'n' must be between 1 and {MAX_IMAGES}"));

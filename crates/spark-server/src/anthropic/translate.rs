@@ -292,6 +292,9 @@ pub(super) fn anthropic_to_chat_request_json(req: &MessagesRequest) -> serde_jso
     if let Some(t) = req.temperature {
         chat["temperature"] = serde_json::json!(t);
     }
+    if let Some(s) = req.accepted_processing_time {
+        chat["accepted_processing_time"] = serde_json::json!(s);
+    }
     if let Some(k) = req.top_k {
         chat["top_k"] = serde_json::json!(k);
     }

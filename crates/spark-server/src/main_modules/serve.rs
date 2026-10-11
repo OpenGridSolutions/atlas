@@ -1211,6 +1211,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     }
     let convert = crate::api::convert::ConvertService::from_args(&args)?;
     convert.spawn_gc();
+    let ledger = crate::arena_sched::CapacityLedger::new(
+        args.estimate_safety_factor,
+        args.estimate_reservation_grace,
+    );
     let state = Arc::new(AppState {
         // Created next to the reload closure — the hot-swap handover
         // stores a new ModelRuntime into the same cell.
@@ -1241,6 +1245,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         transcribe_models,
         image_models,
         convert,
+        ledger,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);

@@ -570,6 +570,50 @@ Alarme den Fehler, aber nicht die Ursache. Entschieden (Jonas, 2026-10-11).
 ## 8. Umsetzungsstand
 
 - 2026-10-11: Dokument erstellt, Entscheidungen §5 getroffen.
+- 2026-10-11, PR A umgesetzt (uncommittiert, nach PR B):
+  - `atlas-kernels`: `[estimate]`-Abschnitt in MODEL.toml → `EstimateProfile`
+    (`prefill_tok_s`, `decode_step_ms[1,2,4,8]`, `ocr_page_secs_p90`,
+    `ocr_page_tokens_p90`), Lookup `estimate_for_hf_id`. Chandra trägt
+    `ocr_page_secs_p90 = 12.5` (Messung vom 2026-10-11); die generativen
+    Modelle haben noch KEINEN Block ⇒ ein Budget dort ⇒ 503
+    `estimate_unavailable`, bis `tests/estimate_calibration.py` gelaufen ist.
+  - `arena_sched/estimate.rs`: reine Funktion ETA = ahead + model + work
+    (Frage 1), Replay- und Monotonie-Tests. `arena_sched/ledger.rs`:
+    `CapacityLedger` + `Reservation`-Drop-Guard, Schätzen und Reservieren
+    unter einer Sperre (Frage 4), Backstop-Ablauf `× --estimate-reservation-grace`.
+  - `api/admission.rs`: `admit()` vor jedem Enqueue; 503 `capacity_exceeded`
+    + `estimated_seconds` + `Retry-After`; Header `X-Atlas-Estimated-Seconds`
+    bei Annahme; Laufzeit-Frist = min(Timeout, Budget).
+  - Parameter `accepted_processing_time` auf Chat, Completions, Messages,
+    Responses, Embeddings, Rerank (JSON + Multipart), Translate, OCR,
+    Images (JSON), Audio (Formfeld oder Header `X-Atlas-Accepted-Processing-Time`),
+    `/convert` (Formfeld). `/convert` zählt Seiten jetzt beim Einreichen
+    und füllt `estimated_seconds`.
+  - Gate-Vereinheitlichung: `/v1/messages` und `/v1/responses` laufen durch
+    `ensure_model_active` (vorher ungegated ⇒ falscher Tokenizer bei
+    nicht-residentem Modell möglich).
+  - Scheduler: blockierende Sequenz endet, wenn der Oneshot-Empfänger weg
+    ist (`decode_logits_step.rs`); die OCR-Pipeline lässt den Empfänger bei
+    Abbruch fallen ⇒ `DELETE /convert/{id}` gibt Batch-Slot und KV frei.
+  - Flags `--estimate-safety-factor` (1.25), `--estimate-reservation-grace`
+    (2.0); Metrik `atlas_admission_rejected_total{model,reason}`;
+    `/internal/state.admission`.
+  - Tests: 66 Unit-Tests grün (estimate, ledger, admission, convert, ocr);
+    `tests/test_deadline_admission.py` On-Box grün (2026-10-11, Chandra-
+    Testserver): 3-Seiten-PDF Schätzung 47 s (= 3 × 12,5 × 1,25), Ist 37,5 s;
+    Budget 0,5 s ⇒ sofort 503 `capacity_exceeded` ohne Job; zwei
+    gleichzeitige Einreichungen bei freiem Batch beide angenommen (korrekt);
+    Header auf `/v1/ocr` gesetzt; Kontrakt-Test aus PR B weiterhin grün.
+    `DELETE` während der Generierung: alle drei Sequenzen vom Scheduler
+    beendet („Blocking receiver dropped“), `scheduler_load` und Ledger nach
+    10 s auf 0 — die Prüfung sitzt im Decode-Schritt, eine Seite im
+    Vision-Prefill (~6 s, Prefills laufen seriell — deshalb bringt der
+    Seiten-Fan-out so wenig) wird erst danach freigegeben.
+    `tests/estimate_calibration.py` noch nicht gelaufen (braucht alle Modelle).
+  - Noch offen: `[estimate]` für die vier generativen Modelle (Messung
+    braucht den Server mit allen Modellen); Sidecars (Whisper, Qwen-Image)
+    haben keinen Block ⇒ Budget dort `estimate_unavailable`; Byte-basierte
+    Prompt-Schätzung vor dem Swap (konservativ).
 - 2026-10-11, PR B umgesetzt (uncommittiert auf `modifications`):
   - `ocr/pipeline.rs`: gemeinsame Seiten-Pipeline für `/v1/ocr` und
     `/convert`, typisierte Fehler mit `error_code`, Abschneiden

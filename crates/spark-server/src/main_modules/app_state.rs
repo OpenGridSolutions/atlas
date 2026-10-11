@@ -145,6 +145,9 @@ pub struct AppState {
     /// Datalab-compatible `/convert` job service (job store, result
     /// cache, page fan-out config).
     pub convert: Arc<crate::api::convert::ConvertService>,
+    /// Capacity ledger behind `accepted_processing_time`: estimate +
+    /// reservation under one lock (docs/design/deadline-admission.md).
+    pub ledger: Arc<crate::arena_sched::CapacityLedger>,
 }
 
 impl AppState {

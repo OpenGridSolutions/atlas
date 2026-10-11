@@ -212,6 +212,7 @@ pub fn lower_responses_to_chat(
         logprobs: None,
         top_logprobs: None,
         timeout: None,
+        accepted_processing_time: r.accepted_processing_time,
         n: 1,
         stream_options: None,
         parallel_tool_calls: None,

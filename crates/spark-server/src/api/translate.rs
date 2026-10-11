@@ -52,6 +52,12 @@ pub struct TranslateRequest {
     /// Cap on generated tokens (default 1024, clamped to context).
     #[serde(default)]
     pub max_tokens: Option<usize>,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -167,6 +173,46 @@ pub async fn translate(
             );
         }
     };
+    // Translation output is about as long as its input; the explicit cap
+    // (default 1024) bounds the estimate.
+    let est_model = if req.model.is_empty() {
+        state
+            .hotswap
+            .as_ref()
+            .and_then(|ctx| {
+                ctx.registry
+                    .iter()
+                    .find(|m| m.category == ModelCategory::Translate)
+                    .map(|m| m.model_id.clone())
+            })
+            .unwrap_or_default()
+    } else {
+        req.model.clone()
+    };
+    let prompt_guess = crate::arena_sched::WorkProfile::tokens_from_bytes(req.text.len());
+    let admission = match super::admission::admit(
+        &state,
+        &est_model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: prompt_guess,
+            output_tokens: req.max_tokens.unwrap_or(1024).min(prompt_guess * 2 + 64),
+            pages: 0,
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&est_model, r),
+    };
+    let resp = translate_admitted(&state, prio, req, &admission).await;
+    admission.attach_header(&state, resp)
+}
+
+async fn translate_admitted(
+    state: &Arc<AppState>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
+    req: TranslateRequest,
+    admission: &super::admission::Admission,
+) -> Response {
     if req.text.trim().is_empty() {
         return openai_error_response(StatusCode::BAD_REQUEST, "'text' is empty".into());
     }
@@ -225,7 +271,7 @@ pub async fn translate(
 
     // Category gate + lazy swap (Plan.md Phase K).
     let swap_ms = match super::lazy_swap::ensure_model_active(
-        &state,
+        state,
         &model_id,
         ModelCategory::Translate,
         prio.map(|p| p.0.0).unwrap_or(false),
@@ -318,14 +364,14 @@ pub async fn translate(
         grammar_spec: None,
         seed: None,
         top_logprobs: None,
-        timeout_at: {
+        timeout_at: admission.clamp_timeout({
             let secs = state.request_timeout as f32;
             if secs > 0.0 {
                 Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
             } else {
                 None
             }
-        },
+        }),
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,

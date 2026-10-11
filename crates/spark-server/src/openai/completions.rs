@@ -51,6 +51,12 @@ pub struct CompletionRequest {
     /// use server default.
     #[serde(default)]
     pub repetition_detection: Option<RepetitionDetectionParams>,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
 }
 
 /// OpenAI-compatible `prompt` field. Mirrors the four shapes the

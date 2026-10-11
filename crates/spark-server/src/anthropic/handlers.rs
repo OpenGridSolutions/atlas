@@ -93,9 +93,42 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
     // Drop `req` here — anthropic_to_chat_request_json already cloned what
     // it needed, and we've finished extracting `stream` + `model_echo`.
 
+    // 3b. accepted_processing_time + model gate — the same admission the
+    //     OpenAI surface runs (protocol parity, AGENTS.md "protocol drift").
+    let admission = match crate::api::admission::admit(
+        &state,
+        &chat_req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: crate::api::admission::prompt_tokens_guess(&chat_req.messages),
+            output_tokens: chat_req.max_tokens,
+            pages: 0,
+        },
+        chat_req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => {
+            let (status, msg) = refusal_summary(&chat_req.model, r);
+            return anthropic_error(status, "overloaded_error", msg);
+        }
+    };
+    let est_header = admission.header_secs(&state);
+    let gate = crate::api::lazy_swap::ensure_model_active(
+        &state,
+        &chat_req.model,
+        crate::main_modules::hotswap::ModelCategory::Generative,
+        false,
+        stream,
+    )
+    .await;
+
     // 4. Run the shared OpenAI pipeline. All sanitization, salvage,
     //    watchdog, sampling preset, and prompt mutation logic lives there.
-    let chat_resp = crate::api::chat_completions_inner(state.clone(), None, chat_req, None).await;
+    //    A gate rejection takes the same error-forwarding path below.
+    let chat_resp = match gate {
+        Ok(_) => crate::api::chat_completions_inner(state.clone(), None, chat_req, None).await,
+        Err(resp) => resp,
+    };
+    drop(admission);
 
     // 5. Translate the response back to Anthropic shape.
     if !chat_resp.status().is_success() {
@@ -127,6 +160,7 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
 
     if stream {
         let resp = wrap_chat_sse_for_anthropic(chat_resp, model_echo).await;
+        let resp = crate::api::admission::attach_estimate_header(resp, est_header);
         // Note: streaming dump from the Anthropic side is best-effort;
         // chat_completions_inner already wrote a synthesized OpenAI-shape
         // response dump entry under endpoint="/v1/chat/completions" if
@@ -165,7 +199,35 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
         // Preserve status code/headers from chat_completions_inner and
         // serialize the translated body.
         let json_bytes = serde_json::to_vec(&messages_resp).unwrap_or_default();
-        Response::from_parts(parts, axum::body::Body::from(json_bytes))
+        crate::api::admission::attach_estimate_header(
+            Response::from_parts(parts, axum::body::Body::from(json_bytes)),
+            est_header,
+        )
+    }
+}
+
+/// Anthropic has no `estimated_seconds` slot; fold it into the message.
+fn refusal_summary(model: &str, r: crate::api::admission::Refusal) -> (StatusCode, String) {
+    use crate::api::admission::Refusal;
+    match r {
+        Refusal::Capacity {
+            estimate_secs,
+            budget_secs,
+        } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "capacity_exceeded: estimated {estimate_secs:.1}s exceeds \
+                 accepted_processing_time {budget_secs:.1}s (estimated_seconds={})",
+                estimate_secs.ceil()
+            ),
+        ),
+        Refusal::Unavailable(e) => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "estimate_unavailable: {}",
+                crate::api::admission::unavailable_message(model, e)
+            ),
+        ),
     }
 }
 

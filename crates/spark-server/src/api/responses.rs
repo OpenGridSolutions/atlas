@@ -131,9 +131,37 @@ pub async fn responses_endpoint(
         chat_req.messages = combined;
     }
 
+    // accepted_processing_time + model gate, as on /v1/chat/completions.
+    let admission = match super::admission::admit(
+        &state.0,
+        &chat_req.model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: super::admission::prompt_tokens_guess(&chat_req.messages),
+            output_tokens: chat_req.max_tokens,
+            pages: 0,
+        },
+        chat_req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&chat_req.model, r),
+    };
+    if let Err(resp) = super::lazy_swap::ensure_model_active(
+        &state.0,
+        &chat_req.model,
+        crate::main_modules::hotswap::ModelCategory::Generative,
+        false,
+        streaming,
+    )
+    .await
+    {
+        return resp;
+    }
+    let est_header = admission.header_secs(&state.0);
+
     if streaming {
-        return responses_endpoint_stream(state, chat_req, metadata, store_flag, conversation_id)
-            .await;
+        let resp =
+            responses_endpoint_stream(state, chat_req, metadata, store_flag, conversation_id).await;
+        return super::admission::attach_estimate_header(resp, est_header);
     }
 
     // Capture the input transcript BEFORE moving chat_req into the handler
@@ -146,7 +174,7 @@ pub async fn responses_endpoint(
     // handler dumps at its own entry point if --dump is enabled).
     let resp = chat_completions_inner(state.0.clone(), None, chat_req, None).await;
     let conv_pair = conversation_id.map(|cid| (state.conversation_store.clone(), cid));
-    translate_chat_response_to_responses(
+    let resp = translate_chat_response_to_responses(
         resp,
         metadata,
         Some(state.response_store.clone()),
@@ -154,7 +182,9 @@ pub async fn responses_endpoint(
         store_flag,
         conv_pair,
     )
-    .await
+    .await;
+    drop(admission);
+    super::admission::attach_estimate_header(resp, est_header)
 }
 
 /// Convert a conversation item into an IncomingMessage for pipeline

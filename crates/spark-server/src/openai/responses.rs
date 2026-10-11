@@ -33,6 +33,12 @@ pub struct ResponsesRequest {
     pub top_p: Option<f32>,
     #[serde(default)]
     pub stream: bool,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
     /// Raw tool list. Parsed lazily in `lower_responses_to_chat` so
     /// built-in tools (`web_search_preview`, `file_search`,
     /// `computer_use_preview`, `code_interpreter`, `image_generation`,

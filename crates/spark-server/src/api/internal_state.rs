@@ -98,6 +98,7 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         "swap_costs": crate::swap_costs::entries_json(),
         "nvme_store": nvme,
         "convert": state.convert.state_json(),
+        "admission": state.ledger.state_json(std::time::Instant::now()),
     });
     Json(body).into_response()
 }

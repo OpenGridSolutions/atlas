@@ -195,6 +195,7 @@ fn whisper_free_ok(w: &Whisper, ptr: spark_runtime::gpu::DevicePtr) -> bool {
 
 pub async fn transcriptions(
     State(_state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
     // ── multipart: file (required), model, language, response_format ──
@@ -202,6 +203,15 @@ pub async fn transcriptions(
     let mut model = String::new();
     let mut language: Option<String> = None;
     let mut response_format = "json".to_string();
+    let mut budget = match super::admission::budget_from_headers(&headers) {
+        Ok(b) => b,
+        Err(e) => {
+            return openai_error_response(
+                StatusCode::BAD_REQUEST,
+                format!("{}: {e}", super::admission::BUDGET_HEADER),
+            );
+        }
+    };
     loop {
         match multipart.next_field().await {
             Ok(Some(field)) => {
@@ -220,6 +230,22 @@ pub async fn transcriptions(
                     "language" => language = field.text().await.ok(),
                     "response_format" => {
                         response_format = field.text().await.unwrap_or_else(|_| "json".into())
+                    }
+                    "accepted_processing_time" => {
+                        let raw = field.text().await.unwrap_or_default();
+                        match raw.trim().parse::<f64>() {
+                            Ok(s) if s.is_finite() && s > 0.0 => budget = Some(s),
+                            _ if raw.trim().is_empty() => {}
+                            _ => {
+                                return openai_error_response(
+                                    StatusCode::BAD_REQUEST,
+                                    format!(
+                                        "accepted_processing_time '{raw}' must be a positive \
+                                         number of seconds"
+                                    ),
+                                );
+                            }
+                        }
                     }
                     _ => {} // prompt/temperature etc.: accepted and ignored (v1)
                 }
@@ -277,6 +303,21 @@ pub async fn transcriptions(
         );
     }
 
+    // accepted_processing_time: the sidecar is estimated like any model
+    // (its MODEL.toml `[estimate]`); without a profile a budget is refused.
+    let _admission = match super::admission::admit(
+        &_state,
+        WHISPER_ID,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: 0,
+            output_tokens: 0,
+            pages: 0,
+        },
+        budget,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(WHISPER_ID, r),
+    };
     let sc = match sidecar().await {
         Ok(s) => s,
         Err(e) => {

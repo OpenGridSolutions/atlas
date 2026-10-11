@@ -42,6 +42,12 @@ pub struct EmbeddingsRequest {
     /// so this is opt-in per request; omitted = raw text.
     #[serde(default)]
     pub instruction: Option<String>,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
 }
 
 #[derive(Debug, Serialize)]

@@ -27,6 +27,12 @@ pub struct MessagesRequest {
     pub stream: bool,
     #[serde(default)]
     pub thinking: Option<ThinkingConfig>,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
 }
 
 /// System content: either a plain string or an array of content blocks.

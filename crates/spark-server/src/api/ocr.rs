@@ -68,6 +68,12 @@ pub struct OcrRequest {
     /// Include Image/Figure blocks (default true).
     #[serde(default = "default_true")]
     pub include_images: bool,
+    /// Atlas extension: seconds the client accepts from submit to
+    /// completion. The server estimates up front and answers 503
+    /// `capacity_exceeded` when it cannot meet it; an accepted request's
+    /// deadline is clamped to it.
+    #[serde(default)]
+    pub accepted_processing_time: Option<f64>,
 }
 
 fn default_true() -> bool {
@@ -130,6 +136,56 @@ pub async fn ocr(
             );
         }
     };
+    // Page count for the estimate: the base64 payload is decoded here
+    // once more than strictly needed, but only when a budget is given
+    // (otherwise one page is assumed for the informational header).
+    let est_model = if req.model.is_empty() {
+        resolve_ocr_model(&state).unwrap_or_default()
+    } else {
+        req.model.clone()
+    };
+    let pages = if req.accepted_processing_time.is_some() {
+        match ocr::input::decode_request_bytes(&req.image) {
+            Ok(b) if ocr::input::is_pdf(&b) => {
+                let range = req.page_range.clone();
+                tokio::task::spawn_blocking(move || {
+                    ocr::input::pdf_page_count(&b).map(|n| {
+                        crate::api::convert::worker::select_pages(n, range.as_deref(), None).len()
+                    })
+                })
+                .await
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(1)
+            }
+            _ => 1,
+        }
+    } else {
+        1
+    };
+    let admission = match super::admission::admit(
+        &state,
+        &est_model,
+        crate::arena_sched::WorkProfile {
+            prompt_tokens: 0,
+            output_tokens: 0,
+            pages: pages.max(1),
+        },
+        req.accepted_processing_time,
+    ) {
+        Ok(a) => a,
+        Err(r) => return super::admission::openai_refusal(&est_model, r),
+    };
+    let resp = ocr_admitted(&state, prio, req, &admission).await;
+    admission.attach_header(&state, resp)
+}
+
+async fn ocr_admitted(
+    state: &Arc<AppState>,
+    prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
+    req: OcrRequest,
+    admission: &super::admission::Admission,
+) -> Response {
     if req.image.is_empty() {
         return openai_error_response(StatusCode::BAD_REQUEST, "'image' is empty".into());
     }
@@ -147,7 +203,7 @@ pub async fn ocr(
     // Resolve the model: explicit id or the single OCR-category
     // registration.
     let model_id = if req.model.is_empty() {
-        let Some(id) = resolve_ocr_model(&state) else {
+        let Some(id) = resolve_ocr_model(state) else {
             return openai_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no OCR model registered — add one to ATLAS_PRESEED_OCR".into(),
@@ -160,7 +216,7 @@ pub async fn ocr(
 
     // Category gate + lazy swap (Plan.md Phase K).
     let swap_ms = match super::lazy_swap::ensure_model_active(
-        &state,
+        state,
         &model_id,
         ModelCategory::Ocr,
         prio.map(|p| p.0.0).unwrap_or(false),
@@ -250,7 +306,7 @@ pub async fn ocr(
         // images (load_image vs load_pdf_images).
         let page_image = ocr::input::load_image(raw_image, ocr::input::MIN_IMAGE_DIM);
         match process_page(
-            &state,
+            state,
             &rt,
             vcfg,
             &prompt_text,
@@ -259,6 +315,7 @@ pub async fn ocr(
             max_retries,
             req.include_headers_footers,
             req.include_images,
+            admission.deadline,
         )
         .await
         {
@@ -301,6 +358,7 @@ async fn process_page(
     max_retries: usize,
     include_headers_footers: bool,
     include_images: bool,
+    deadline: Option<std::time::Instant>,
 ) -> Result<(OcrPage, usize, usize), Response> {
     let out = ocr::pipeline::ocr_page(ocr::pipeline::PageJob {
         state,
@@ -311,7 +369,7 @@ async fn process_page(
         max_tokens: max_tokens_req,
         max_retries,
         seed_base: None,
-        deadline: None,
+        deadline,
         cancel: None,
     })
     .await

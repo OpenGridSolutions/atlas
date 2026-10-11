@@ -312,6 +312,15 @@ pub(super) fn build_sampling(
     } else {
         None
     };
+    // accepted_processing_time: an accepted request that overruns its
+    // budget ends (finish_reason "length"), never a late success.
+    let timeout_at = match req.accepted_processing_time {
+        Some(b) if b > 0.0 => {
+            let d = std::time::Instant::now() + std::time::Duration::from_secs_f64(b);
+            Some(timeout_at.map_or(d, |t| t.min(d)))
+        }
+        _ => timeout_at,
+    };
 
     // top_logprobs (OpenAI spec: 0-20).
     let top_logprobs = req.top_logprobs.map(|n| n.min(20));

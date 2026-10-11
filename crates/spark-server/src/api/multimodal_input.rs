@@ -205,6 +205,7 @@ pub(crate) async fn embeddings_from_multipart(
     let mut instruction = None;
     let mut dimensions = None;
     let mut encoding_format = None;
+    let mut accepted_processing_time = None;
     loop {
         match multipart.next_field().await {
             Ok(Some(field)) => {
@@ -228,6 +229,23 @@ pub(crate) async fn embeddings_from_multipart(
                     "encoding_format" => {
                         encoding_format = Some(field_text(field, "encoding_format").await?)
                     }
+                    "accepted_processing_time" => {
+                        let raw = field_text(field, "accepted_processing_time").await?;
+                        let secs = raw
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|s| s.is_finite() && *s > 0.0);
+                        if secs.is_none() && !raw.trim().is_empty() {
+                            return Err((
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "accepted_processing_time must be a positive number of seconds (got '{raw}')"
+                                ),
+                            ));
+                        }
+                        accepted_processing_time = secs;
+                    }
                     _ => {}
                 }
             }
@@ -248,6 +266,7 @@ pub(crate) async fn embeddings_from_multipart(
         input: crate::openai::embeddings::EmbeddingsInput::Batch(items),
         dimensions,
         encoding_format,
+        accepted_processing_time,
         instruction,
     })
 }
@@ -266,6 +285,7 @@ pub(crate) async fn rerank_from_multipart(
     let mut instruction = None;
     let mut top_n = None;
     let mut return_documents = false;
+    let mut accepted_processing_time = None;
     loop {
         match multipart.next_field().await {
             Ok(Some(field)) => {
@@ -294,6 +314,23 @@ pub(crate) async fn rerank_from_multipart(
                         let raw = field_text(field, "return_documents").await?;
                         return_documents = matches!(raw.trim(), "true" | "1" | "yes");
                     }
+                    "accepted_processing_time" => {
+                        let raw = field_text(field, "accepted_processing_time").await?;
+                        let secs = raw
+                            .trim()
+                            .parse::<f64>()
+                            .ok()
+                            .filter(|s| s.is_finite() && *s > 0.0);
+                        if secs.is_none() && !raw.trim().is_empty() {
+                            return Err((
+                                StatusCode::BAD_REQUEST,
+                                format!(
+                                    "accepted_processing_time must be a positive number of seconds (got '{raw}')"
+                                ),
+                            ));
+                        }
+                        accepted_processing_time = secs;
+                    }
                     _ => {}
                 }
             }
@@ -318,6 +355,7 @@ pub(crate) async fn rerank_from_multipart(
         documents,
         top_n,
         return_documents,
+        accepted_processing_time,
         instruction,
     })
 }
