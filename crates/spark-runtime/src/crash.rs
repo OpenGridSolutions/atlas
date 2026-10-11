@@ -50,6 +50,18 @@ fn rss_mib() -> i64 {
         .map_or(-1, |kb| kb / 1024)
 }
 
+type FatalHook = Box<dyn Fn(&str, &str) + Send + Sync>;
+static FATAL_HOOK: std::sync::OnceLock<FatalHook> = std::sync::OnceLock::new();
+
+/// Register a synchronous last-words hook, called from
+/// [`write_crash_snapshot`] before the file is written — the server uses
+/// it to push a notification while the process still exists (the panic
+/// hook and the OOM watchdog both end in an exit/abort, so nothing async
+/// would ever flush). Only the first registration takes effect.
+pub fn set_fatal_hook(hook: FatalHook) {
+    let _ = FATAL_HOOK.set(hook);
+}
+
 /// Write `logs/crash-<ts>.log` with the last meminfo/CUDA/KV-pool state.
 /// Infallible by contract (best effort — we are already dying); returns
 /// the path when the file was written. Also mirrors the snapshot as a
@@ -105,6 +117,9 @@ pub fn write_crash_snapshot(kind: &str, detail: &str) -> Option<PathBuf> {
     body += &format!("rss: {rss} MiB\n");
 
     tracing::error!(target: "proc", kind, detail, "crash snapshot:\n{body}");
+    if let Some(hook) = FATAL_HOOK.get() {
+        hook(kind, &format!("{detail}\n{body}"));
+    }
 
     let dir = log_dir();
     std::fs::create_dir_all(&dir).ok()?;
