@@ -19,6 +19,7 @@
 //!   `responses_translate` — `/v1/responses` (blocking + streaming)
 //! - `stored`             — stored-completion / response retrieval
 //! - `conversations`      — `/v1/conversations` CRUD
+//! - `convert/`           — Datalab-compatible `/convert` OCR jobs (submit/poll/cancel)
 //! - `misc_handlers`      — cancel / metrics / health / tokenize / detokenize
 //! - `internal_state`     — `GET /internal/state` (TEL-3 introspection)
 //! - `session_state`      — `POST /v1/atlas/session/state` (per-session KV probe)
@@ -39,6 +40,7 @@ pub mod chat_stream_dispatch;
 pub mod compact;
 pub mod completions;
 pub mod conversations;
+pub mod convert;
 pub mod embeddings;
 pub mod images;
 pub mod images_edit;

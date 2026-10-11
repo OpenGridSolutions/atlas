@@ -1209,6 +1209,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     if let Some(max_pixels) = vision_max_pixels {
         tracing::info!("Vision max_pixels cap enabled: {}", max_pixels);
     }
+    let convert = crate::api::convert::ConvertService::from_args(&args)?;
+    convert.spawn_gc();
     let state = Arc::new(AppState {
         // Created next to the reload closure — the hot-swap handover
         // stores a new ModelRuntime into the same cell.
@@ -1238,6 +1240,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         hotswap: hotswap_ctx,
         transcribe_models,
         image_models,
+        convert,
     });
 
     serve_phases::log_behavior_audit(&args, &ptx_set);

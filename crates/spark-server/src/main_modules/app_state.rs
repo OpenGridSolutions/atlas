@@ -142,6 +142,9 @@ pub struct AppState {
     /// Qwen-Image sidecar on /v1/images/generations — like the transcribe
     /// models, never part of the arena swap registry.
     pub image_models: Vec<String>,
+    /// Datalab-compatible `/convert` job service (job store, result
+    /// cache, page fan-out config).
+    pub convert: Arc<crate::api::convert::ConvertService>,
 }
 
 impl AppState {

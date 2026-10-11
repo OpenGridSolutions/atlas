@@ -29,6 +29,7 @@ pub(crate) async fn build_and_serve(
         .allow_methods([
             axum::http::Method::GET,
             axum::http::Method::POST,
+            axum::http::Method::DELETE,
             axum::http::Method::OPTIONS,
         ])
         .allow_headers(tower_http::cors::Any);
@@ -95,6 +96,14 @@ pub(crate) async fn build_and_serve(
         // Chandra-2 document OCR (Todo 3.3): single-model category
         // endpoint, server-side Chandra prompt frame.
         .route("/v1/ocr", post(api::ocr::ocr))
+        // Datalab-compatible conversion jobs (docs/design/deadline-
+        // admission.md PR B): submit → poll → cancel. Not under /v1 —
+        // the client is an unmodified Datalab driver pointed at Atlas.
+        .route("/convert", post(api::convert::submit))
+        .route(
+            "/convert/{id}",
+            get(api::convert::status).delete(api::convert::cancel),
+        )
         .route("/rerank", post(api::rerank::rerank))
         // 501 stubs: return an OpenAI-shaped error body so auto-probe
         // clients (Helicone, LangChain, Vercel AI SDK) fall back instead

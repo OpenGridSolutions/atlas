@@ -97,6 +97,7 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         "scheduler": state.arena.as_ref().map(|d| d.state_json()),
         "swap_costs": crate::swap_costs::entries_json(),
         "nvme_store": nvme,
+        "convert": state.convert.state_json(),
     });
     Json(body).into_response()
 }

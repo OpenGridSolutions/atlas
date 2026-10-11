@@ -670,6 +670,57 @@ pub struct ServeArgs {
     /// a non-loopback bind (AUTH-4).
     #[arg(long, default_value_t = false)]
     pub trust_proxy_headers: bool,
+
+    // ── Datalab-compatible /convert jobs (docs/design/deadline-admission.md) ──
+    /// Seconds a finished `/convert` result stays retrievable
+    /// (`GET /convert/{id}`). Matches the Datalab client's 900 s poll
+    /// window by default.
+    #[arg(long, default_value_t = 900)]
+    pub ocr_result_ttl_s: u64,
+
+    /// A running `/convert` job with no status poll for this many
+    /// seconds is abandoned (cancelled, `error_code: abandoned`).
+    #[arg(long, default_value_t = 120)]
+    pub ocr_poll_idle_s: u64,
+
+    /// Cap on `/convert` results held in RAM (MiB). New submissions get
+    /// 503 `capacity_exceeded` while the store is full.
+    #[arg(long, default_value_t = 512)]
+    pub ocr_store_max_mb: u64,
+
+    /// Cap on `/convert` jobs held in the store (any state).
+    #[arg(long, default_value_t = 64)]
+    pub ocr_max_jobs: usize,
+
+    /// Pages of one `/convert` job OCR'd concurrently (each page is one
+    /// scheduler sequence; bounded by `--max-batch-size` in practice).
+    #[arg(long, default_value_t = 4)]
+    pub ocr_page_parallelism: usize,
+
+    /// Maximum pages a single `/convert` job may select; more is
+    /// rejected with `document_too_large`.
+    #[arg(long, default_value_t = 500)]
+    pub ocr_max_pages: usize,
+
+    /// Percentage of failed pages a `/convert` job tolerates before it
+    /// ends as `failed` (`incomplete_document`). 0 = any failed page
+    /// fails the job (never a `complete` with gaps).
+    #[arg(long, default_value_t = 0)]
+    pub ocr_max_failed_pages_pct: u8,
+
+    /// Directory for the content-addressed `/convert` result cache.
+    /// Unset = no cache (block ids are then stable only while the
+    /// greedy decode reproduces exactly).
+    #[arg(long)]
+    pub ocr_cache_dir: Option<std::path::PathBuf>,
+
+    /// Days a cached `/convert` result stays valid.
+    #[arg(long, default_value_t = 90)]
+    pub ocr_cache_ttl_days: u64,
+
+    /// Size cap (GiB) of the `/convert` result cache; pruned oldest-first.
+    #[arg(long, default_value_t = 10.0)]
+    pub ocr_cache_max_gb: f64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

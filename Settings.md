@@ -71,6 +71,11 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--preseed-model` (+ `ATLAS_PRESEED_*`-Envs) | — | Modell-Registry & Kategorien |
 | `--rank`/`--world-size`/`--tp-size`/`--ep-size`/`--master-*` | 1 Node | Multi-GPU/EP |
 | `--request-timeout` | 300 s | HTTP-Timeout |
+| `--ocr-result-ttl-s` / `--ocr-poll-idle-s` | 900 / 120 | `/convert`-Jobs: Ergebnis-Haltezeit, Verwaist-Schwelle ohne Poll |
+| `--ocr-store-max-mb` / `--ocr-max-jobs` | 512 / 64 | `/convert`-Job-Store-Grenzen (voll ⇒ 503 `capacity_exceeded`) |
+| `--ocr-page-parallelism` / `--ocr-max-pages` | 4 / 500 | Seiten-Fan-out je Job; Seitenlimit (`document_too_large`) |
+| `--ocr-max-failed-pages-pct` | 0 | Toleranz fehlgeschlagener Seiten, 0 = jede ⇒ `failed` |
+| `--ocr-cache-dir` / `--ocr-cache-ttl-days` / `--ocr-cache-max-gb` | aus / 90 / 10 | inhaltsadressierter `/convert`-Ergebnis-Cache (ID-Stabilität) |
 | `--oom-guard-mb` | 4096 | Lade-Abbruchschwelle |
 | `--dump` | aus | Request/Response-Mitschnitt (Debug) |
 
