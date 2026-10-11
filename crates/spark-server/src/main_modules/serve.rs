@@ -1250,6 +1250,48 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     serve_phases::log_behavior_audit(&args, &ptx_set);
 
+    // PR C: observer thread (ntfy + SQLite), periodic detectors, and the
+    // synchronous fatal hook for panics / the OOM watchdog.
+    {
+        let snap_state = Arc::clone(&state);
+        crate::observe::start(
+            crate::observe::ObserverConfig {
+                ntfy: args.ntfy_topic.clone().map(|t| (args.ntfy_url.clone(), t)),
+                min_interval: std::time::Duration::from_secs(args.alert_min_interval_s),
+                max_per_key_per_hour: args.alert_max_per_hour,
+                notify_min_priority: 3,
+                db_path: args.event_db.clone(),
+                db_max_bytes: args.event_db_max_mb.saturating_mul(1 << 20),
+                snapshot_interval: std::time::Duration::from_secs(
+                    args.event_snapshot_interval_s.max(5),
+                ),
+                snapshot_on_priority: 3,
+                host_label: crate::observe::host_label(),
+            },
+            Box::new(move || crate::api::internal_state::build_state_json(&snap_state)),
+        )?;
+        spark_runtime::crash::set_fatal_hook(Box::new(|kind, detail| {
+            crate::observe::fatal(kind, detail)
+        }));
+        crate::observe::detectors::spawn(
+            Arc::clone(&state),
+            crate::observe::detectors::DetectorConfig {
+                interval: std::time::Duration::from_secs(10),
+                stall_secs: args.alert_stall_s as f64,
+                swap_stuck_secs: 600.0,
+                http_5xx_per_min: args.alert_5xx_per_min,
+                rejections_per_min: 10,
+                watchdog_stops_per_min: 20,
+            },
+        );
+        if let Some(t) = &args.ntfy_topic {
+            tracing::info!("observability: ntfy pushes to {}/{t}", args.ntfy_url);
+        }
+        if let Some(p) = &args.event_db {
+            tracing::info!("observability: event store at {}", p.display());
+        }
+    }
+
     // 9-11. Build router + start HTTP server (extracted: serve_router.rs).
     crate::main_modules::serve_router::build_and_serve(state, model_ready, &args.bind, args.port)
         .await

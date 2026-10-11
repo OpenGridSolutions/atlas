@@ -23,22 +23,56 @@ pub(crate) async fn openai_observability_middleware(
 ) -> axum::response::Response {
     use axum::http::{HeaderName, HeaderValue};
     let start = std::time::Instant::now();
-    let is_v1 = req.uri().path().starts_with("/v1/");
+    let path = req.uri().path().to_string();
+    let is_v1 = path.starts_with("/v1/");
     let incoming_req_id = req
         .headers()
         .get("x-request-id")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
     let mut resp = next.run(req).await;
-    if !is_v1 {
+    // Every inference-ish path gets a request id and a row in the event
+    // store (PR C) so an app-side fallback can be found in the server's
+    // own records; the OpenAI stub headers stay /v1-only.
+    let observed = is_v1 || path.starts_with("/convert");
+    if !observed {
         return resp;
     }
-    let headers = resp.headers_mut();
+    let status = resp.status();
+    let elapsed_ms = start.elapsed().as_millis();
     let rid = incoming_req_id.unwrap_or_else(|| format!("req_{}", openai::uuid_v4()));
+    let endpoint = request_endpoint(&path);
+    // 503 is Atlas back-pressure by design (capacity_exceeded, queue
+    // full, model wait) — recorded as a request row, not as a failure.
+    if status.is_server_error() && status != axum::http::StatusCode::SERVICE_UNAVAILABLE {
+        crate::metrics::REQUEST_FAILURES_TOTAL
+            .with_label_values(&[endpoint.as_str(), status.as_str()])
+            .inc();
+        crate::observe::emit(
+            crate::observe::Event::new(
+                2,
+                "request_failed",
+                format!("{} {} → {}", endpoint, status.as_u16(), rid),
+            )
+            .request_id(rid.clone())
+            .detail(serde_json::json!({"endpoint": endpoint, "status": status.as_u16(), "elapsed_ms": elapsed_ms as u64})),
+        );
+    }
+    crate::observe::record_request(crate::observe::RequestRecord {
+        ts_ms: crate::observe::now_ms(),
+        request_id: rid.clone(),
+        endpoint: endpoint.clone(),
+        status: status.as_u16(),
+        elapsed_ms: elapsed_ms as u64,
+        model: None,
+    });
+    let headers = resp.headers_mut();
     if let Ok(v) = HeaderValue::from_str(&rid) {
         headers.insert(HeaderName::from_static("x-request-id"), v);
     }
-    let elapsed_ms = start.elapsed().as_millis();
+    if !is_v1 {
+        return resp;
+    }
     if let Ok(v) = HeaderValue::from_str(&elapsed_ms.to_string()) {
         headers.insert(HeaderName::from_static("openai-processing-ms"), v);
     }
@@ -73,6 +107,21 @@ pub(crate) async fn openai_observability_middleware(
 /// timings. The error body matches the OpenAI shape so client SDKs
 /// surface "missing_api_key" / "invalid_api_key" the same way they do
 /// against `api.openai.com`.
+/// Endpoint label for metrics/records: path with ids collapsed
+/// (`/convert/abc` → `/convert/{id}`).
+pub(crate) fn request_endpoint(path: &str) -> String {
+    let mut parts: Vec<&str> = path.split('/').collect();
+    for p in parts.iter_mut().skip(1) {
+        if p.len() >= 16
+            && p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            *p = "{id}";
+        }
+    }
+    parts.join("/")
+}
+
 /// Inference paths bounced with 503 while the arena is not `Running`.
 /// In lazy multi-model mode (Task 6 Phase 3) the lazy-load endpoints
 /// handle that state themselves — they queue a ticket instead — so they

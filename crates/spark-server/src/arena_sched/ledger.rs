@@ -43,11 +43,34 @@ pub struct CapacityLedger {
 pub struct Reservation {
     ledger: Arc<CapacityLedger>,
     id: u64,
+    model: String,
+    started: Instant,
+    /// Safety-adjusted prediction the client was told.
+    predicted_secs: f64,
 }
 
 impl Drop for Reservation {
     fn drop(&mut self) {
         self.ledger.release(self.id);
+        // PR C: the estimate is a promise — record when reality overran
+        // it clearly (the calibration data for the next round).
+        let actual = self.started.elapsed().as_secs_f64();
+        if actual > 10.0 && actual > self.predicted_secs * 1.5 {
+            crate::observe::emit(
+                crate::observe::Event::new(
+                    3,
+                    "estimate_miss",
+                    format!(
+                        "request took {actual:.1}s, estimated {:.1}s",
+                        self.predicted_secs
+                    ),
+                )
+                .model(self.model.clone())
+                .detail(
+                    serde_json::json!({"actual_s": actual, "estimated_s": self.predicted_secs}),
+                ),
+            );
+        }
     }
 }
 
@@ -149,6 +172,9 @@ impl CapacityLedger {
             Some(Reservation {
                 ledger: Arc::clone(self),
                 id,
+                model: model.to_string(),
+                started: now,
+                predicted_secs: est.total_secs() * self.safety_factor,
             }),
         )
     }

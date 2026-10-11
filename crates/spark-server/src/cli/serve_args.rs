@@ -733,6 +733,46 @@ pub struct ServeArgs {
     /// capacity forever).
     #[arg(long, default_value_t = 2.0)]
     pub estimate_reservation_grace: f64,
+
+    // ── Observability: ntfy push + SQLite event store (design doc §6/§7) ──
+    /// ntfy topic for anomaly pushes (panics, CUDA errors, stalls, 5xx
+    /// rates, …). Unset = no pushes; events still go to the store.
+    #[arg(long)]
+    pub ntfy_topic: Option<String>,
+
+    /// ntfy server base URL.
+    #[arg(long, default_value = "https://ntfy.sh")]
+    pub ntfy_url: String,
+
+    /// Minimum seconds between two pushes of the same kind+model.
+    #[arg(long, default_value_t = 300)]
+    pub alert_min_interval_s: u64,
+
+    /// Cap on pushes per kind+model per hour.
+    #[arg(long, default_value_t = 6)]
+    pub alert_max_per_hour: usize,
+
+    /// SQLite file for events, state snapshots and per-request rows.
+    /// Unset = no store.
+    #[arg(long)]
+    pub event_db: Option<std::path::PathBuf>,
+
+    /// Size cap of the event store (MiB); oldest rows are deleted.
+    #[arg(long, default_value_t = 512)]
+    pub event_db_max_mb: u64,
+
+    /// Seconds between state snapshots in the event store.
+    #[arg(long, default_value_t = 30)]
+    pub event_snapshot_interval_s: u64,
+
+    /// Detector: seconds without a scheduler loop iteration (while
+    /// sequences are active) that count as a stall.
+    #[arg(long, default_value_t = 60)]
+    pub alert_stall_s: u64,
+
+    /// Detector: 5xx responses per minute that trigger a push.
+    #[arg(long, default_value_t = 10)]
+    pub alert_5xx_per_min: u64,
 }
 
 /// One category's preseed model list (Plan.md Phase K): the named

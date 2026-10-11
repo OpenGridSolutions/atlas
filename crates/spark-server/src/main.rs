@@ -44,6 +44,7 @@ pub mod metrics;
 mod model_resolver;
 mod moe_quality;
 mod ngram;
+mod observe;
 mod ocr;
 mod openai;
 mod rate_limiter;
@@ -128,6 +129,8 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(stdout)
         .with(file_layers)
+        // PR C: ERROR (all targets) + allow-listed WARN → observer events.
+        .with(observe::layer::ObserveLayer)
         .init();
 }
 

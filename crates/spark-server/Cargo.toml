@@ -81,6 +81,10 @@ scraper = "0.20"
 md-5 = "0.10"
 ego-tree = "0.6"
 pdfium-render = "0.8"
+# PR C observability: ntfy push (blocking client on the observer thread;
+# rustls, same version as atlas-spark-bench) + embedded event store.
+ureq = { version = "3", features = ["json"] }
+rusqlite = { version = "0.32", features = ["bundled"] }
 
 [dev-dependencies]
 tempfile = "3"

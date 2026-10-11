@@ -114,6 +114,26 @@ pub fn scheduler_load() -> usize {
     SCHED_LOAD.load(AtomicOrdering::Relaxed)
 }
 
+/// Liveness of the scheduler thread for the stall detector (PR C):
+/// milliseconds since process start of the last loop iteration.
+static SCHED_LAST_STEP_MS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PROCESS_START: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+
+fn note_step() {
+    let start = *PROCESS_START.get_or_init(Instant::now);
+    SCHED_LAST_STEP_MS.store(start.elapsed().as_millis() as u64, AtomicOrdering::Relaxed);
+}
+
+/// Seconds since the scheduler loop last iterated (0 before the first).
+pub fn secs_since_last_step() -> f64 {
+    let start = *PROCESS_START.get_or_init(Instant::now);
+    let last = SCHED_LAST_STEP_MS.load(AtomicOrdering::Relaxed);
+    if last == 0 {
+        return 0.0;
+    }
+    (start.elapsed().as_millis() as u64).saturating_sub(last) as f64 / 1000.0
+}
+
 use crate::api::{GrammarSpec, InferenceRequest, InferenceResponse, StreamEvent};
 use crate::grammar::{GrammarEngine, GrammarState};
 use crate::ngram::NgramProposer;
@@ -738,10 +758,12 @@ pub fn run(
                     think_start_token,
                 );
                 if !active.is_empty() {
+                    note_step();
                     SCHED_LOAD.store(active.len() + prefilling.len(), AtomicOrdering::Relaxed);
                     continue;
                 }
             }
+            note_step();
             SCHED_LOAD.store(prefilling.len(), AtomicOrdering::Relaxed);
             // ATLAS_MEM_DEBUG: a prefill error can end the last live request
             // here (before the end-of-loop check is reached via `continue`).
@@ -931,6 +953,7 @@ pub fn run(
             );
         }
 
+        note_step();
         SCHED_LOAD.store(active.len() + prefilling.len(), AtomicOrdering::Relaxed);
 
         // ATLAS_MEM_DEBUG: idle invariant — zero live sequences after this

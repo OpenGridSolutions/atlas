@@ -158,6 +158,10 @@ pub(crate) async fn build_and_serve(
         // TEL-3 introspection: arena, slots, queues, swap decision,
         // NVMe store. Bearer-gated via the /internal prefix (TEL-7).
         .route("/internal/state", get(api::internal_state::internal_state))
+        .route(
+            "/internal/observe/selftest",
+            post(api::internal_state::observe_selftest),
+        )
         .route("/health", get(api::health))
         .route("/health/live", get(api::health_live))
         .route("/metrics", get(api::metrics_handler))

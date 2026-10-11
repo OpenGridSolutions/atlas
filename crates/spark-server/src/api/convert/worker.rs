@@ -117,6 +117,17 @@ pub async fn run_job(state: Arc<AppState>, svc: Arc<ConvertService>, mut spec: J
     let id = spec.id.clone();
     let fail = |code: &str, msg: String| {
         tracing::warn!("convert {id}: failed ({code}): {msg}");
+        // Document faults and client-driven ends are records only;
+        // Atlas-side failures are worth a push.
+        let prio = match code {
+            "unprocessable_document" | "cancelled" | "abandoned" => 1,
+            _ => 3,
+        };
+        crate::observe::emit(
+            crate::observe::Event::new(prio, "convert_failed", format!("{code}: {msg}"))
+                .request_id(id.clone())
+                .detail(serde_json::json!({"error_code": code})),
+        );
         svc.jobs.fail(&id, code, msg, Instant::now());
     };
 

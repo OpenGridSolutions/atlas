@@ -27,6 +27,19 @@ pub fn finish_sequence_with_reason(
     } else {
         "length"
     });
+    // PR C: a sequence that ended on EOS without producing anything is a
+    // quality anomaly worth a record (model/template drift).
+    if a.output_tokens.len() <= 1 && reason == "stop" {
+        crate::observe::emit(crate::observe::Event::new(
+            2,
+            "empty_output",
+            format!(
+                "sequence finished on EOS with {} output token(s) after {:?}",
+                a.output_tokens.len(),
+                a.request_start.elapsed()
+            ),
+        ));
+    }
     match &mut a.sink {
         ResponseSink::Streaming(tx) => {
             let ttft_ms = a.decode_start.duration_since(a.request_start).as_secs_f64() * 1000.0;

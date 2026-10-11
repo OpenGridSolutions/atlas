@@ -147,6 +147,9 @@ pub fn admit(
     let deadline = budget_secs.map(|b| now + std::time::Duration::from_secs_f64(b));
     match verdict {
         Verdict::Admitted(est) => {
+            crate::metrics::ADMISSION_ACCEPTED_TOTAL
+                .with_label_values(&[model_id])
+                .inc();
             tracing::debug!(
                 model = model_id,
                 est_s = est.total_secs(),
@@ -176,6 +179,19 @@ pub fn admit(
             crate::metrics::ADMISSION_REJECTED_TOTAL
                 .with_label_values(&[model_id, "capacity_exceeded"])
                 .inc();
+            crate::observe::emit(
+                crate::observe::Event::new(
+                    1,
+                    "admission_rejected",
+                    format!("estimated {predicted:.1}s > budget {budget_secs:.1}s"),
+                )
+                .model(model_id)
+                .detail(serde_json::json!({
+                    "estimated_s": predicted, "budget_s": budget_secs,
+                    "ahead_s": estimate.ahead_secs, "model_s": estimate.model_secs,
+                    "work_s": estimate.work_secs,
+                })),
+            );
             Err(Refusal::Capacity {
                 estimate_secs: predicted,
                 budget_secs,

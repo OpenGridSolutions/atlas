@@ -47,6 +47,36 @@ fn capacity_profile(max_seq_len: usize) -> serde_json::Value {
 }
 
 pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
+    Json(build_state_json(&state)).into_response()
+}
+
+/// `POST /internal/observe/selftest`: emit one priority-3 event so an
+/// operator can confirm the push channel and the event store after a
+/// deployment without waiting for a real anomaly. Bearer-gated like the
+/// rest of `/internal`.
+pub async fn observe_selftest(State(state): State<Arc<AppState>>) -> Response {
+    let topic = state.serve_args.ntfy_topic.clone();
+    crate::observe::emit(
+        crate::observe::Event::new(
+            3,
+            "selftest",
+            "observability self-test: if you read this on ntfy, pushes work",
+        )
+        .detail(serde_json::json!({"event_db": state.serve_args.event_db, "topic": topic})),
+    );
+    Json(serde_json::json!({
+        "emitted": true,
+        "ntfy_topic": state.serve_args.ntfy_topic,
+        "event_db": state.serve_args.event_db,
+        "dropped_events": crate::observe::dropped(),
+    }))
+    .into_response()
+}
+
+/// The introspection document, also stored as a snapshot by the observer
+/// (every 30 s and on urgent events) so each anomaly has the server state
+/// right next to it.
+pub fn build_state_json(state: &AppState) -> serde_json::Value {
     let arena = state.hotswap.as_ref().map(|ctx| {
         let active = ctx.active_model();
         serde_json::json!({
@@ -83,7 +113,13 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         })
     });
 
-    let body = serde_json::json!({
+    let meminfo = spark_runtime::meminfo::read().map(|m| {
+        serde_json::json!({
+            "available_gb": m.available_for_alloc as f64 / (1u64 << 30) as f64,
+            "swap_free_gb": m.swap_free as f64 / (1u64 << 30) as f64,
+        })
+    });
+    serde_json::json!({
         "arena": arena,
         "sidecars": {
             "transcribe": state.transcribe_models,
@@ -99,8 +135,12 @@ pub async fn internal_state(State(state): State<Arc<AppState>>) -> Response {
         "nvme_store": nvme,
         "convert": state.convert.state_json(),
         "admission": state.ledger.state_json(std::time::Instant::now()),
-    });
-    Json(body).into_response()
+        "host_memory": meminfo,
+        "observe": {
+            "dropped_events": crate::observe::dropped(),
+            "secs_since_scheduler_step": crate::scheduler::secs_since_last_step(),
+        },
+    })
 }
 
 #[cfg(test)]

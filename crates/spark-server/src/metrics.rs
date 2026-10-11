@@ -155,6 +155,23 @@ lazy_static::lazy_static! {
     )
     .unwrap();
 
+    /// HTTP 5xx responses by endpoint and status (feeds the 5xx-rate
+    /// detector and the event store).
+    pub static ref REQUEST_FAILURES_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "atlas_request_failures_total",
+        "HTTP responses with status >= 500",
+        &["endpoint", "status"]
+    )
+    .unwrap();
+
+    /// Requests admitted with an estimate (budgeted or not), by model.
+    pub static ref ADMISSION_ACCEPTED_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "atlas_admission_accepted_total",
+        "Requests admitted by the completion-time estimate",
+        &["model"]
+    )
+    .unwrap();
+
     /// Budgeted requests refused at admission (`accepted_processing_time`),
     /// by model and reason ∈ {capacity_exceeded, estimate_unavailable}.
     pub static ref ADMISSION_REJECTED_TOTAL: IntCounterVec = register_int_counter_vec!(

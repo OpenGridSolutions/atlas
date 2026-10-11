@@ -709,6 +709,18 @@ pub fn process_decode_logits(
                 && Instant::now() >= deadline
             {
                 tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
+                crate::observe::emit(
+                    crate::observe::Event::new(
+                        2,
+                        "request_timeout",
+                        format!(
+                            "sequence hit its deadline after {:?} / {} tokens",
+                            a.request_start.elapsed(),
+                            a.output_tokens.len()
+                        ),
+                    )
+                    .detail(serde_json::json!({"tokens": a.output_tokens.len()})),
+                );
                 a.finished = true;
             }
             // A blocking caller that went away (client disconnect, cancelled
