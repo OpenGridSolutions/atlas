@@ -77,6 +77,11 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--ocr-max-failed-pages-pct` | 0 | Toleranz fehlgeschlagener Seiten, 0 = jede ⇒ `failed` |
 | `--ocr-cache-dir` / `--ocr-cache-ttl-days` / `--ocr-cache-max-gb` | aus / 90 / 10 | inhaltsadressierter `/convert`-Ergebnis-Cache (ID-Stabilität) |
 | `--estimate-safety-factor` / `--estimate-reservation-grace` | 1.25 / 2.0 | `accepted_processing_time`: Aufschlag auf die Schätzung; Backstop-Ablauf einer Reservierung (× Schätzung) |
+| `--ntfy-topic` / `--ntfy-url` | aus / ntfy.sh | Anomalie-Pushes (Prio ≥ 3): Panics, CUDA-Fehler, Stalls, 5xx-Rate, Schätzung verfehlt, … |
+| `--alert-min-interval-s` / `--alert-max-per-hour` | 300 / 6 | Dedupe je Art+Modell |
+| `--event-db` / `--event-db-max-mb` / `--event-snapshot-interval-s` | aus / 512 / 30 | SQLite-Ereignisspeicher: `events`, `snapshots` (/internal/state), `requests` |
+| `--alert-stall-s` / `--alert-5xx-per-min` | 60 / 10 | Detektor-Schwellen |
+| `ATLAS_NTFY_TOPIC` / `ATLAS_EVENT_DB` (serve.sh) | — | setzen die beiden Flags; serve.sh meldet zusätzlich einen Exit ≠ 0 per ntfy |
 | `--oom-guard-mb` | 4096 | Lade-Abbruchschwelle |
 | `--dump` | aus | Request/Response-Mitschnitt (Debug) |
 

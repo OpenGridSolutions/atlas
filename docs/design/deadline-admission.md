@@ -570,6 +570,50 @@ Alarme den Fehler, aber nicht die Ursache. Entschieden (Jonas, 2026-10-11).
 ## 8. Umsetzungsstand
 
 - 2026-10-11: Dokument erstellt, Entscheidungen §5 getroffen.
+- 2026-10-11, PR C umgesetzt (nach PR A):
+  - `observe/`: `Event` (Prio 1–5, Art, Modell, Request-ID, Detail-JSON),
+    ein Hintergrund-Thread (`observe::start`) mit begrenztem Kanal (nie
+    blockierend, Drops gezählt), `Notifier`-Trait + `NtfyNotifier` (ureq,
+    rustls) + `NoopNotifier`, `EventStore`-Trait + `SqliteStore` (rusqlite
+    bundled, WAL; Tabellen `events`, `snapshots`, `requests`; Größen-Cap
+    löscht das älteste Fünftel) + `NoopStore`. Pushes nur ab Prio 3,
+    Dedupe je Art+Modell (`--alert-min-interval-s`, `--alert-max-per-hour`),
+    unterdrückte Pushes werden im nächsten mitgezählt.
+  - `observe/layer.rs`: Tracing-Layer — ERROR aller Targets (`cuda_err`,
+    `proc`, `memdebug`, hotswap, kv_tier, OOM-Watchdog klassifiziert) +
+    WARN-Allowlist (kv_tier, spark_storage, mem, hotswap, convert).
+  - `observe/detectors.rs` (alle 10 s, reine `evaluate()`-Funktion mit
+    Tests): `scheduler_stall` (Loop-Heartbeat `scheduler::note_step`),
+    `swap_stuck`, `http_5xx_rate`, `estimate_broken` (Ablehnungen bei
+    leerer GPU), `watchdog_stops`, `nvme_write_queue_full`.
+  - Direkte Ereignisse: `request_failed` (jede 5xx, Middleware),
+    `request_timeout`, `empty_output`, `estimate_miss` (Ist > 1,5 ×
+    Schätzung, aus dem Reservation-Drop), `convert_failed`,
+    `admission_rejected`; eine `requests`-Zeile je Anfrage
+    (`x-request-id` jetzt auch auf `/convert`).
+  - Fatal-Pfad: `spark_runtime::crash::set_fatal_hook` — Panic-Hook und
+    OOM-Watchdog rufen `write_crash_snapshot`, das synchron pusht und in
+    die DB schreibt, bevor der Prozess endet. `serve.sh` meldet zusätzlich
+    einen Exit ≠ 0 per `curl` (`ATLAS_NTFY_TOPIC`, `ATLAS_EVENT_DB`).
+  - `POST /internal/observe/selftest` sendet ein Prio-3-Ereignis zur
+    Kanalprüfung. `/internal/state` zeigt `observe.dropped_events`,
+    `secs_since_scheduler_step`, `host_memory`.
+  - Flags in Settings.md; Metrik `atlas_request_failures_total{endpoint,status}`.
+  - Erster On-Box-Lauf (privates Selbsttest-Topic, Chandra-Testserver):
+    Selbsttest-Push kam an, Ereignisse/Snapshots/Requests in SQLite. Drei
+    Korrekturen aus dem Lauf: (1) 503 ist Atlas-Rückstau (capacity_exceeded,
+    Queue voll, Modellwartezeit) und zählt nicht mehr als 5xx-Fehler;
+    (2) Raten-Detektoren rechnen über ein 60-s-Fenster mit absoluter
+    Mindestzahl, `estimate_broken` verlangt zusätzlich null Annahmen im
+    Fenster (zwei absichtlich unmögliche Budgets hatten Prio 5 ausgelöst);
+    (3) **Schätzlücke**: zwei gleichzeitig angenommene 3-Seiten-Jobs
+    verfehlten beide ihre 55-s-Frist — OCR-Arbeit ist Prefill-seriell, also
+    zählt reservierte Seitenarbeit vor einer Anfrage jetzt voll
+    (`ahead_secs = reserved_secs` für `pages > 0`), unabhängig von freien
+    Batch-Slots.
+  - Nicht gebaut (bewusst): Host-Probe (Entscheidung §6), NaN-Wächter im
+    Sampling (kein billiger Haken ohne Hot-Path-Kosten; `cuda_err` und
+    `empty_output` decken die Symptome), Request-ID in Scheduler-Logzeilen.
 - 2026-10-11, PR A umgesetzt (uncommittiert, nach PR B):
   - `atlas-kernels`: `[estimate]`-Abschnitt in MODEL.toml → `EstimateProfile`
     (`prefill_tok_s`, `decode_step_ms[1,2,4,8]`, `ocr_page_secs_p90`,

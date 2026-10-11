@@ -72,14 +72,36 @@ echo "==> logging to ${LOG}"
 
 MODEL_ARG=()
 [[ -n "${MODEL}" ]] && MODEL_ARG=("${MODEL}")
-exec "${BIN}" serve "${MODEL_ARG[@]}" \
+# ATLAS_SERVE_EXTRA_ARGS: additional serve flags for test runs, e.g.
+#   ATLAS_SERVE_EXTRA_ARGS="--nvme-cache-dir /var/tmp/atlas-nvme --kv-pool-gb 1"
+# ATLAS_MAX_SEQ_LEN overrides the serving window (default 104416).
+# shellcheck disable=SC2206 — word-splitting of the extra args is intended.
+EXTRA_ARGS=(${ATLAS_SERVE_EXTRA_ARGS:-})
+# ATLAS_NTFY_TOPIC: pushes anomalies from inside the server (--ntfy-topic)
+# AND a "server exited" message from here when the process ends with a
+# non-zero status (a hard kill or abort cannot report itself).
+NTFY_ARGS=()
+[[ -n "${ATLAS_NTFY_TOPIC:-}" ]] && NTFY_ARGS=(--ntfy-topic "${ATLAS_NTFY_TOPIC}")
+[[ -n "${ATLAS_EVENT_DB:-}" ]] && NTFY_ARGS+=(--event-db "${ATLAS_EVENT_DB}")
+set +e
+"${BIN}" serve "${MODEL_ARG[@]}" \
     --bind 0.0.0.0 \
     --port 11434 \
-    --max-seq-len 104416 \
+    --max-seq-len "${ATLAS_MAX_SEQ_LEN:-104416}" \
     --max-batch-size 4 \
     --swap-space-gb 32 \
     --gpu-memory-utilization 0.90 \
     --kv-high-precision-layers 3 \
     --scheduling-policy slai \
     --enable-prefix-caching \
+    "${NTFY_ARGS[@]}" \
+    "${EXTRA_ARGS[@]}" \
     2>&1 | tee "${LOG}"
+STATUS=${PIPESTATUS[0]}
+if [[ "${STATUS}" -ne 0 && -n "${ATLAS_NTFY_TOPIC:-}" ]]; then
+    curl -s -m 10 -H "Title: Atlas $(hostname): server exited" -H "Priority: 5" \
+        -H "Tags: rotating_light" \
+        -d "spark serve exited with status ${STATUS}; last log: ${LOG}" \
+        "${ATLAS_NTFY_URL:-https://ntfy.sh}/${ATLAS_NTFY_TOPIC}" >/dev/null || true
+fi
+exit "${STATUS}"
