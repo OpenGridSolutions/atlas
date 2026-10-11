@@ -13,7 +13,7 @@
 //! | chandra/output.py       | `output`   | ported (layout chunks, filtered HTML, WebP bbox crops) |
 //! | markdownify subclass    | `markdown` | subset converter (golden-diffed in 3.3d) |
 //! | chandra/model/util.py   | here       | `detect_repeat_token` for the degeneration retry |
-//! | chandra/model/vllm.py   | — replaced by the internal scheduler path (api/ocr.rs) | n/a |
+//! | chandra/model/vllm.py   | `pipeline` | per-page generation + degeneration retry, shared by /v1/ocr and /convert |
 //!
 //! Reference pipeline constants (chandra/settings.py @ master):
 //! IMAGE_DPI=192, MIN_PDF_IMAGE_DIM=1024, MIN_IMAGE_DIM=1536,
@@ -22,6 +22,7 @@
 pub mod input;
 pub mod markdown;
 pub mod output;
+pub mod pipeline;
 pub mod prompts;
 
 /// Chandra reference default for generated tokens per page

@@ -18,8 +18,9 @@
 //!   5. output.rs: layout chunks (pixel bboxes on the step-1 image),
 //!      filtered HTML, WebP bbox crops; markdown.rs: HTML→Markdown
 //!
-//! PDF input (pdfium rendering + `page_range`) is the remaining 3.3c
-//! piece — it needs libpdfium in the gb10 image.
+//! Steps 2–4 live in `ocr::pipeline` (shared with the Datalab-compatible
+//! `/convert` surface, api/convert/); this file keeps the request shape,
+//! the PDF/image decode and the per-page output assembly.
 
 use std::sync::Arc;
 
@@ -30,8 +31,7 @@ use axum::response::{IntoResponse, Json, Response};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
-use super::compact::openai_error_response;
-use super::inference_types::InferenceRequest;
+use super::compact::{openai_error_response, openai_error_response_with_param};
 use crate::main_modules::AppState;
 use crate::main_modules::hotswap::ModelCategory;
 use crate::ocr;
@@ -102,76 +102,15 @@ pub struct OcrResponse {
     pub usage: OcrUsage,
 }
 
-/// One blocking generation pass at the given sampling point.
-async fn generate_once(
-    state: &Arc<AppState>,
-    prompt_tokens: &Arc<Vec<u32>>,
-    image_pixels: &[(Vec<f32>, usize, usize)],
-    max_tokens: usize,
-    temperature: f32,
-    top_p: f32,
-) -> Result<Vec<u32>, Response> {
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    let session_hash = crate::session_manager::compute_session_hash(prompt_tokens);
-    let request = InferenceRequest::Blocking {
-        prompt_tokens: Arc::clone(prompt_tokens),
-        session_hash,
-        image_pixels: image_pixels.to_vec(),
-        max_tokens,
-        min_tokens: 0,
-        temperature,
-        top_k: 0,
-        top_p,
-        top_n_sigma: 0.0,
-        min_p: 0.0,
-        repetition_penalty: 1.0,
-        presence_penalty: 0.0,
-        frequency_penalty: 0.0,
-        dry_multiplier: 0.0,
-        dry_base: 1.75,
-        dry_allowed_length: 2,
-        lz_penalty: 0.0,
-        logit_bias: Vec::new(),
-        stop_tokens: Vec::new(),
-        enable_thinking: false,
-        thinking_budget: None,
-        repetition_detection: None,
-        require_tool_call: false,
-        tools_present: false,
-        suppress_tool_call: false,
-        disable_mtp: false,
-        grammar_spec: None,
-        seed: None,
-        top_logprobs: None,
-        timeout_at: {
-            let secs = state.request_timeout as f32;
-            if secs > 0.0 {
-                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
-            } else {
-                None
-            }
-        },
-        logit_probe: None,
-        capture_hidden: false,
-        response_tx: tx,
-    };
-    if state.request_tx.send(request).await.is_err() {
-        return Err(openai_error_response(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "Scheduler queue full".to_string(),
-        ));
-    }
-    match rx.await {
-        Ok(Ok(r)) => Ok(r.output_tokens),
-        Ok(Err(e)) => Err(openai_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("Inference error: {e}"),
-        )),
-        Err(_) => Err(openai_error_response(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Inference cancelled".to_string(),
-        )),
-    }
+/// The single OCR-category registration (ATLAS_PRESEED_OCR), if any.
+/// Shared with the Datalab-compatible `/convert` surface.
+pub(crate) fn resolve_ocr_model(state: &AppState) -> Option<String> {
+    state.hotswap.as_ref().and_then(|ctx| {
+        ctx.registry
+            .iter()
+            .find(|m| m.category == ModelCategory::Ocr)
+            .map(|m| m.model_id.clone())
+    })
 }
 
 pub async fn ocr(
@@ -208,12 +147,7 @@ pub async fn ocr(
     // Resolve the model: explicit id or the single OCR-category
     // registration.
     let model_id = if req.model.is_empty() {
-        let Some(id) = state.hotswap.as_ref().and_then(|ctx| {
-            ctx.registry
-                .iter()
-                .find(|m| m.category == ModelCategory::Ocr)
-                .map(|m| m.model_id.clone())
-        }) else {
+        let Some(id) = resolve_ocr_model(&state) else {
             return openai_error_response(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "no OCR model registered — add one to ATLAS_PRESEED_OCR".into(),
@@ -350,10 +284,12 @@ pub async fn ocr(
     super::lazy_swap::attach_swap_header(resp, swap_ms)
 }
 
-/// OCR one page image: scale_to_fit → vision preprocess → chat-template
-/// prompt → generation with the reference degeneration retry → layout/
-/// HTML/Markdown/crop assembly. Returns (page, prompt_tokens,
-/// completion_tokens); `page.page` is filled by the caller.
+/// OCR one page image through the shared pipeline, then assemble
+/// layout/HTML/Markdown/crops on the page image's pixel space. Returns
+/// (page, prompt_tokens, completion_tokens); `page.page` is filled by
+/// the caller. Pipeline errors map to OpenAI-shaped responses carrying
+/// the pipeline's `error_code`; a truncated page is an error, never a
+/// silently shortened success.
 #[allow(clippy::too_many_arguments)]
 async fn process_page(
     state: &Arc<AppState>,
@@ -366,112 +302,22 @@ async fn process_page(
     include_headers_footers: bool,
     include_images: bool,
 ) -> Result<(OcrPage, usize, usize), Response> {
-    let model_image = ocr::input::scale_to_fit(page_image.clone());
-    let (pixels, grid_h, grid_w) =
-        match spark_model::vision_preprocess::preprocess_rgb_with_max_pixels(
-            model_image,
-            vcfg,
-            state.vision_max_pixels,
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                return Err(openai_error_response(
-                    StatusCode::BAD_REQUEST,
-                    format!("Image preprocess error: {e:#}"),
-                ));
-            }
-        };
-    let pad_count =
-        spark_model::vision_preprocess::image_pad_count(grid_h, grid_w, vcfg.spatial_merge_size);
-    let image_pixels = vec![(pixels, grid_h, grid_w)];
-    let image_pad_counts = vec![pad_count];
+    let out = ocr::pipeline::ocr_page(ocr::pipeline::PageJob {
+        state,
+        rt,
+        vcfg,
+        prompt_text,
+        page_image,
+        max_tokens: max_tokens_req,
+        max_retries,
+        seed_base: None,
+        deadline: None,
+        cancel: None,
+    })
+    .await
+    .map_err(page_error_response)?;
+    let html = out.html;
 
-    // Chat-template frame over one [image, text] user turn — identical
-    // in shape to what the reference pipeline feeds vLLM.
-    let json_messages = vec![serde_json::json!({
-        "role": "user",
-        "content": [
-            {"type": "image"},
-            {"type": "text", "text": prompt_text},
-        ],
-    })];
-    let prompt_tokens = match rt.tokenizer.apply_chat_template_openai(
-        &json_messages,
-        None,
-        false,
-        rt.behavior.disable_tool_steering,
-    ) {
-        Ok(t) => t,
-        Err(e) => {
-            return Err(openai_error_response(
-                StatusCode::BAD_REQUEST,
-                format!("Tokenization error: {e}"),
-            ));
-        }
-    };
-    let prompt_tokens = rt
-        .tokenizer
-        .expand_image_pads(prompt_tokens, &image_pad_counts);
-    let prompt_len = prompt_tokens.len();
-    if prompt_len >= state.max_seq_len {
-        return Err(openai_error_response(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "page produces {prompt_len} prompt tokens, at/over the context limit \
-                 {} — reduce the image resolution",
-                state.max_seq_len,
-            ),
-        ));
-    }
-    let prompt_tokens = Arc::new(prompt_tokens);
-
-    let max_tokens = max_tokens_req
-        .unwrap_or(ocr::MAX_OUTPUT_TOKENS)
-        .min(state.max_seq_len.saturating_sub(prompt_len));
-
-    // Generation + degeneration retry, mirroring vllm.py::process_item:
-    // pass 0 at (0.0, 0.1); retry n at (min(0.2·n, 0.8), 0.95).
-    let mut retries = 0usize;
-    let mut completion_tokens;
-    let html = loop {
-        let (temperature, top_p) = if retries == 0 {
-            (0.0, 0.1)
-        } else {
-            ((0.2 * retries as f32).min(0.8), 0.95)
-        };
-        let output_tokens = generate_once(
-            state,
-            &prompt_tokens,
-            &image_pixels,
-            max_tokens,
-            temperature,
-            top_p,
-        )
-        .await?;
-        completion_tokens = output_tokens.len();
-        let text = match rt.tokenizer.decode(&output_tokens) {
-            Ok(t) => t.trim().to_string(),
-            Err(e) => {
-                return Err(openai_error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("Decode error: {e}"),
-                ));
-            }
-        };
-        if retries < max_retries && ocr::has_degenerate_tail(&text) {
-            retries += 1;
-            tracing::info!(
-                "OCR degenerate tail detected — retry {retries}/{max_retries} at \
-                 temperature {:.1}",
-                (0.2 * retries as f32).min(0.8),
-            );
-            continue;
-        }
-        break text;
-    };
-
-    // Output assembly (output.rs / markdown.rs) on the page image's
-    // pixel space.
     let (img_w, img_h) = (page_image.width(), page_image.height());
     let chunks = ocr::output::parse_layout(&html, img_w, img_h);
     let filtered_html = ocr::output::parse_html(&html, include_headers_footers, include_images);
@@ -493,9 +339,21 @@ async fn process_page(
             markdown,
             chunks,
             images,
-            retries,
+            retries: out.retries,
         },
-        prompt_len,
-        completion_tokens,
+        out.prompt_tokens,
+        out.completion_tokens,
     ))
+}
+
+/// Pipeline error → OpenAI-shaped response. Document faults are 400,
+/// capacity 503, everything else 500; `code` carries the stable name.
+fn page_error_response(e: ocr::pipeline::PageError) -> Response {
+    use ocr::pipeline::PageError;
+    let status = match &e {
+        PageError::Document(_) => StatusCode::BAD_REQUEST,
+        PageError::Capacity(_) => StatusCode::SERVICE_UNAVAILABLE,
+        _ => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    openai_error_response_with_param(status, e.to_string(), None, Some(e.error_code()))
 }

@@ -154,10 +154,7 @@ pub fn load_pdf_images(
 ) -> Result<Vec<(usize, image::RgbImage)>> {
     use pdfium_render::prelude::*;
     let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    let pdfium = Pdfium::new(Pdfium::bind_to_system_library().context(
-        "libpdfium.so not found — install the bblanchon/pdfium-binaries \
-             linux-arm64 build to /usr/lib (see the gb10 Dockerfile)",
-    )?);
+    let pdfium = Pdfium::new(Pdfium::bind_to_system_library().context(PDFIUM_MISSING)?);
     let doc = pdfium
         .load_pdf_from_byte_slice(bytes, None)
         .context("unreadable PDF")?;
@@ -183,6 +180,54 @@ pub fn load_pdf_images(
     }
     Ok(out)
 }
+
+/// Open the PDF under the pdfium lock and return its page count — the
+/// cheap pre-flight `/convert` uses for page selection and (PR A) the
+/// runtime estimate. No rendering happens here.
+pub fn pdf_page_count(bytes: &[u8]) -> Result<usize> {
+    use pdfium_render::prelude::*;
+    let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let pdfium = Pdfium::new(Pdfium::bind_to_system_library().context(PDFIUM_MISSING)?);
+    let doc = pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .context("unreadable PDF")?;
+    Ok(doc.pages().len() as usize)
+}
+
+/// Render ONE page (0-based) with the reference DPI rule. The lock is
+/// held only for this page, so a long document never blocks other
+/// callers (page count, other jobs) for the whole render.
+pub fn render_pdf_page(bytes: &[u8], idx: usize) -> Result<image::RgbImage> {
+    use pdfium_render::prelude::*;
+    let _guard = PDFIUM_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let pdfium = Pdfium::new(Pdfium::bind_to_system_library().context(PDFIUM_MISSING)?);
+    let doc = pdfium
+        .load_pdf_from_byte_slice(bytes, None)
+        .context("unreadable PDF")?;
+    let mut page = doc
+        .pages()
+        .get(u16::try_from(idx).context("page index out of range")?)
+        .with_context(|| format!("PDF has no page {idx}"))?;
+    let (w_pt, h_pt) = (page.width().value as f64, page.height().value as f64);
+    let min_page_dim = w_pt.min(h_pt).max(1.0);
+    let scale_dpi = ((MIN_PDF_IMAGE_DIM / min_page_dim) * 72.0).max(IMAGE_DPI);
+    if let Err(e) = page.flatten() {
+        tracing::warn!("PDF page {idx}: flatten failed ({e}) — rendering as-is");
+    }
+    let rendered = page
+        .render_with_config(&PdfRenderConfig::new().scale_page_by_factor((scale_dpi / 72.0) as f32))
+        .with_context(|| format!("rendering PDF page {idx}"))?;
+    Ok(rendered.as_image().to_rgb8())
+}
+
+/// True when a pdfium error means the library itself is missing — a
+/// server-side fault (`pdfium_unavailable`), not a document fault.
+pub fn is_pdfium_missing(err: &anyhow::Error) -> bool {
+    format!("{err:#}").contains(PDFIUM_MISSING)
+}
+
+const PDFIUM_MISSING: &str = "libpdfium.so not found — install the bblanchon/pdfium-binaries \
+             linux-arm64 build to /usr/lib (see the gb10 Dockerfile)";
 
 /// chandra/input.py::parse_range_str — "0,2-5,9" → sorted dedup'd page
 /// indices.

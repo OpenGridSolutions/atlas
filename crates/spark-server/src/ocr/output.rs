@@ -134,11 +134,9 @@ pub fn extract_images(
         if !chunk.content.contains("<img") {
             continue;
         }
-        let [x0, y0, x1, y1] = chunk.bbox;
-        if x1 <= x0 || y1 <= y0 {
+        let Some(crop) = crop_block(image, chunk.bbox) else {
             continue;
-        }
-        let crop = image::imageops::crop_imm(image, x0, y0, x1 - x0, y1 - y0).to_image();
+        };
         let mut bytes = Vec::new();
         let enc = image::codecs::webp::WebPEncoder::new_lossless(&mut bytes);
         if enc
@@ -155,6 +153,49 @@ pub fn extract_images(
         out.insert(image_name(html, div_idx), bytes);
     }
     out
+}
+
+/// Reference content fixups for ONE block (`parse_html` body, factored
+/// out so the Datalab tree can apply them per block): Image/Figure
+/// blocks get `image_src` injected into their first `<img>` (or a
+/// synthesized `<img>`), srcless `<img>` hallucinations are stripped
+/// from every other block, and bare Text blocks are wrapped in `<p>`.
+pub fn fixup_block_content(label: &str, mut content: String, image_src: Option<&str>) -> String {
+    if let Some(src) = image_src.filter(|_| label == "Image" || label == "Figure") {
+        if let Some(i) = content.find("<img") {
+            // Inject/overwrite src on the first img tag.
+            let tag_end = content[i..].find('>').map(|j| i + j).unwrap_or(i + 4);
+            let tag = content[i..=tag_end].to_string();
+            let new_tag = if let Some(s) = tag.find(" src=\"") {
+                let after = &tag[s + 6..];
+                match after.find('"') {
+                    Some(e) => format!("{} src=\"{}\"{}", &tag[..s], src, &after[e + 1..],),
+                    None => tag.clone(),
+                }
+            } else {
+                format!("{} src=\"{}\"{}", &tag[..4], src, &tag[4..])
+            };
+            content.replace_range(i..=tag_end, &new_tag);
+        } else {
+            content.push_str(&format!("<img src='{src}'/>"));
+        }
+    } else {
+        // Strip srcless img hallucinations.
+        while let Some(i) = content.find("<img") {
+            let tag_end = match content[i..].find('>') {
+                Some(j) => i + j,
+                None => break,
+            };
+            if content[i..=tag_end].contains(" src=") {
+                break;
+            }
+            content.replace_range(i..=tag_end, "");
+        }
+    }
+    if label == "Text" && !content.trim().contains('<') {
+        content = format!("<p>{}</p>", content.trim());
+    }
+    content
 }
 
 /// chandra/output.py::parse_html — concatenated inner HTML of the
@@ -179,45 +220,34 @@ pub fn parse_html(html: &str, include_headers_footers: bool, include_images: boo
         if !include_images && (label == "Image" || label == "Figure") {
             continue;
         }
-        let mut content = div.inner_html();
-        if label == "Image" || label == "Figure" {
-            let src = image_name(html, div_idx);
-            if let Some(i) = content.find("<img") {
-                // Inject/overwrite src on the first img tag.
-                let tag_end = content[i..].find('>').map(|j| i + j).unwrap_or(i + 4);
-                let tag = content[i..=tag_end].to_string();
-                let new_tag = if let Some(s) = tag.find(" src=\"") {
-                    let after = &tag[s + 6..];
-                    match after.find('"') {
-                        Some(e) => format!("{} src=\"{}\"{}", &tag[..s], src, &after[e + 1..],),
-                        None => tag.clone(),
-                    }
-                } else {
-                    format!("{} src=\"{}\"{}", &tag[..4], src, &tag[4..])
-                };
-                content.replace_range(i..=tag_end, &new_tag);
-            } else {
-                content.push_str(&format!("<img src='{src}'/>"));
-            }
-        } else {
-            // Strip srcless img hallucinations.
-            while let Some(i) = content.find("<img") {
-                let tag_end = match content[i..].find('>') {
-                    Some(j) => i + j,
-                    None => break,
-                };
-                if content[i..=tag_end].contains(" src=") {
-                    break;
-                }
-                content.replace_range(i..=tag_end, "");
-            }
-        }
-        if label == "Text" && !content.trim().contains('<') {
-            content = format!("<p>{}</p>", content.trim());
-        }
-        out.push_str(&content);
+        let src = image_name(html, div_idx);
+        out.push_str(&fixup_block_content(label, div.inner_html(), Some(&src)));
     }
     out
+}
+
+/// Crop one block's bbox out of the page image. None for empty boxes.
+pub fn crop_block(image: &image::RgbImage, bbox: [u32; 4]) -> Option<image::RgbImage> {
+    let [x0, y0, x1, y1] = bbox;
+    if x1 <= x0 || y1 <= y0 {
+        return None;
+    }
+    Some(image::imageops::crop_imm(image, x0, y0, x1 - x0, y1 - y0).to_image())
+}
+
+/// Encode an RGB crop as JPEG (the Datalab wire format for block
+/// images). None on encoder failure.
+pub fn encode_jpeg(img: &image::RgbImage, quality: u8) -> Option<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality);
+    enc.encode(
+        img.as_raw(),
+        img.width(),
+        img.height(),
+        image::ExtendedColorType::Rgb8,
+    )
+    .ok()?;
+    Some(bytes)
 }
 
 #[cfg(test)]
@@ -254,6 +284,16 @@ mod tests {
         );
         assert!(html.contains("src=\""), "{html}");
         assert!(html.contains("_1_img.webp"), "{html}");
+    }
+
+    #[test]
+    fn jpeg_crop_roundtrip() {
+        let img = image::RgbImage::from_pixel(64, 32, image::Rgb([200, 10, 10]));
+        let crop = crop_block(&img, [0, 0, 32, 16]).unwrap();
+        assert_eq!((crop.width(), crop.height()), (32, 16));
+        assert!(crop_block(&img, [5, 5, 5, 9]).is_none());
+        let jpeg = encode_jpeg(&crop, 85).unwrap();
+        assert_eq!(&jpeg[..2], &[0xFF, 0xD8], "JPEG SOI marker");
     }
 
     #[test]
