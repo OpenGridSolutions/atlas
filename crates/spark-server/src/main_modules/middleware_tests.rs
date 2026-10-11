@@ -60,6 +60,8 @@ fn introspection_and_admin_paths_need_auth() {
         "/admin/models/unload",
         "/tokenize",
         "/detokenize",
+        "/convert",
+        "/convert/abc123",
     ] {
         assert!(needs_auth(p), "{p}");
     }
@@ -94,6 +96,16 @@ fn bearer_gate_distinguishes_missing_and_invalid() {
     // Any other scheme counts as absent, not as invalid.
     let (_, code, _) = bearer_rejection(&cfg, &headers(&[("authorization", "Basic abc")])).unwrap();
     assert_eq!(code, "missing_api_key");
+    // Datalab clients (/convert) carry the token as X-API-Key.
+    assert!(
+        bearer_rejection(
+            &cfg,
+            &headers(&[("x-api-key", "sk-atlas-test-token-0123456789")])
+        )
+        .is_none()
+    );
+    let (_, code, _) = bearer_rejection(&cfg, &headers(&[("x-api-key", "wrong")])).unwrap();
+    assert_eq!(code, "invalid_api_key");
 }
 
 /// During a swap only inference paths bounce; introspection (T-DRN-08

@@ -62,9 +62,9 @@ pub(crate) async fn openai_observability_middleware(
 
 /// Bearer-token gate. Active when the operator passed `--require-auth`
 /// (which lands in `AppState.auth` as `Some(...)`); otherwise this is a
-/// pass-through. When active, requests to `/v1/*`, `/tokenize`, and
-/// `/detokenize` must carry `Authorization: Bearer <token>` matching one
-/// of the loaded tokens. Health / metrics / liveness paths stay open
+/// pass-through. When active, requests to `/v1/*`, `/convert*`,
+/// `/tokenize`, and `/detokenize` must carry `Authorization: Bearer
+/// <token>` (or `X-API-Key: <token>`) matching one of the loaded tokens. Health / metrics / liveness paths stay open
 /// (they're scrape targets / discovery endpoints, expected to be
 /// firewall-protected at the network layer).
 ///
@@ -177,6 +177,7 @@ pub(crate) fn needs_auth(path: &str) -> bool {
     path.starts_with("/v1/")
         || path.starts_with("/admin")
         || path.starts_with("/internal")
+        || path.starts_with("/convert")
         || path == "/tokenize"
         || path == "/detokenize"
 }
@@ -187,10 +188,13 @@ pub(crate) fn bearer_rejection(
     auth_cfg: &crate::auth::AuthConfig,
     headers: &axum::http::HeaderMap,
 ) -> Option<(axum::http::StatusCode, &'static str, &'static str)> {
+    // Datalab clients (the /convert surface) send the token as
+    // `X-API-Key`; both carriers validate against the same token set.
     let presented = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer "))
+        .or_else(|| headers.get("x-api-key").and_then(|v| v.to_str().ok()))
         .map(str::trim);
     match presented {
         None => Some((
