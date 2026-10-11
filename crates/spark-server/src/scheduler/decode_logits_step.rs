@@ -711,6 +711,20 @@ pub fn process_decode_logits(
                 tracing::warn!("Request timeout after {:?}", a.request_start.elapsed());
                 a.finished = true;
             }
+            // A blocking caller that went away (client disconnect, cancelled
+            // /convert page) must not keep its batch slot and KV until
+            // max_tokens: the dropped oneshot receiver is the signal.
+            if !a.finished
+                && let ResponseSink::Blocking(Some(tx)) = &a.sink
+                && tx.is_closed()
+            {
+                tracing::info!(
+                    "Blocking receiver dropped after {:?} / {} tokens — finishing sequence",
+                    a.request_start.elapsed(),
+                    a.output_tokens.len()
+                );
+                a.finished = true;
+            }
         }
     }
 }

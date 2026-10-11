@@ -124,6 +124,7 @@ async fn generate_once(
     top_p: f32,
     seed: Option<u64>,
     deadline: Option<Instant>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<(Vec<u32>, String), PageError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(prompt_tokens);
@@ -173,10 +174,21 @@ async fn generate_once(
     if state.request_tx.send(request).await.is_err() {
         return Err(PageError::Capacity("scheduler queue full".into()));
     }
-    match rx.await {
-        Ok(Ok(r)) => Ok((r.output_tokens, r.finish_reason)),
-        Ok(Err(e)) => Err(PageError::Inference(e.to_string())),
-        Err(_) => Err(PageError::Cancelled),
+    // Poll the cancel flag while waiting; dropping `rx` closes the
+    // oneshot, which the scheduler treats as "client gone" and finishes
+    // the sequence (frees the batch slot and KV).
+    let mut rx = rx;
+    loop {
+        if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            drop(rx);
+            return Err(PageError::Cancelled);
+        }
+        match tokio::time::timeout(std::time::Duration::from_millis(250), &mut rx).await {
+            Ok(Ok(Ok(r))) => return Ok((r.output_tokens, r.finish_reason)),
+            Ok(Ok(Err(e))) => return Err(PageError::Inference(e.to_string())),
+            Ok(Err(_)) => return Err(PageError::Cancelled),
+            Err(_) => continue,
+        }
     }
 }
 
@@ -264,6 +276,7 @@ pub async fn ocr_page(job: PageJob<'_>) -> Result<PageOutput, PageError> {
             top_p,
             seed,
             job.deadline,
+            job.cancel,
         )
         .await?;
         if finish_reason != "stop" {
