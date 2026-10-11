@@ -130,10 +130,16 @@ pub fn estimate(
         prefill + decode
     };
 
-    // Work ahead of us only delays us when the batch has no free slot;
-    // then the reserved seconds are shared across the batch width.
+    // Work ahead of us: OCR pages are vision-prefill-bound and the
+    // prefills run one after another, so every reserved page second is
+    // paid in full (measured 2026-10-11: two parallel 3-page jobs both
+    // missed a 55 s budget that each alone met). Token generation shares
+    // the batch — reserved work only delays us when no slot is free, and
+    // then it is spread across the batch width.
     let slots = snap.max_batch.max(1);
-    let ahead_secs = if snap.n_active + snap.queued_ahead >= slots {
+    let ahead_secs = if work.pages > 0 {
+        snap.reserved_secs
+    } else if snap.n_active + snap.queued_ahead >= slots {
         snap.reserved_secs / slots as f64
     } else {
         0.0
@@ -264,6 +270,14 @@ mod tests {
         let e = estimate(Some(&ocr_profile()), &work, &idle(true)).unwrap();
         assert!((e.work_secs - 37.5).abs() < 1e-9);
         assert!((e.total_secs() - 37.5).abs() < 1e-9);
+        // Reserved OCR work ahead is paid in full even with free slots.
+        let busy = Snapshot {
+            reserved_secs: 37.5,
+            ..idle(true)
+        };
+        let e2 = estimate(Some(&ocr_profile()), &work, &busy).unwrap();
+        assert!((e2.ahead_secs - 37.5).abs() < 1e-9, "{e2:?}");
+        assert!((e2.total_secs() - 75.0).abs() < 1e-9);
     }
 
     #[test]
