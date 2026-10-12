@@ -130,7 +130,13 @@ fn init_logging() {
         .with(stdout)
         .with(file_layers)
         // PR C: ERROR (all targets) + allow-listed WARN → observer events.
-        .with(observe::layer::ObserveLayer)
+        // The WARN filter is load-bearing: with per-layer filters in use,
+        // an unfiltered layer marks every callsite as enabled, which makes
+        // `tracing::enabled!(Level::DEBUG)` true everywhere and switches
+        // on the per-layer MoE/SSM debug dumps (GPU sync per layer).
+        .with(
+            observe::layer::ObserveLayer.with_filter(tracing_subscriber::filter::LevelFilter::WARN),
+        )
         .init();
 }
 
