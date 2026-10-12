@@ -6,4 +6,5 @@
 mod basic;
 mod evict_guard;
 mod lru_order;
+mod mapped_blocks;
 mod snapshot;

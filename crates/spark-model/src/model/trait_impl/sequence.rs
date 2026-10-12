@@ -90,10 +90,20 @@ impl TransformerModel {
                 // Bump KV block ref_counts so the prefix cache "owns" a reference.
                 // This keeps blocks alive after free_sequence drops the sequence's ref.
                 // Eviction (return_evicted_block) releases these refs when nodes are removed.
+                // Only blocks the cache actually maps: a key that already had
+                // a node keeps that node's block, and this sequence's own
+                // copy of the same content (recomputed past a Marconi SSM
+                // boundary hit) would otherwise carry a ref nobody releases
+                // — one block leaked per warm revisit (memdebug KV LEAK).
+                let mapped = self.prefix_cache.mapped_blocks(&keys);
                 let mut kv = self.kv_cache.lock();
-                let num_cached_blocks = (seq.tokens.len() / bs).min(seq.block_table.len());
-                for &block_idx in &seq.block_table[..num_cached_blocks] {
-                    kv.inc_ref(block_idx);
+                let num_cached_blocks = (seq.tokens.len() / bs)
+                    .min(seq.block_table.len())
+                    .min(mapped.len());
+                for (i, &block_idx) in seq.block_table[..num_cached_blocks].iter().enumerate() {
+                    if mapped[i] == block_idx {
+                        kv.inc_ref(block_idx);
+                    }
                 }
             }
         }

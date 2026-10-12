@@ -144,6 +144,23 @@ impl RadixTreeInner {
         (matched_blocks, matched_disk, matched_tokens)
     }
 
+    /// Physical blocks of the nodes along `keys`, stopping at the first
+    /// missing node. See `PrefixCache::mapped_blocks`.
+    pub(super) fn mapped_blocks(&self, keys: &[BlockKey]) -> Vec<u32> {
+        let mut current = self.root;
+        let mut out = Vec::with_capacity(keys.len());
+        for key in keys {
+            match self.nodes[current].children.get(key) {
+                Some(&child) => {
+                    out.push(self.nodes[child].block_idx);
+                    current = child;
+                }
+                None => break,
+            }
+        }
+        out
+    }
+
     /// Increment ref_count on all full-block nodes along the matched path.
     pub(super) fn inc_refs(&mut self, keys: &[BlockKey], num_blocks: usize) {
         let access = self.next_access();

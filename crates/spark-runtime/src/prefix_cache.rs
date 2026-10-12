@@ -268,6 +268,18 @@ pub trait PrefixCache: Send + Sync {
 
     /// (entries, cached_blocks) for logging.
     fn stats(&self) -> (usize, usize);
+
+    /// Physical block the cache maps for each full-block key of `keys`, in
+    /// chain order, ending at the first key without a node. A sequence may
+    /// hand the cache a KV ref only on blocks the cache actually maps: an
+    /// `insert` keeps the block of a node that already existed, so the
+    /// sequence's own recomputation of that content (e.g. the blocks past
+    /// a Marconi SSM boundary hit) stays sequence-owned and must be freed
+    /// with the sequence instead of ref'd on the cache's behalf.
+    /// Default: nothing mapped (no cache).
+    fn mapped_blocks(&self, _keys: &BlockKeysView<'_>) -> Vec<u32> {
+        Vec::new()
+    }
 }
 
 /// No-op prefix cache (zero overhead when disabled).

@@ -234,4 +234,11 @@ impl PrefixCache for RadixTree {
         let entries = inner.num_entries();
         (entries, entries)
     }
+
+    fn mapped_blocks(&self, keys: &BlockKeysView<'_>) -> Vec<u32> {
+        if !keys.cacheable() {
+            return Vec::new();
+        }
+        self.inner.lock().mapped_blocks(keys.full_keys())
+    }
 }
