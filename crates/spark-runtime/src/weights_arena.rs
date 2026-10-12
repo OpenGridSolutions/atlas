@@ -144,7 +144,7 @@ impl WeightsArena {
         );
         let offset = self
             .used
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |cur| {
                 let aligned = cur.div_ceil(align) * align;
                 let end = aligned.checked_add(len)?;
                 (end <= self.capacity).then_some(end)
