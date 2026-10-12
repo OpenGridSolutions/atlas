@@ -32,6 +32,7 @@ import os
 import statistics
 import sys
 import time
+import urllib.error
 import urllib.request
 import uuid
 
@@ -79,12 +80,24 @@ def long_prompt(words):
 
 def calibrate_generative(base, model, repeats):
     chat = f"{base}/v1/chat/completions"
-    # Warm the model (swap in) once.
-    post(chat, {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+    # Warm the model (swap in) once. A non-streaming request that waits
+    # longer than --nonstream-max-wait-s for the swap gets 503 + Retry-After
+    # (WAIT-4); the swap still happens, so retry until it is resident.
+    for _ in range(10):
+        try:
+            post(chat, {"model": model, "messages": [{"role": "user", "content": "hi"}], "max_tokens": 1})
+            break
+        except urllib.error.HTTPError as e:
+            if e.code != 503:
+                raise
+            time.sleep(float(e.headers.get("Retry-After") or 5))
     # Prefill: long prompt, one token out. prompt_tokens from usage.
     rates = []
     for _ in range(repeats):
-        body = {"model": model, "messages": [{"role": "user", "content": long_prompt(1500)}],
+        # Unique nonce up front: a repeated identical prompt would hit the
+        # prefix cache and measure the cache, not the prefill.
+        body = {"model": model,
+                "messages": [{"role": "user", "content": f"[{uuid.uuid4().hex}] " + long_prompt(1500)}],
                 "max_tokens": 1, "temperature": 0}
         t0 = time.time()
         r = post(chat, body)
@@ -95,8 +108,14 @@ def calibrate_generative(base, model, repeats):
     # Decode step time at batch 1/2/4/8.
     steps = []
     for batch in (1, 2, 4, 8):
+        # Reasoning tokens do not count against max_tokens, and a template
+        # that seeds <think> (Qwen3-Next-Thinking) overrides "disabled" with
+        # the model's max_thinking_budget (4096) — the run would then hit the
+        # request deadline instead of ~256 steps. An explicit small budget is
+        # honoured by both paths; step time is the same for either token kind.
         body = {"model": model, "messages": [{"role": "user", "content": "Erklaere die Deckungsbeitragsrechnung ausfuehrlich mit Beispielen."}],
-                "max_tokens": 256, "temperature": 0.7, "min_tokens": 256}
+                "max_tokens": 256, "temperature": 0.7, "min_tokens": 256,
+                "thinking": {"type": "enabled", "budget_tokens": 32}}
         with cf.ThreadPoolExecutor(max_workers=batch) as ex:
             res = list(ex.map(lambda _: stream_tokens(chat, body), range(batch)))
         per_stream = [decode / max(n, 1) for _, decode, n in res]
