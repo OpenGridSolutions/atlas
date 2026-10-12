@@ -82,6 +82,15 @@ RUN ln -sfn /workspace/jinja-templates /jinja-templates
 # bind-mounted repo is owned by the host user -> silence git's ownership guard
 RUN git config --global --add safe.directory /workspace
 
+# --- pdfium: PDF rendering for /v1/ocr (prod runtime lib, see docker/gb10/Dockerfile)
+# Pin to the same release as prod: .../releases/download/chromium%2F<N>/pdfium-linux-arm64.tgz
+ARG PDFIUM_URL=https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz
+RUN mkdir -p /tmp/pdfium && \
+    curl -fsSL "$PDFIUM_URL" | tar -xz -C /tmp/pdfium && \
+    cp /tmp/pdfium/lib/libpdfium.so /usr/lib/ && \
+    ldconfig && \
+    rm -rf /tmp/pdfium
+
 WORKDIR /workspace
 
 # Idle by default: nothing auto-builds, nothing auto-serves.
