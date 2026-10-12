@@ -138,7 +138,15 @@ pub fn admit(
     budget_secs: Option<f64>,
 ) -> Result<Admission, Refusal> {
     let now = Instant::now();
-    let profile = atlas_kernels::estimate_for_hf_id(model_id);
+    // Registry first: it carries the profile of the kernel target that
+    // actually serves the model. The hf_id lookup covers single-model
+    // mode (no registry) and sidecar-served ids.
+    let profile = state
+        .hotswap
+        .as_ref()
+        .and_then(|ctx| ctx.registered(model_id))
+        .and_then(|m| m.estimate)
+        .or_else(|| atlas_kernels::estimate_for_hf_id(model_id));
     let snap = snapshot_for(state, model_id);
     let (verdict, reservation) =
         state

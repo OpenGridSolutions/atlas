@@ -124,6 +124,13 @@ pub struct RegisteredModel {
     /// Category from the env var this model was preseeded under (Phase K);
     /// enforced at every endpoint via [`ModelCategory::endpoint`].
     pub category: ModelCategory,
+    /// `[estimate]` profile of the kernel target that serves this model,
+    /// resolved through the same `ptx_for_model_id` selection the loader
+    /// uses (exact hf_id, else `(model_type, hidden_size)`). A checkpoint
+    /// served by a sibling target's bundle (Qwen3-Next-Thinking / Coder on
+    /// qwen3-next-80b-a3b) inherits that target's constants; an hf_id-only
+    /// lookup would miss them. `None` = not calibrated.
+    pub estimate: Option<atlas_kernels::EstimateProfile>,
 }
 
 /// Request-time lazy-swap coordination (Task 6 Phase 3.2). Concurrency

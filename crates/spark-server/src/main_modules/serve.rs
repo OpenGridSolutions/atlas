@@ -675,6 +675,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         model_id: model_name.clone(),
         model_hash: spark_runtime::snapshot::model_version_hash(&model_name, &boot_revision),
         category: boot_category,
+        estimate: ptx_set.estimate,
     }];
     #[allow(unused_mut)]
     let mut transcribe_models: Vec<String> = Vec::new();

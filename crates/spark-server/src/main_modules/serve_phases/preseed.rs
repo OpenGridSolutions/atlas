@@ -33,6 +33,7 @@ pub(crate) fn registered_model(
         model_id: model_id.to_string(),
         model_hash: spark_runtime::snapshot::model_version_hash(model_id, &revision),
         category,
+        estimate: None,
     })
 }
 
@@ -49,7 +50,7 @@ pub(crate) fn registered_model_checked(
     model_id: &str,
     category: ModelCategory,
 ) -> Result<RegisteredModel> {
-    let reg = registered_model(args, model_id, category)?;
+    let mut reg = registered_model(args, model_id, category)?;
     let model_dir = crate::model_resolver::resolve_model_dir(model_id, args.cache_dir.as_deref())?;
     let (mut config, _json) = super::load_model_config(&model_dir)
         .with_context(|| format!("parsing config.json of preseed model '{model_id}'"))?;
@@ -90,6 +91,7 @@ pub(crate) fn registered_model_checked(
             model_quant,
         );
     }
+    reg.estimate = ptx_set.estimate;
     Ok(reg)
 }
 
