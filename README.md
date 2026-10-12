@@ -21,7 +21,7 @@
 </p>
 
 <p align="center">
-  <a href="assets/atlas-demo.mp4"><img alt="Atlas demo — click for full-quality MP4" src="assets/atlas-demo.gif" width="820" /></a>
+  <img alt="Atlas demo" src="assets/atlas-demo.gif" width="820" />
 </p>
 
 <p align="center">
