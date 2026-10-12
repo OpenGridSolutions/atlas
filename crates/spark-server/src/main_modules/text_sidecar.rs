@@ -104,17 +104,22 @@ struct Registry {
 
 static REGISTRY: tokio::sync::Mutex<Option<Registry>> = tokio::sync::Mutex::const_new(None);
 
+/// Sum of the `*.safetensors` sizes in `model_dir`, following symlinks:
+/// HF-cache snapshots link every shard into `blobs/`, and
+/// `DirEntry::metadata` would report the 52-byte link instead of the
+/// shard — a 15 GB reranker then read as 0.00 GiB and slipped past the
+/// MOD-4 size gate into the sidecar path beside the arena model.
 fn checkpoint_bytes(model_dir: &std::path::Path) -> u64 {
     std::fs::read_dir(model_dir)
         .map(|rd| {
             rd.flatten()
-                .filter(|e| {
-                    e.path()
-                        .extension()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
                         .and_then(|x| x.to_str())
                         .is_some_and(|x| x == "safetensors")
                 })
-                .filter_map(|e| e.metadata().ok())
+                .filter_map(|p| std::fs::metadata(p).ok())
                 .map(|m| m.len())
                 .sum()
         })
@@ -374,4 +379,29 @@ fn run_job(model: &dyn spark_model::traits::Model, job: &Job) -> Result<Vec<f32>
         tracing::error!("text-sidecar: free_sequence: {e:#}");
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::checkpoint_bytes;
+
+    #[test]
+    fn checkpoint_bytes_follows_hf_cache_symlinks() {
+        let dir = std::env::temp_dir().join(format!("atlas-ckpt-{}", std::process::id()));
+        let blobs = dir.join("blobs");
+        let snap = dir.join("snap");
+        std::fs::create_dir_all(&blobs).unwrap();
+        std::fs::create_dir_all(&snap).unwrap();
+        std::fs::write(blobs.join("a"), vec![0u8; 1000]).unwrap();
+        std::fs::write(blobs.join("b"), vec![0u8; 2345]).unwrap();
+        std::os::unix::fs::symlink("../blobs/a", snap.join("model-00001.safetensors")).unwrap();
+        std::os::unix::fs::symlink("../blobs/b", snap.join("model-00002.safetensors")).unwrap();
+        std::fs::write(snap.join("config.json"), b"{}").unwrap();
+        let bytes = checkpoint_bytes(&snap);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(
+            bytes, 3345,
+            "symlinked shards must be sized by their targets"
+        );
+    }
 }
