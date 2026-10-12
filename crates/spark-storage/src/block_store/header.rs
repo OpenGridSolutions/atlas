@@ -31,6 +31,12 @@ pub enum Kind {
     Ssm,
     /// Tail record: trailing sub-block KV + tail SSM snapshot (`.tail`).
     Tail,
+    /// Context-compaction entry (`.cmp`, CMP-11): a JSON payload keyed
+    /// by the message-chain key of the last summarised message. Its
+    /// `pred` is the previous `.cmp` entry (cumulative summaries, CMP-3)
+    /// or zero for the first compaction of a conversation — never a KV
+    /// block, so the GC resolves it kind-aware.
+    Cmp,
 }
 
 impl Kind {
@@ -39,6 +45,7 @@ impl Kind {
             Kind::Kv => "kvb",
             Kind::Ssm => "ssm",
             Kind::Tail => "tail",
+            Kind::Cmp => "cmp",
         }
     }
 
@@ -47,6 +54,7 @@ impl Kind {
             Kind::Kv => 1,
             Kind::Ssm => 2,
             Kind::Tail => 3,
+            Kind::Cmp => 4,
         }
     }
 
@@ -55,6 +63,7 @@ impl Kind {
             1 => Some(Kind::Kv),
             2 => Some(Kind::Ssm),
             3 => Some(Kind::Tail),
+            4 => Some(Kind::Cmp),
             _ => None,
         }
     }
@@ -64,6 +73,7 @@ impl Kind {
             "kvb" => Some(Kind::Kv),
             "ssm" => Some(Kind::Ssm),
             "tail" => Some(Kind::Tail),
+            "cmp" => Some(Kind::Cmp),
             _ => None,
         }
     }

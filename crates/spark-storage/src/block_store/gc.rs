@@ -17,6 +17,15 @@ pub struct GcOutcome {
     pub bytes_freed: u64,
 }
 
+/// Kind a record's `pred` field refers to: compaction entries chain to
+/// compaction entries, everything else to a KV block.
+pub(super) fn pred_kind_of(kind: Kind) -> Kind {
+    match kind {
+        Kind::Cmp => Kind::Cmp,
+        Kind::Kv | Kind::Ssm | Kind::Tail => Kind::Kv,
+    }
+}
+
 impl BlockStore {
     /// Run one GC pass. Cheap when nothing qualifies; called every
     /// `gc_interval` by the store writer thread.
@@ -38,14 +47,18 @@ impl BlockStore {
             out.expired += 1;
         }
 
-        // Phase 2: orphans — records whose predecessor KV block is gone.
-        // Deleting an orphan can orphan its successors, so iterate to a
-        // fixpoint (bounded by the entry count).
+        // Phase 2: orphans — records whose predecessor is gone. KV, SSM
+        // and tail records hang off a KV block; a compaction entry hangs
+        // off the previous compaction entry (CMP-3). Deleting an orphan
+        // can orphan its successors, so iterate to a fixpoint (bounded
+        // by the entry count).
         loop {
             let orphans: Vec<([u8; 16], Kind)> = {
                 let idx = self.index.lock().expect("index lock");
                 idx.iter()
-                    .filter(|(_, e)| e.pred != [0u8; 16] && !idx.contains(&e.pred, Kind::Kv))
+                    .filter(|(_, e)| {
+                        e.pred != [0u8; 16] && !idx.contains(&e.pred, pred_kind_of(e.kind))
+                    })
                     .map(|(k, _)| *k)
                     .collect()
             };
@@ -192,6 +205,39 @@ mod tests {
         assert_eq!(out.orphaned, 2);
         assert!(!store.contains(&key(5), Kind::Ssm));
         assert!(!store.contains(&key(6), Kind::Tail));
+    }
+
+    #[test]
+    fn cmp_entries_chain_to_cmp_predecessors_not_kv() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::open(cfg(dir.path(), 3600)).unwrap();
+        // A root compaction entry, its cumulative successor, and one
+        // whose predecessor entry was never written (or already GC'd).
+        store.put(Kind::Cmp, key(10), [0; 16], 0, b"{}").unwrap();
+        store.put(Kind::Cmp, key(11), key(10), 0, b"{}").unwrap();
+        store.put(Kind::Cmp, key(12), key(42), 0, b"{}").unwrap();
+        // A KV block at the same key as the root entry must not make the
+        // KV-style lookup "find" a predecessor for a `.cmp` successor.
+        store.put(Kind::Kv, key(42), [0; 16], 16, &[1; 10]).unwrap();
+
+        let out = store.run_gc();
+        assert_eq!(out.expired, 0);
+        assert_eq!(out.orphaned, 1, "only the entry with a missing .cmp pred");
+        assert!(store.contains(&key(10), Kind::Cmp));
+        assert!(store.contains(&key(11), Kind::Cmp));
+        assert!(!store.contains(&key(12), Kind::Cmp));
+
+        // Expiring the root cascades to its successor, like KV chains.
+        {
+            let mut idx = store.index.lock().unwrap();
+            let mut e = *idx.get(&key(10), Kind::Cmp).unwrap();
+            e.last_access = 1;
+            idx.insert(key(10), e);
+        }
+        let out = store.run_gc();
+        assert_eq!(out.expired, 1);
+        assert_eq!(out.orphaned, 1);
+        assert!(!store.contains(&key(11), Kind::Cmp));
     }
 
     #[test]

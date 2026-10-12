@@ -102,7 +102,7 @@ impl Index {
             budget -= 1;
             let mut pred: Option<[u8; 16]> = None;
             let mut any = false;
-            for kind in [Kind::Kv, Kind::Tail, Kind::Ssm] {
+            for kind in [Kind::Kv, Kind::Tail, Kind::Ssm, Kind::Cmp] {
                 if let Some(e) = self.entries.get_mut(&(cur, kind)) {
                     any = true;
                     if e.last_access < now_secs {
