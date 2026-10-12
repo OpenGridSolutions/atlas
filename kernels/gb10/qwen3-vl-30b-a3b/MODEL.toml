@@ -81,3 +81,12 @@ thinking_default = false
 thinking_in_tools = true
 # 2026-05-23 sweep: explicit 2048 (was unset → 256 default).
 max_thinking_budget = 2048
+
+# Admission cost constants (docs/design/deadline-admission.md), measured
+# 2026-10-11 on GB10 with tests/estimate_calibration.py against serve.sh
+# (--max-batch-size 4): text-only prompt of ~2.6k tokens; decode_step_ms
+# per stream at batch 1/2/4/8 (batch 8 queues behind batch 4). Vision
+# prefill (image patches) is NOT covered by prefill_tok_s.
+[estimate]
+prefill_tok_s = 1112
+decode_step_ms = [11.0, 19.9, 36.7, 36.8]

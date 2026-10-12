@@ -141,3 +141,12 @@ hidden_size = 5120
 [[model_types]]
 model_type = "qwen3_6_moe"
 hidden_size = 5120
+
+# Admission cost constants (docs/design/deadline-admission.md), measured
+# 2026-10-11 on GB10 with tests/estimate_calibration.py against serve.sh
+# (--max-batch-size 4). Dense 27B: decode is weight-bandwidth bound
+# (~10 tok/s at batch 1, matches the 2026-10-02 A/B) and scales poorly
+# with batch; decode_step_ms per stream at batch 1/2/4/8.
+[estimate]
+prefill_tok_s = 897
+decode_step_ms = [97.0, 122.5, 327.9, 329.4]

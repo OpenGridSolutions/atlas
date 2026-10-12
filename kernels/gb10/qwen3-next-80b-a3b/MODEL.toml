@@ -71,3 +71,17 @@ default_num_drafts = 1
 
 [kernel]
 moe_gate_shmem_bytes = 4096   # hidden_dim(2048) * sizeof(bf16)
+
+# Admission cost constants (docs/design/deadline-admission.md), measured
+# 2026-10-11 on GB10 with tests/estimate_calibration.py against serve.sh
+# (--max-batch-size 4). This target serves both Qwen3-Next checkpoints;
+# the block keeps the slower value of the two per constant:
+#   Qwen3-Next-80B-A3B-Thinking-NVFP4: prefill 898 tok/s, decode [13.3, 24.6, 49.7, 49.6]
+#   Qwen3-Coder-Next-NVFP4:            prefill 892 tok/s, decode [13.5, 25.0, 49.8, 50.3]
+# decode_step_ms is per stream at batch 1/2/4/8; batch 8 queues behind
+# --max-batch-size 4, so it equals the batch-4 step. The Thinking
+# template forces <think> with budget 4096, which does not count against
+# max_tokens — the estimate covers max_tokens only.
+[estimate]
+prefill_tok_s = 892
+decode_step_ms = [13.5, 25.0, 49.8, 50.3]

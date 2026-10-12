@@ -120,8 +120,13 @@ default_kv_dtype = "bf16"
 # tests/estimate_calibration.py --ocr once a representative PDF set
 # exists. Token constants are unset: Chandra is not served as a chat
 # model, so prefill/decode estimates are not needed.
+# 2026-10-11 recalibrated with tests/estimate_calibration.py --ocr on a
+# dense A4 text page (~40 lines incl. a table, 746 output tokens/page):
+# 20.0 s and 17.9 s per page; the first page measured 25.2 s because it
+# included the swap-in of Chandra, which the ledger costs separately.
 [estimate]
-ocr_page_secs_p90 = 12.5
+ocr_page_secs_p90 = 20.0
+ocr_page_tokens_p90 = 746
 
 # NO [[model_types]] entries — deliberate. Chandra's (qwen3_5, 2560)
 # pair is identical to holo-3.1-4b's, and this directory sorts BEFORE
