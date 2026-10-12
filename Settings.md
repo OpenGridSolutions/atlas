@@ -118,7 +118,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--speculative` / `--self-speculative` / `--ngram-speculative` / `--dflash*` | aus | teils (`[dflash]`) — Aktivierung ist CLI |
 | `--default-top-n-sigma` / `--default-min-p` | 1.0 / 0.08 | `[sampling.*]`-Presets + `min_p_floor` (teilweise) |
 | `--vision-max-pixels` | Modell-Cap | ✗ CLI/Env |
-| `--adaptive-sampling` / `--profile` / `--warmup-prompt` / `--auto-compact` | aus | Experimente |
+| `--adaptive-sampling` / `--profile` / `--warmup-prompt` | aus | Experimente |
 
 ## 3. Env-Variablen (Betrieb/Debug)
 
@@ -179,6 +179,13 @@ ist.
 | `--nonstream-max-wait-s` | 45 | harte Wartegrenze ohne Streaming (unter Proxy-Timeout!) |
 | `--drain-grace-ms` | 2000 | Drain-Frist vor `finish_reason="model_swap"` |
 | `--sse-keepalive-interval-s` | 5 | `: waiting`-Kommentare wartender Streams |
+| `--default-context-policy` | summarize | E7: Verhalten ohne `X-Atlas-Context-Policy` (`summarize` / `truncate` / `reject`; `reject` = Verhalten vor E7, HTTP 400 `context_length_exceeded`) |
+| `--compaction-output-reserve` | 2048 | Fit-Regel: Request passt, wenn `prompt + min(max_tokens, reserve) ≤ max_seq_len`; darüber greift die Policy |
+| `--compaction-tail-pct` | 25 | Mindestanteil jüngster Runden am Fenster, die wörtlich bleiben (CMP-5) |
+| `--compaction-summary-max-tokens` | 768 | Ausgabebudget der Zusammenfassung (CMP-7) |
+| `--compaction-trigger-pct` | 70 | Füllstand für die proaktive Vorbereitung (CMP-8; Hintergrund-Job folgt in Teil 2) |
+| `--compaction-prompt-file` | eingebaut | Prompt der Zusammenfassung |
+| `--compaction-no-keep-first-user` | aus | erste User-Nachricht nicht im Kopf behalten (CMP-4) |
 | `--trust-proxy-headers` | aus | `X-Priority: high` auswerten (nur Loopback-Bind) |
 | `--sidecar-small-max-gib` | 4 | Embed/Rerank-Modelle bis zu dieser Größe laufen als residente Sidecars |
 | `--growth-reserve-pct` | 10 | Anteil des KV-Pools, den die Admission für wachsende Sequenzen freilässt |

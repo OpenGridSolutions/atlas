@@ -19,7 +19,7 @@ Abkürzungen in **Stand**: `Unit` = Rust-Unit-Test vorhanden (Datei),
 | T-NVM-14 | Der Block-Store hat keinen io_uring-Pfad. Er schreibt mit O_DIRECT und fällt auf gepuffertes I/O zurück. Die io_uring-Backends unter `spark-storage/src/backend/` gehören zum High-Speed-Weight-Swap. |
 | T-BAT-05 | BAT-4 (Schrittzeit-Lernen) ist bewusst nicht gebaut; die Bremse ist `--tbt-deadline-ms` (T-BAT-01). |
 | T-SEC-01, 02, 03, 07, 08, 10, 11 | Prüfen die Traefik-Konfiguration, die nicht im Repo liegt (nur ein Snippet in `Settings.md`). Gehören in eine Deployment-Checkliste neben die Traefik-Konfiguration. |
-| T-CMP-01 bis 22, T-SCH-13, T-WAIT-08 | Kontext-Kompaktierung (E7, Runde B) ist nicht implementiert. Der Abschnitt bleibt als Spezifikation im Ursprungskatalog; er kommt zurück, sobald Runde B auf dem Branch ist. |
+| T-CMP-02/05/06/11/12/17 bis 22, T-SCH-13, T-WAIT-08 | Kontext-Kompaktierung Teil 2 (Hintergrund-Jobs, Qualitätsmessung, Bilder, TTL-Ablauf, Endpunkt) ist noch nicht implementiert; Teil 1 (synchroner Pfad) ist seit 2026-10-12 auf dem Branch, siehe Abschnitt 10. |
 
 ### Zurückgestellt (Stufe 2, Pfad nicht implementiert)
 
@@ -218,3 +218,27 @@ des Prefix-Caches (persistierte Blöcke zuerst), dann Spill auf Platte.
 8. **T-NVM-03** – Beschädigter Block wird nie verwendet.
 9. **T-SSM-04** – Resume am längsten blockalignierten Snapshot.
 10. **T-DRN-03** – Fortsetzung nach `model_swap` nutzt den Prefix.
+
+## 10. Kontext-Kompaktierung (Teil 1, seit 2026-10-12)
+
+Spezifikation: `docs/design/context-compaction.md`. Unit-Tests in
+`crates/spark-server/src/compaction/tests.rs`, On-Box-Lauf mit
+`ATLAS_MAX_SEQ_LEN=4096 ./serve.sh` und `tests/test_compaction.py --model <id>`.
+
+| ID | Szenario und Erwartung | Stand | Bezug |
+| --- | --- | --- | --- |
+| T-CMP-01 | P1 · Integration – Kurze Session. Erwartet: keine Kompaktierung, kein `X-Atlas-Compacted`. | test_compaction.py | CMP-9 |
+| T-CMP-03 | P1 · Integration – Historie passt nicht mehr. Erwartet: synchrone Kompaktierung, `X-Atlas-Compacted: true` + `X-Atlas-Compaction-Id`. | test_compaction.py | CMP-2, CMP-10, CTX-4 |
+| T-CMP-04 | P1 · Integration – Folge-Request mit voller Historie + neuer Nachricht. Erwartet: Eintrag wiedererkannt (gleiche Id), Prompt bleibt klein, Fakt aus dem zusammengefassten Teil beantwortbar. | test_compaction.py | CMP-1, CMP-2 |
+| T-CMP-07 | P1 · Integration – Zusammengefasste Nachricht geändert. Erwartet: neue Kompaktierung mit anderer Id. | test_compaction.py | CMP-12 |
+| T-CMP-08 | P1 · Integration – Nachricht nach dem Schnitt geändert. Erwartet: Eintrag bleibt angewendet. | test_compaction.py | CMP-2 |
+| T-CMP-09 | P1 · Unit – Tool-Call und Tool-Ergebnis an der Schnittstelle bleiben zusammen. | `cut_never_separates_a_tool_call_from_its_result`, `cut_respects_tool_pairs_when_shrinking` | CMP-5 |
+| T-CMP-10 | P1 · Unit – Kopf bei mehreren System-, Developer-, ohne System-Nachricht, mit/ohne `keep_first_user`; ohne System-Nachricht wird eine erzeugt. | `head_detection_cases`, `effective_creates_system_message_when_head_has_none` | CMP-4, CMP-6 |
+| T-CMP-13 | P1 · Integration – Einzelne Nachricht größer als das Fenster. Erwartet: 400 `context_length_exceeded` mit Größenangaben. | test_compaction.py | CTX-6 |
+| T-CMP-14 | P2 · Integration – Header `reject`. Erwartet: 400, keine Kompaktierung. | test_compaction.py | CTX-1, CTX-2 |
+| T-CMP-15 | P2 · Integration – Header `truncate`. Erwartet: Eintrag mit leerer Zusammenfassung. | test_compaction.py | CTX-3 |
+| T-CMP-16 | P2 · Integration – Kein Header = `summarize`; ungültiger Wert ⇒ 400 `invalid_context_policy`. | test_compaction.py | CTX-1 |
+| T-CMP-23 | P2 · Integration – Streaming-Request mit synchroner Kompaktierung. Erwartet: `: compacting`-Keep-alives, `: compacted id=`-Kommentar, vollständiger Stream. | test_compaction.py | CMP-10, WAIT-2 |
+| T-API-01 | P1 · Integration – `/v1/messages` trägt die Kompaktierungs-Header. | test_compaction.py | CTX-4 |
+| T-CMP-24 | P1 · Unit – Testvektoren der kanonischen Serialisierung und der Kette; NFC; `reasoning_content` ohne Einfluss; Bild-Digests. | `canonical_*`, `chain_*` | CMP-1 |
+| T-NVM-xx | P2 · Unit – `.cmp`-Einträge hängen am `.cmp`-Vorgänger, nicht an einem KV-Block; TTL kaskadiert. | spark-storage `cmp_entries_chain_to_cmp_predecessors_not_kv` | §5, NVM-10 |

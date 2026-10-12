@@ -132,6 +132,7 @@ extend-exclude = [
     "docs/design/deadline-admission.md",
     "docs/design/test-scenarios.md",
     "docs/design/nvme-tier-analysis.md",
+    "docs/design/context-compaction.md",
     # Server logs written by serve.sh on the box; not source.
     "logs/",
 ]
