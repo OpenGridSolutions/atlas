@@ -769,7 +769,14 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 module_overrides.extend(m);
             }
 
-            // Parse sampling presets, behavior, and model_types from MODEL.toml
+            // Parse sampling presets, behavior, and model_types from MODEL.toml.
+            // The per-target rerun trigger below covers only the quant
+            // subdir; MODEL.toml lives one level up and must be watched
+            // explicitly or an edited [estimate]/[behavior] never lands.
+            println!(
+                "cargo:rerun-if-changed={}",
+                model_dir.join("MODEL.toml").display()
+            );
             let (s_tt, s_tc, s_nt, s_tools) = parse_sampling_presets(&model_dir);
             let pb = parse_behavior(&model_dir);
             let model_type_matches = parse_model_types(&model_dir);
