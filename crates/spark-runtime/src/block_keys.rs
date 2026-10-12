@@ -94,6 +94,27 @@ pub fn seed(model_identity: &[u8], layout_hash: &[u8; 32]) -> BlockKey {
     truncate(h.finalize())
 }
 
+/// One step of a generic BLAKE3-128 chain: `H(domain ‖ prev ‖ bytes)`.
+/// The `domain` tag separates key spaces that share the 16-byte type —
+/// the message chain of context compaction (`atlas-msg-v1`) can never
+/// collide with a token-block key, whose steps hash raw token bytes
+/// without a tag.
+pub fn chain_step(domain: &[u8], prev: &BlockKey, bytes: &[u8]) -> BlockKey {
+    let mut h = blake3::Hasher::new();
+    h.update(domain);
+    h.update(&prev.0);
+    h.update(bytes);
+    truncate(h.finalize())
+}
+
+/// Seed of a generic chain: `H(domain ‖ identity)`, truncated.
+pub fn chain_seed(domain: &[u8], identity: &[u8]) -> BlockKey {
+    let mut h = blake3::Hasher::new();
+    h.update(domain);
+    h.update(identity);
+    truncate(h.finalize())
+}
+
 fn truncate(hash: blake3::Hash) -> BlockKey {
     let mut out = [0u8; 16];
     out.copy_from_slice(&hash.as_bytes()[..16]);
