@@ -379,7 +379,7 @@ autonomously.** Grounds:
    the paths we must not destabilize.
 2. **Atlas already ships the escape hatch**: the `VisionEncoder`
    (`layers/vision_encoder/enc_impl/*`) is a self-contained GPU transformer
-   encoder OUTSIDE the Model trait — bias-ful GEMMs (`vision_gemm_bias`),
+   encoder OUTSIDE the Model trait — bias-carrying GEMMs (`vision_gemm_bias`),
    GELU, NON-causal attention at an odd head_dim (72), own kernel module,
    driven synchronously. Whisper's audio encoder (conv×2 + 32 bidirectional
    layers, head_dim 64, sinusoidal pos-emb) is architecturally the same
@@ -402,7 +402,7 @@ autonomously.** Grounds:
    kernels: `dense_gemm_bf16`/`gemm` (+ host-side bias add fused via the
    vision module's `vision_gemm_bias` pattern), `gelu` (gemma override),
    conv frontend via host im2col (3000×128 mel is 1.5 MB) + GEMM.
-5. **Precision (deviation from "F16 nativ")**: the weight pipeline has NO
+5. **Precision (deviation from "F16 native")**: the weight pipeline has NO
    FP16 dtype (BF16/FP32/FP8 only) — and the cached checkpoint ships
    `model.fp32-*.safetensors` (FP32, not F16). Loading converts FP32→BF16
    (lossless vs F16 in exponent, −3 mantissa bits); compute is BF16. The

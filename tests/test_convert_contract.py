@@ -11,7 +11,7 @@ every failure, truncation never reported as success, idempotent DELETE,
 stable ids across two runs of the same file (cache).
 
 Needs a running server with an OCR model (ATLAS_PRESEED_OCR) and the
-chandra-ocr-2 HF snapshot (sample PNGs) — or `--pdf <file>`.
+chandra-ocr-2 HF snapshot (sample PNG files) — or `--pdf <file>`.
 
 Usage: python3 tests/test_convert_contract.py --base-url http://127.0.0.1:11434
 Exit 0 = all pass.

@@ -22,9 +22,19 @@ extend-ignore-identifiers-re = [
     # `BA_GEMM` — A+B linear-attention GEMM in the design docs. Not a
     # typo of `BY`/`BE`.
     "BA_GEMM",
+    # Short git commit hash cited in Plan.md; the checker splits it on the
+    # digit and reads `caf` as a typo of `calf`.
+    "caf0af5",
+    # Upstream Qwen-Image VAE config key (`temperal_downsample`); the
+    # misspelling is the HuggingFace checkpoint's, not ours.
+    "temperal_downsample",
 ]
 
 [default.extend-words]
+# German words inside translate-endpoint test fixtures
+# (tests/nvme_session_sweep.py, scripts/categories_translate_test.sh).
+ist = "ist"
+unter = "unter"
 # `deint` — short form of "deinterleaved" used as the Q|K|V|Z input
 # pointer name in the fused K=2 GDN verify kernel/ops. Not a typo.
 deint = "deint"
@@ -112,4 +122,16 @@ extend-exclude = [
     # (`n_leafs`, `GGML_OP_CPY`, `ggml_arange`, ...) read as typos but are
     # canonical; we don't ship typo fixes upstream from here, like `vendor/`.
     "kernels/gb10/qwen3.6-27b/nvfp4/q4k_vendor/",
+    "kernels/gb10/qwen3.8-27b/nvfp4/q4k_vendor/",
+    # German-language working documents (architecture notes, task lists,
+    # design analyses). The checker has no German dictionary and flags
+    # ordinary words (`ist`, `als`, `ein`, ...) on every line.
+    "Todo.md",
+    "Doku.md",
+    "Settings.md",
+    "docs/design/deadline-admission.md",
+    "docs/design/test-scenarios.md",
+    "docs/design/nvme-tier-analysis.md",
+    # Server logs written by serve.sh on the box; not source.
+    "logs/",
 ]
