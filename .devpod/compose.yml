@@ -8,8 +8,8 @@ services:
     image: atlas-gb10-dev:local
     container_name: atlas-gb10
     restart: "no"
-    networks:
-      - proxy_net
+    ports:
+      - "127.0.0.1:11434:11434"
     expose:
       - "11434"
     ipc: host
@@ -77,10 +77,6 @@ services:
             "Qwen/Qwen-Image-2.1"
           ]
     command: ["sleep", "infinity"]
-
-networks:
-  proxy_net:
-    external: true
 
 volumes:
   atlas-cargo-registry:

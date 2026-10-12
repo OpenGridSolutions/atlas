@@ -1,0 +1,16 @@
+services:
+  atlas-dev:
+    command: ["./serve.sh"]
+    # NVMe-session-sweep configuration (tests/nvme_session_sweep.py).
+    # ATLAS_KV_OVERCOMMIT=1 comes from compose.yml and is REQUIRED here:
+    # 4 x 16k sequences do not fit a 1 GiB pool, boot aborts without it.
+    environment:
+      - ATLAS_MEM_DEBUG=1
+      - RUST_LOG=info,memdebug=debug
+      - ATLAS_MAX_SEQ_LEN=16384
+      # --kv-pool-gb 1 forces pool pressure (LRU eviction -> NVMe tier).
+      - ATLAS_SERVE_EXTRA_ARGS=--nvme-cache-dir /var/tmp/atlas-nvme-sweep --kv-pool-gb 1
+      # Observability (PR C): anomaly pushes + SQLite event store. The
+      # store lives on the bind mount so it survives container recreation.
+      - ATLAS_NTFY_TOPIC=jonas-dgx-spark001
+      - ATLAS_EVENT_DB=/workspace/logs/atlas-events.db
