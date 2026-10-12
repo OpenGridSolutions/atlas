@@ -379,6 +379,34 @@ impl KvTier {
         ok
     }
 
+    // ── Compaction entries (CMP-11): `.cmp` records beside the blocks ──
+
+    /// Payload of the `.cmp` record at `key` (bumps recency).
+    pub fn cmp_get(&self, key: &[u8; 16]) -> Option<Vec<u8>> {
+        if !self.store.contains(key, Kind::Cmp) {
+            return None;
+        }
+        self.store.get(key, Kind::Cmp).map(|r| r.payload)
+    }
+
+    /// Refresh `last_access` of a `.cmp` record and its predecessors.
+    pub fn cmp_touch(&self, key: &[u8; 16]) {
+        if self.store.contains(key, Kind::Cmp) {
+            self.store.touch(key);
+        }
+    }
+
+    /// Queue a `.cmp` record (`pred` = previous entry or zero).
+    pub fn cmp_put(&self, key: [u8; 16], pred: [u8; 16], payload: Vec<u8>) {
+        self.submit(WriteJob {
+            kind: Kind::Cmp,
+            key,
+            pred,
+            token_count: 0,
+            payload,
+        });
+    }
+
     /// Telemetry: store stats + queue depth.
     pub fn stats(&self) -> (StoreStats, u64, u64) {
         (

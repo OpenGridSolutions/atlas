@@ -131,7 +131,9 @@ fn canonicalize_json(s: &str) -> Option<String> {
     Some(canonical_value_to_string(&v))
 }
 
-fn canonical_value_to_string(v: &serde_json::Value) -> String {
+/// Sorted-key, whitespace-free JSON — shared with the compaction
+/// message chain (CMP-1).
+pub(crate) fn canonical_value_to_string(v: &serde_json::Value) -> String {
     let mut out = String::new();
     write_canonical(&mut out, v);
     out

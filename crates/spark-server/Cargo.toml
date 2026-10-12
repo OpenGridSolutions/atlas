@@ -45,6 +45,7 @@ spark-comm = { path = "../spark-comm", default-features = false }
 spark-storage = { path = "../spark-storage", default-features = false }
 anyhow = { workspace = true }
 blake3 = "1"
+unicode-normalization = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

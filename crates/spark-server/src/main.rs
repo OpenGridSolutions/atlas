@@ -28,6 +28,7 @@ mod arena_sched;
 mod auth;
 mod citation;
 mod cli;
+mod compaction;
 mod conversation_store;
 pub mod grammar;
 mod halluc_probe;

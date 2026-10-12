@@ -203,3 +203,46 @@ lazy_static::lazy_static! {
     )
     .unwrap();
 }
+
+// ── E7 context compaction (TEL-8) ──
+lazy_static! {
+    /// Compaction entries created, by policy ∈ {summarize, truncate} and
+    /// trigger ∈ {sync, background}.
+    pub static ref COMPACTIONS_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "atlas_compactions_total",
+        "Context compactions performed",
+        &["policy", "trigger"]
+    )
+    .unwrap();
+
+    /// Wall time of one compaction (summary generation included).
+    pub static ref COMPACTION_SECONDS: prometheus::Histogram = prometheus::register_histogram!(
+        "atlas_compaction_seconds",
+        "Context compaction duration in seconds",
+        vec![0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 45.0, 90.0, 180.0]
+    )
+    .unwrap();
+
+    /// Prompt tokens replaced by summaries.
+    pub static ref COMPACTION_REPLACED_TOKENS_TOTAL: IntCounter = register_int_counter!(
+        "atlas_compaction_replaced_tokens_total",
+        "Prompt tokens replaced by context compaction"
+    )
+    .unwrap();
+
+    /// Requests served with a compaction entry applied.
+    pub static ref COMPACTION_APPLIED_TOTAL: IntCounter = register_int_counter!(
+        "atlas_compaction_applied_requests_total",
+        "Chat requests whose history was filtered by a compaction entry"
+    )
+    .unwrap();
+
+    /// Requests refused with context_length_exceeded, by reason ∈
+    /// {policy_reject, not_compactable}.
+    pub static ref CONTEXT_REJECTED_TOTAL: IntCounterVec = register_int_counter_vec!(
+        "atlas_context_rejected_total",
+        "Requests refused with context_length_exceeded",
+        &["reason"]
+    )
+    .unwrap();
+}
