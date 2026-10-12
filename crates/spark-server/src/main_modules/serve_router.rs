@@ -182,6 +182,10 @@ pub(crate) async fn build_and_serve(
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            crate::compaction::policy::context_policy_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             model_state_middleware,
         ))
         .layer(axum::middleware::from_fn_with_state(

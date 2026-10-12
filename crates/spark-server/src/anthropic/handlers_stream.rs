@@ -108,7 +108,15 @@ pub(super) async fn wrap_chat_sse_for_anthropic(
     });
 
     let stream = tokio_stream::wrappers::ReceiverStream::new(rx);
-    Sse::new(stream)
+    let mut resp = Sse::new(stream)
         .keep_alive(KeepAlive::default())
-        .into_response()
+        .into_response();
+    // Protocol parity (T-API-01): the chat pipeline's informational
+    // headers (compaction, swap, estimate) survive the re-wrap.
+    for (name, value) in parts.headers.iter() {
+        if name.as_str().starts_with("x-atlas-") {
+            resp.headers_mut().insert(name.clone(), value.clone());
+        }
+    }
+    resp
 }

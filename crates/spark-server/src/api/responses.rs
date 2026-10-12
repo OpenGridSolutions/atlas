@@ -172,7 +172,7 @@ pub async fn responses_endpoint(
     // request. Use the _inner variant because we already have a parsed
     // struct (no raw bytes available to dump at this layer; the Responses
     // handler dumps at its own entry point if --dump is enabled).
-    let resp = chat_completions_inner(state.0.clone(), None, chat_req, None).await;
+    let resp = chat_completions_inner(state.0.clone(), None, chat_req, None, None).await;
     let conv_pair = conversation_id.map(|cid| (state.conversation_store.clone(), cid));
     let resp = translate_chat_response_to_responses(
         resp,

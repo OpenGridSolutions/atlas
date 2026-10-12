@@ -231,13 +231,15 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
     if args.disable_thinking {
         tracing::info!("--disable-thinking set: thinking is forced OFF for every request");
     }
-    if let Some(threshold) = args.auto_compact {
-        tracing::info!(
-            "Auto-compact enabled: threshold={:.0}% of max_seq_len ({})",
-            threshold * 100.0,
-            args.max_seq_len
-        );
-    }
+    tracing::info!(
+        policy = args.default_context_policy.as_str(),
+        trigger_pct = args.compaction_trigger_pct,
+        tail_pct = args.compaction_tail_pct,
+        summary_max_tokens = args.compaction_summary_max_tokens,
+        output_reserve = args.compaction_output_reserve,
+        "E7 context compaction configured (max_seq_len {})",
+        args.max_seq_len
+    );
 }
 
 pub(crate) fn resolve_model_name(

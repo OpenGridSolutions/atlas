@@ -22,8 +22,11 @@
 //! - `sampling_setup` — preset / penalty / stop-token / grammar /
 //!                      timeout / logprobs resolution
 
+mod finish;
 mod loop_detect;
 mod msg_entry;
+mod overflow;
+mod prepare;
 mod sampling_setup;
 mod template;
 mod thinking;
@@ -34,6 +37,7 @@ use axum::response::{IntoResponse, Json, Response};
 use std::sync::Arc;
 
 use crate::AppState;
+use crate::compaction::{ContextPolicy, RequestCompaction};
 use crate::openai::ChatCompletionRequest;
 
 use super::compact::openai_error_response;
@@ -42,6 +46,7 @@ pub async fn chat_completions(
     State(state): State<Arc<AppState>>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     prio: Option<axum::extract::Extension<crate::main_modules::middleware::RequestPriority>>,
+    policy: Option<axum::extract::Extension<crate::compaction::ContextPolicy>>,
     body: axum::body::Bytes,
 ) -> Response {
     // Parse the body ourselves (instead of using axum's `Json`
@@ -92,6 +97,7 @@ pub async fn chat_completions(
     };
     let est_header = admission.header_secs(&state);
     let priority = prio.map(|p| p.0.0).unwrap_or(false);
+    let policy = policy.map(|p| p.0);
     let resp = match super::lazy_swap::prepare_model_gate(
         &state,
         &req.model,
@@ -102,7 +108,7 @@ pub async fn chat_completions(
     .await
     {
         Ok(super::lazy_swap::GatePass::Ready(ms)) => {
-            let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+            let resp = chat_completions_inner(state, req_ctx, req, dump_seq, policy).await;
             super::lazy_swap::attach_swap_header(resp, ms)
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) if req.stream => {
@@ -115,14 +121,14 @@ pub async fn chat_completions(
                 keepalive,
                 Box::pin(async move {
                     let _hold = admission;
-                    chat_completions_inner(state, req_ctx, req, dump_seq).await
+                    chat_completions_inner(state, req_ctx, req, dump_seq, policy).await
                 }),
             )
         }
         Ok(super::lazy_swap::GatePass::Wait(ticket)) => match ticket.wait().await {
             crate::arena_sched::TicketOutcome::Granted => {
                 let ms = ticket.waited().as_millis() as u64;
-                let resp = chat_completions_inner(state, req_ctx, req, dump_seq).await;
+                let resp = chat_completions_inner(state, req_ctx, req, dump_seq, policy).await;
                 super::lazy_swap::attach_swap_header(resp, Some(ms))
             }
             outcome => super::lazy_swap::wait_outcome_response(outcome, &req.model),
@@ -136,12 +142,22 @@ pub async fn chat_completions(
 /// [`chat_completions`] after body capture, and by the Responses
 /// API adapter (which builds a `ChatCompletionRequest` in-memory
 /// and skips HTTP body bytes). `dump_seq` is `Some` only on the
-/// public handler path.
+/// public handler path. `policy` is the request's context policy
+/// (CTX-1); `None` means the operator default.
+///
+/// E7 flow: the message chain over the client's history is computed
+/// first and the latest matching compaction entry applied (CMP-2); the
+/// prompt is then rendered once. If it does not fit the window (fit
+/// rule in `CompactionConfig::fits`) the policy decides: `reject` →
+/// 400, otherwise a new entry is created synchronously (CMP-10) and the
+/// prompt rendered again; a streaming client receives `: compacting`
+/// keep-alives meanwhile (WAIT-2).
 pub(crate) async fn chat_completions_inner(
     state: Arc<AppState>,
     req_ctx: Option<axum::extract::Extension<crate::rate_limiter::RequestContext>>,
     mut req: ChatCompletionRequest,
     dump_seq: Option<u64>,
+    policy: Option<ContextPolicy>,
 ) -> Response {
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
@@ -160,253 +176,66 @@ pub(crate) async fn chat_completions_inner(
         && req.tools.as_ref().is_some_and(|t| !t.is_empty())
         && !req.tool_choice.as_ref().is_some_and(|tc| tc.is_none());
 
-    // Tool-parser behavioral system prompt REMOVED again (2026-05-25 PM).
-    //
-    // Re-injecting the qwen3_coder `system_prompt` (with its
-    // `<parameter=content>[package]\nname = "x"</parameter>` example
-    // and `For 'Write'/'Edit' tools specifically: ...` guidance) was a
-    // mid-day attempt to give the model better multi-line content
-    // hints. Live opencode v39 session showed the opposite effect:
-    // the model emitted LITERAL `<tool_call><bash><command>` XML as
-    // CONTENT (with HTML-entity escaping like `&amp;`) because TWO
-    // tool-format guidances were competing — the chat template's
-    // `tools` argument AND my injected prompt — combined with PR 73's
-    // `qwen3_xml` parser. The model got confused which format to use
-    // and emitted free-form XML that the parser couldn't recognise.
-    //
-    // Per user's recall: the "MUCH better" state had `thinking_in_tools=true`
-    // and the chat template alone (no injection). Reverting matches
-    // that state. PR 73's qwen3_xml + native FP8 SSM + streaming
-    // byte-exact + gate-BF16 + thinking_in_tools=true is the live
-    // combination.
+    let policy = policy.unwrap_or(state.compaction.default_policy);
+    let mut cmp = RequestCompaction::new(&state, &rt, &mut req, policy);
 
-    // ST-995 fix: restore the parser-specific behavioral system prompt #90 removed.
-    // For the hermes parser this is the canonical NousResearch function-calling
-    // prompt ("you MAY call one or more functions... don't make assumptions"),
-    // which the GDN model needs to correctly DECLINE on irrelevance prompts. With
-    // it (and compact tool-JSON) hallucination returns to ~96 (vs 30/64 without).
-    if tools_active && let Some(ref parser) = rt.tool_call_parser {
-        let default_choice = crate::tool_parser::ToolChoice::Mode("auto".to_string());
-        let tool_choice = req.tool_choice.as_ref().unwrap_or(&default_choice);
-        let tool_prompt = parser.system_prompt(req.tools.as_deref().unwrap_or(&[]), tool_choice);
-        if let Some(first) = req.messages.first_mut().filter(|m| m.role == "system") {
-            first.content.text = format!("{}\n\n{}", tool_prompt, first.content.text);
-        } else {
-            req.messages.insert(
-                0,
-                crate::openai::IncomingMessage::synthetic_system(tool_prompt),
+    let mut prepared = match prepare::prepare_prompt(&state, &rt, &mut req, tools_active) {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+
+    let window = state.max_seq_len;
+    let prompt_len = prepared.prompt_tokens.len();
+    let fits = match policy {
+        // CTX-2: `reject` keeps the pre-E7 rule (output is clamped).
+        ContextPolicy::Reject => prompt_len < window,
+        _ => state.compaction.fits(prompt_len, req.max_tokens, window),
+    };
+    if !fits {
+        if policy == ContextPolicy::Reject {
+            return overflow::reject_response(&state, prompt_len);
+        }
+        if req.stream {
+            let keepalive = state.sse_keepalive;
+            return super::queued_sse::respond_while_compacting(
+                keepalive,
+                Box::pin(async move {
+                    let prepared = match overflow::resolve_overflow(
+                        &state,
+                        &rt,
+                        &mut cmp,
+                        &mut req,
+                        tools_active,
+                    )
+                    .await
+                    {
+                        Ok(p) => p,
+                        Err(resp) => return resp,
+                    };
+                    let info = cmp.info();
+                    let resp = finish::finish_request(
+                        state,
+                        rt,
+                        req_ctx,
+                        req,
+                        dump_seq,
+                        tools_active,
+                        prepared,
+                    )
+                    .await;
+                    overflow::attach_compaction_headers(resp, info.as_ref())
+                }),
             );
         }
+        prepared =
+            match overflow::resolve_overflow(&state, &rt, &mut cmp, &mut req, tools_active).await {
+                Ok(p) => p,
+                Err(resp) => return resp,
+            };
     }
 
-    tracing::info!(
-        "Request: model={}, messages={}, tools={}, tools_active={}, tool_choice={:?}, stream={}, temp={:?}, max_tokens={}, freq_pen={:?}, rep_pen={:?}",
-        req.model,
-        req.messages.len(),
-        req.tools.as_ref().map_or(0, |t| t.len()),
-        tools_active,
-        req.tool_choice,
-        req.stream,
-        req.temperature,
-        req.max_tokens,
-        req.frequency_penalty,
-        req.repetition_penalty,
-    );
-
-    // ── Phase 1: build MsgEntry vec + image preprocess + cwd ────
-    let msg_entry::BuildOut {
-        messages,
-        cwd_hint,
-        image_pixels,
-        image_pad_counts,
-    } = match msg_entry::build_msg_entries(&state, &rt, &req, tools_active) {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-
-    // ── Phase 1.5: merge server-level chat_template_kwargs default ─
-    // When the client sends no thinking parameters and the server has a
-    // --default-chat-template-kwargs flag set, inject those kwargs into
-    // the request so the existing resolve_thinking() chain sees them as
-    // normal request-body fields. We don't mutate the resolution logic —
-    // we just pre-populate the field it already checks.
-    if let Some(ref default_kw) = state.default_chat_template_kwargs
-        && !req.thinking_explicitly_requested()
-    {
-        req.chat_template_kwargs = Some(default_kw.clone());
-    }
-
-    // ── Phase 2: thinking resolution (pre-template) ─────────────
-    let (enable_thinking, thinking_budget) =
-        thinking::resolve_thinking(&state, &rt, &req, tools_active);
-
-    // ── Phase 4: generic loop / spinning detection + task pin ───
-    let loop_detect::LoopDetectOut {
-        suppress_tool_call,
-        tool_call_repeat_count,
-    } = loop_detect::check_loops(&req, tools_active);
-
-    // ── Phase 5: render Jinja template + image-pad expansion ────
-    let template::TemplateOut {
-        prompt_tokens,
-        enable_thinking,
-        thinking_budget,
-    } = match template::render_template(
-        &state,
-        &rt,
-        &req,
-        &messages,
-        &image_pad_counts,
-        enable_thinking,
-        thinking_budget,
-        tools_active,
-    ) {
-        Ok(o) => o,
-        Err(resp) => return resp,
-    };
-
-    let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
-    let tools_count = req.tools.as_ref().map_or(0, |t| t.len());
-    tracing::info!(
-        "Session {session_hash:#x}: {prompt_tokens} prompt tokens, tools={tools_active} ({tools_count} defined)",
-        prompt_tokens = prompt_tokens.len()
-    );
-    let prompt_len = prompt_tokens.len();
-    if prompt_len >= state.max_seq_len {
-        return openai_error_response(
-            StatusCode::BAD_REQUEST,
-            format!(
-                "Prompt too long: {prompt_len} tokens exceeds max_seq_len {} (leave room for output tokens)",
-                state.max_seq_len
-            ),
-        );
-    }
-
-    // ── Phase 6: sampling preset / stop / grammar / timeout ─────
-    let sampling_setup::SamplingSetup {
-        temperature,
-        top_k,
-        top_p,
-        top_n_sigma,
-        min_p,
-        repetition_penalty,
-        presence_penalty,
-        frequency_penalty,
-        dry_multiplier,
-        dry_base,
-        dry_allowed_length,
-        lz_penalty,
-        logit_bias,
-        max_tokens,
-        stop_tokens,
-        tool_choice_required,
-        grammar_spec,
-        timeout_at,
-        top_logprobs,
-    } = match sampling_setup::build_sampling(
-        &state,
-        &rt,
-        &req,
-        enable_thinking,
-        tools_active,
-        suppress_tool_call,
-        tool_call_repeat_count,
-    ) {
-        Ok(s) => s,
-        Err(resp) => return resp,
-    };
-
-    // Clamp the generation budget to the context that is actually left
-    // (Plan.md 2.1). Nothing downstream bounds prompt + max_tokens: an
-    // unclamped budget runs the sequence past the context window until
-    // the KV pool starves — which kills the whole decode batch with an
-    // untyped stream error instead of a clean `finish_reason: "length"`.
-    // `prompt_len < max_seq_len` is guaranteed by the 400 above.
-    let requested_max_tokens = max_tokens;
-    let max_tokens = max_tokens.min(state.max_seq_len - prompt_len);
-    if max_tokens < requested_max_tokens {
-        tracing::info!(
-            requested = requested_max_tokens,
-            clamped = max_tokens,
-            prompt_len,
-            "max_tokens clamped to remaining context (max_seq_len {})",
-            state.max_seq_len
-        );
-    }
-
-    // ── Phase 7: dispatch streaming or blocking ─────────────────
-    if req.stream {
-        return super::chat_stream_dispatch::dispatch_streaming(
-            state,
-            rt,
-            &req,
-            req_ctx,
-            dump_seq,
-            prompt_tokens,
-            session_hash,
-            image_pixels,
-            max_tokens,
-            temperature,
-            top_k,
-            top_p,
-            top_n_sigma,
-            min_p,
-            repetition_penalty,
-            presence_penalty,
-            frequency_penalty,
-            dry_multiplier,
-            dry_base,
-            dry_allowed_length,
-            lz_penalty,
-            logit_bias.clone(),
-            enable_thinking,
-            thinking_budget,
-            tools_active,
-            tool_choice_required,
-            suppress_tool_call,
-            cwd_hint.clone(),
-            stop_tokens,
-            grammar_spec.clone(),
-            top_logprobs,
-            timeout_at,
-        )
-        .await;
-    }
-
-    super::chat_blocking::run_blocking_path(super::chat_blocking::BlockingPathArgs {
-        state,
-        rt,
-        req,
-        req_ctx,
-        dump_seq,
-        prompt_tokens,
-        session_hash,
-        image_pixels,
-        max_tokens,
-        temperature,
-        top_k,
-        top_p,
-        top_n_sigma,
-        min_p,
-        repetition_penalty,
-        presence_penalty,
-        frequency_penalty,
-        dry_multiplier,
-        dry_base,
-        dry_allowed_length,
-        lz_penalty,
-        logit_bias,
-        stop_tokens,
-        enable_thinking,
-        thinking_budget,
-        tools_active,
-        tool_choice_required,
-        suppress_tool_call,
-        grammar_spec,
-        top_logprobs,
-        timeout_at,
-        cwd_hint,
-        prompt_len,
-    })
-    .await
+    let info = cmp.info();
+    let resp =
+        finish::finish_request(state, rt, req_ctx, req, dump_seq, tools_active, prepared).await;
+    overflow::attach_compaction_headers(resp, info.as_ref())
 }

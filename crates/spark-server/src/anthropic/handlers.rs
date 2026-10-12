@@ -26,7 +26,11 @@ use super::types::*;
 /// response back into Anthropic format. The Anthropic-specific surface is
 /// strictly format conversion — no policy or sampling decisions are made
 /// here.
-pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Bytes) -> Response {
+pub async fn messages(
+    State(state): State<Arc<AppState>>,
+    policy: Option<axum::extract::Extension<crate::compaction::ContextPolicy>>,
+    body: axum::body::Bytes,
+) -> Response {
     // 1. Parse the Anthropic request.
     let req: MessagesRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -125,7 +129,16 @@ pub async fn messages(State(state): State<Arc<AppState>>, body: axum::body::Byte
     //    watchdog, sampling preset, and prompt mutation logic lives there.
     //    A gate rejection takes the same error-forwarding path below.
     let chat_resp = match gate {
-        Ok(_) => crate::api::chat_completions_inner(state.clone(), None, chat_req, None).await,
+        Ok(_) => {
+            crate::api::chat_completions_inner(
+                state.clone(),
+                None,
+                chat_req,
+                None,
+                policy.map(|p| p.0),
+            )
+            .await
+        }
         Err(resp) => resp,
     };
     drop(admission);

@@ -370,24 +370,44 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 256)]
     pub ssm_checkpoint_interval: usize,
 
-    /// Enable automatic context compaction for long conversations.
-    /// **DISABLED BY DEFAULT** (2026-04-25): the auto-compactor has
-    /// historically been a source of agent loops — synthesised
-    /// continuation messages and middle-of-history truncation
-    /// themselves trigger drift (cf. opencode issues #15533, #17169,
-    /// #19339). Oversize requests get a clean 400 error
-    /// (`Prompt too long`) rather than a silently-rewritten context.
-    ///
-    /// Only pass `--auto-compact[=THRESHOLD]` if you have explicitly
-    /// validated that compaction is safe for your model + workload.
-    /// Without a value: threshold=0.75 (compact at 75% of max_seq_len).
-    /// With a value: compact at that fraction (e.g., 0.80 = 80%).
-    ///
-    /// Method: Active Context Compression (arXiv:2601.07190) — the
-    /// server uses the model itself to summarize older conversation
-    /// turns into a condensed knowledge block.
-    #[arg(long, value_name = "THRESHOLD", num_args = 0..=1, default_missing_value = "0.75")]
-    pub auto_compact: Option<f32>,
+    /// E7 context compaction: behaviour when a conversation does not
+    /// fit the context window and the client sent no
+    /// `X-Atlas-Context-Policy` header (CTX-1). `summarize` replaces the
+    /// older turns by a model-written summary, `truncate` drops them,
+    /// `reject` answers HTTP 400 `context_length_exceeded` (the
+    /// pre-E7 behaviour).
+    #[arg(long, value_enum, default_value_t = crate::compaction::ContextPolicy::Summarize)]
+    pub default_context_policy: crate::compaction::ContextPolicy,
+
+    /// Fill level of the window (percent) at which a compaction entry is
+    /// prepared in the background (CMP-8).
+    #[arg(long, default_value_t = 70)]
+    pub compaction_trigger_pct: u8,
+
+    /// Minimum share of the window (percent) kept as verbatim recent
+    /// turns when compacting (CMP-5).
+    #[arg(long, default_value_t = 25)]
+    pub compaction_tail_pct: u8,
+
+    /// Output budget of the summary the arena model writes (CMP-7).
+    #[arg(long, default_value_t = 768)]
+    pub compaction_summary_max_tokens: usize,
+
+    /// Output tokens the fit rule reserves: a request fits when
+    /// `prompt + min(max_tokens, reserve) <= max_seq_len`; above that
+    /// the context policy applies. Replaces the slot buffer of the
+    /// original requirements.
+    #[arg(long, default_value_t = 2048)]
+    pub compaction_output_reserve: usize,
+
+    /// File with the summarisation prompt (CMP-7); default: built-in.
+    #[arg(long)]
+    pub compaction_prompt_file: Option<String>,
+
+    /// Do NOT keep the first user message in the never-summarised head
+    /// (CMP-4; default: it is kept).
+    #[arg(long, default_value_t = false)]
+    pub compaction_no_keep_first_user: bool,
 
     /// Default top-n-sigma for sampling (filter tokens by logit z-score).
     /// 0.0 = disabled. Recommended: 1.0 for NVFP4 models AND for agent

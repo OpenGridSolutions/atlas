@@ -121,6 +121,7 @@ pub fn build_state_json(state: &AppState) -> serde_json::Value {
     });
     serde_json::json!({
         "arena": arena,
+        "compaction": state.compaction_index.state_json(),
         "sidecars": {
             "transcribe": state.transcribe_models,
             "image": state.image_models,

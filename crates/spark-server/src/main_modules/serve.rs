@@ -1224,7 +1224,10 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         request_tx,
         vision_max_pixels,
         tool_max_tokens: args.tool_max_tokens,
-        auto_compact_threshold: args.auto_compact,
+        compaction: crate::compaction::CompactionConfig::from_args(&args)?,
+        compaction_index: std::sync::Arc::new(crate::compaction::CompactionIndex::new(
+            crate::compaction::index::DEFAULT_RAM_ENTRIES,
+        )),
         model_ready: model_ready.clone(),
         arena: arena_dispatcher,
         sse_keepalive: std::time::Duration::from_secs(args.sse_keepalive_interval_s.max(1)),

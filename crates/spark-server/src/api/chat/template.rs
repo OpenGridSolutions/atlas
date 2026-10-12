@@ -13,7 +13,7 @@ use std::sync::Arc;
 use crate::openai::ChatCompletionRequest;
 use crate::{AppState, ModelRuntime};
 
-use super::super::compact::{compact_messages, openai_error_response};
+use super::super::compact::openai_error_response;
 use super::msg_entry::MsgEntry;
 
 /// Outputs of [`render_template`]. Threaded into the streaming /
@@ -28,7 +28,7 @@ pub(super) struct TemplateOut {
 #[allow(clippy::too_many_arguments)]
 #[allow(clippy::result_large_err)]
 pub(super) fn render_template(
-    state: &Arc<AppState>,
+    _state: &Arc<AppState>,
     rt: &ModelRuntime,
     req: &ChatCompletionRequest,
     messages: &[MsgEntry],
@@ -89,32 +89,6 @@ pub(super) fn render_template(
         } else {
             None
         };
-
-    // Progressive auto-compact (DISABLED BY DEFAULT 2026-04-25 —
-    // see project_no_auto_compaction memory feedback).
-    let auto_compact_active = state
-        .auto_compact_threshold
-        .map(|t| t > 0.0)
-        .unwrap_or(false);
-    let json_messages = if auto_compact_active && json_messages.len() > 4 {
-        let trial_tokens = rt
-            .tokenizer
-            .apply_chat_template_openai(
-                &json_messages,
-                jinja_tools.as_deref(),
-                template_thinking,
-                rt.behavior.disable_tool_steering,
-            )
-            .map(|t| t.len())
-            .unwrap_or(0);
-        if trial_tokens > (state.max_seq_len as f32 * 0.70) as usize {
-            compact_messages(&json_messages, trial_tokens, state.max_seq_len)
-        } else {
-            json_messages
-        }
-    } else {
-        json_messages
-    };
 
     let prompt_tokens = match rt.tokenizer.apply_chat_template_openai(
         &json_messages,

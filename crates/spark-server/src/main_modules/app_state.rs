@@ -86,8 +86,11 @@ pub struct AppState {
     pub vision_max_pixels: Option<usize>,
     /// Max output tokens for tool-calling requests (CLI --tool-max-tokens).
     pub tool_max_tokens: usize,
-    /// Auto-compact threshold (fraction of max_seq_len). None = disabled.
-    pub auto_compact_threshold: Option<f32>,
+    /// E7 context compaction configuration (`--default-context-policy`,
+    /// `--compaction-*`).
+    pub compaction: crate::compaction::CompactionConfig,
+    /// Compaction entries (RAM index in front of the `.cmp` records).
+    pub compaction_index: std::sync::Arc<crate::compaction::CompactionIndex>,
     /// Readiness flag: true after model is loaded and scheduler is running.
     pub model_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Pressure-based arena dispatcher (requirements §7). `None` when
