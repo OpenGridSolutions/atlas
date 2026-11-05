@@ -130,3 +130,11 @@ bench/**/*.csv
 bench/**/*.pid
 bench/fp8_dgx2_drift/harness/oc
 refenv/
+
+# Runtime log output: server (ATLAS_LOG_DIR default), bench/smoke scripts,
+# events DB. Written on every run, never read back by tests or build.
+/logs/
+
+# Qwen-Image-2.1 golden reference tensors (~280 MB) for the manual
+# `qwen_image_golden` example. Regenerate with scripts/qwen_image_ref_dump.py.
+/golden/
