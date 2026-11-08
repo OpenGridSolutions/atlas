@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/logo.svg" alt="Atlas Inference Engine" width="560" />
-</p>
-
 <h1 align="center">Atlas · OpenGrid edition</h1>
 
 <p align="center">
@@ -129,10 +125,10 @@ sequenceDiagram
     D->>S: drain A (grace 2 s), finish_reason="model_swap" if needed
     S->>T: persist released KV blocks + SSM snapshots (bounded flush)
     S->>W: unload A: drop index, rewind bump pointer (no munmap)
-    N-->>W: O_DIRECT stream B's snapshot into the arena (io_uring, or preads; ~7.6 GiB/s)
+    N-->>W: O_DIRECT stream B's snapshot into the arena (io_uring or preads, ~7.6 GiB/s)
     W->>S: rebuild B: dequant tables, pools, CUDA graphs, tokenizer, masks
     D->>S: forward queued B requests
-    S->>C: tokens … + header X-Atlas-Model-Swap: <ms>
+    S->>C: tokens … + header X-Atlas-Model-Swap: #lt;ms#gt;
 ```
 
 **Registry, not restart.** `serve.sh` (or the `ATLAS_PRESEED_*` environment) declares every
