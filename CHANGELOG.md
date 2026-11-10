@@ -31,12 +31,6 @@ behind specific subsystems — see the
   time. Set to `false` for `qwen3-next-80b-a3b`, whose copies (40.5 GiB)
   never fit on GB10 so far and would otherwise appear as soon as the free
   reading is accurate.
-- `.devpod/install.sh` writes the NVIDIA module option
-  `NVreg_EnableSystemMemoryPools` from `ATLAS_NVIDIA_SYSTEM_MEMORY_POOLS`
-  (required; `0` in the checked-in env). With the driver default the freed
-  load staging stays cached in the driver, invisible to `MemAvailable` and
-  `cuMemGetInfo`, and the KV pool is sized too small (80B: 11 GiB). Needs a
-  host reboot.
 - `--sidecar-small-max-gib` defaults to 0: embed/rerank models go through
   the arena queue instead of staying resident beside the arena model.
 - `serve.sh` requires `ATLAS_NVME_CACHE_DIR` and always passes

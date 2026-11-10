@@ -406,13 +406,15 @@ There is no published container image for this fork yet. Build it on a GB10 box.
 
 **Prerequisites.** NVIDIA driver ≥ 580 (CUDA 13.0), the NVIDIA Container Toolkit, a
 HuggingFace cache with the checkpoints you list, and an NVMe with room for one ATLASRAW
-snapshot per model (roughly the checkpoint size each) plus the KV store.
+snapshot per model (roughly the checkpoint size each) plus the KV store. Avoid the 610
+driver branch: it keeps freed GPU memory cached without reporting it as free, and the
+server then sizes the KV pool far too small (80B on 610.43.02: 11 GB, on 620.70.06:
+55 GB). 615.71.09 and later report it.
 
 **1. Container as a systemd service.** [`.devpod/`](.devpod/) holds a rootless Podman
 Quadlet: a CUDA 13 dev image with persistent cargo and sccache volumes, and the model
 registry and serve flags in [`.devpod/atlas-gb10.env`](.devpod/atlas-gb10.env). Install it
-once on the host (asks for sudo; it offers the reboot that the memlock limit and the
-NVIDIA driver option need):
+once on the host (asks for sudo; it offers the reboot that the memlock limit needs):
 
 ```bash
 ./.devpod/install.sh

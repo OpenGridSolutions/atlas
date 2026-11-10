@@ -145,7 +145,6 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `ATLAS_KV_OVERCOMMIT=1` | Boot-Worst-Case-Check → Warnung (paged on-demand). Nur mit festem `--max-seq-len` nötig; mit `[serving].sessions` passt jede Session per Konstruktion |
 | `ATLAS_NVME_CACHE_DIR` | `serve.sh`: Verzeichnis des NVMe-Session-Stores, Pflicht (wird zu `--nvme-cache-dir`) |
 | `ATLAS_MAX_SEQ_LEN` | `serve.sh`: festes Kontextfenster für Testläufe (wird zu `--max-seq-len`); unset = `[serving].sessions` |
-| `ATLAS_NVIDIA_SYSTEM_MEMORY_POOLS` | Nur Host (`.devpod/install.sh`, wirkt nach Reboot): Wert für die Treiber-Option `NVreg_EnableSystemMemoryPools`. `0` = der Treiber gibt freigegebenen Speicher an den Kernel zurück, statt ihn in seinen Pools zu halten (dort sieht ihn keine Frei-Speicher-Messung, der KV-Pool fällt zu klein aus). `driver` = Treiber-Default belassen. Stand live: `/proc/driver/nvidia/params` |
 | `ATLAS_KV_EXTERNAL_RESERVE_GB` | Manueller Co-Tenant-Abzug im KV-Budget |
 | `ATLAS_SKIP_OOM_PREFLIGHT=1` | Loader-Preflight aus (UMA-False-Negatives) |
 | `ATLAS_MEM_DEBUG=1` (+ `RUST_LOG=off,memdebug=debug`) | Per-Request-KV-Tracing (Doku.md §7) |
