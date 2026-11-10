@@ -259,6 +259,13 @@ MODEL.toml-Default) — alles bis `</think>` landet in
 true` auf einem Instruct-Modell ohne Thinking-Training ⇒ leerer
 content + Halluzinations-Drift (Phase V in Plan.md).
 
+**Prefill-Taktung** (`prefill_pacer.rs`, `--prefill-max-pause-ms` /
+`--prefill-decode-share`): Solange Sessions generieren, wird ein neuer
+Prompt in Stücken eingelesen, deren Größe der Server pro Modell aus einer
+Zeitvorgabe ableitet; dazwischen behalten die laufenden Sessions einen
+einstellbaren Anteil der GPU-Zeit. Details:
+`docs/design/prefill-pacing.md`.
+
 ### 4.4 Kategorien & Sidecar
 
 Jedes registrierte Modell trägt die Kategorie seiner ENV-Liste

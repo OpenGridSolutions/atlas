@@ -116,6 +116,7 @@ The bulk of the inference logic:
 HTTP + scheduling:
 - `main_modules/serve.rs` — boot sequence (12 phases under `serve_phases/`).
 - `scheduler/` — main scheduler loop (`run()`), per-step phases (decode, verify K=2/3/γ, MTP, NGram, prefill, sample, emit, lifecycle).
+- `prefill_pacer.rs` — prefill pacing: time-sized prefill chunks and the decode share while a prompt is prefilled next to running sessions (`docs/design/prefill-pacing.md`).
 - `api/` — OpenAI-compat handlers (`chat_completions`, `responses`, `completions`, etc.).
 - `anthropic/` — Anthropic API translation layer.
 - `openai/` — OpenAI request/response types.
