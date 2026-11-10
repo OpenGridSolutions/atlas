@@ -1,0 +1,98 @@
+# syntax=docker/dockerfile:1.7
+###############################################################################
+# atlas — dev / debug image (manual build + manual serve, with build caches)
+#
+# Derived from docker/gb10/Dockerfile. Single stage: prod *builder* deps AND
+# prod *runtime* libs, so you build in-container by hand (via serve.sh) and run
+# `spark` in the same container. Source is bind-mounted; rebuilding never needs
+# an image rebuild. Cargo registry, target dir, and sccache all persist across
+# container recreations via named volumes (see compose.dev.yml).
+###############################################################################
+
+# Same digest-pinned devel base as the production builder stage.
+# CUDA 13.0 toolkit runs fine on the host's 13.3 driver (toolkit <= driver).
+ARG CUDA_IMAGE=docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
+FROM ${CUDA_IMAGE}
+
+ARG DEBIAN_FRONTEND=noninteractive
+ENV TZ=Europe/Berlin
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
+RUN apt-get update && \
+    (apt-get install -y software-properties-common 2>/dev/null || true) && \
+    (add-apt-repository universe 2>/dev/null || sed -i 's/^deb \(.*\) noble main.*/deb \1 noble main universe/' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null) && \
+    apt-get update && \
+    apt-get install -y micro fish
+
+# Build deps (match prod builder) + RDMA/netlink runtime libs.
+# NOTE: NCCL already ships in the CUDA *devel* base, so we do NOT install/upgrade
+# libnccl2 here (that conflicts with the held libnccl-dev and breaks apt). The
+# prod image only upgrades NCCL in its *runtime* stage, which has no dev headers.
+# The >=2.28 symmetric-memory path is multi-GPU (EP=2) only; single-GPU dev on
+# the GB10 never exercises it, so the preinstalled NCCL is fine. We just report it.
+RUN apt-get update -qq && \
+    apt-get install -y -qq --no-install-recommends \
+        curl ca-certificates build-essential pkg-config git cmake libclang-dev \
+        libibverbs1 librdmacm1 ibverbs-providers libnl-3-200 libnl-route-3-200 && \
+    rm -rf /var/lib/apt/lists/* && \
+    echo "NCCL present in base: $(dpkg-query -W -f='${Version}' libnccl2 2>/dev/null || echo 'not found')"
+
+# --- Rust (match prod: rustup default stable) --------------------------------
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/root/.cargo/bin:/root/.local/bin:${PATH}"
+ENV CUDA_HOME=/usr/local/cuda
+# rust-toolchain.toml pins 1.85, but a transitive dep (libloading 0.9) needs
+# >= 1.88; `stable` defers to the rustup-installed toolchain (currently 1.93).
+ENV RUSTUP_TOOLCHAIN=stable
+
+# --- sccache: compiler cache (rustc + nvcc) for fast (re)builds ---------------
+# Cache dir lives on a persistent volume (see compose). CARGO_INCREMENTAL=0 is
+# required for sccache to actually cache (already the default for release).
+ARG SCCACHE_VERSION=v0.15.0
+RUN curl -fsSL "https://github.com/mozilla/sccache/releases/download/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-musl.tar.gz" \
+      | tar -xz -C /tmp && \
+    mv "/tmp/sccache-${SCCACHE_VERSION}-aarch64-unknown-linux-musl/sccache" /usr/local/bin/sccache && \
+    chmod +x /usr/local/bin/sccache && \
+    rm -rf /tmp/sccache-*
+ENV RUSTC_WRAPPER=sccache \
+    SCCACHE_DIR=/build/sccache \
+    SCCACHE_CACHE_SIZE=20G \
+    CARGO_INCREMENTAL=0
+
+# --- Claude Code (native installer pulls the linux-arm64 binary) --------------
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -sf /root/.local/bin/claude /usr/local/bin/claude
+
+# --- atlas multi-target build selectors (match prod builder env) --------------
+ENV ATLAS_TARGET_HW=gb10 \
+    ATLAS_TARGET_MODEL=* \
+    ATLAS_TARGET_QUANT=*
+
+# --- build caches (dirs are backed by named volumes at runtime) ---------------
+#   /root/.cargo/registry + /root/.cargo/git  -> downloaded crate sources
+#   /build/target                             -> compiled artifacts
+#   /build/sccache                            -> sccache compiler cache
+ENV CARGO_TARGET_DIR=/build/target
+ENV RUST_LOG=info
+
+# Prod runtime keeps jinja-templates at /jinja-templates. Point that at the
+# mounted source so `spark` finds them at the expected path (resolves at run).
+RUN ln -sfn /workspace/jinja-templates /jinja-templates
+
+# bind-mounted repo is owned by the host user -> silence git's ownership guard
+RUN git config --global --add safe.directory /workspace
+
+# --- pdfium: PDF rendering for /v1/ocr (prod runtime lib, see docker/gb10/Dockerfile)
+# Pin to the same release as prod: .../releases/download/chromium%2F<N>/pdfium-linux-arm64.tgz
+ARG PDFIUM_URL=https://github.com/bblanchon/pdfium-binaries/releases/latest/download/pdfium-linux-arm64.tgz
+RUN mkdir -p /tmp/pdfium && \
+    curl -fsSL "$PDFIUM_URL" | tar -xz -C /tmp/pdfium && \
+    cp /tmp/pdfium/lib/libpdfium.so /usr/lib/ && \
+    ldconfig && \
+    rm -rf /tmp/pdfium
+
+WORKDIR /workspace
+
+# Idle by default: nothing auto-builds, nothing auto-serves.
+# Run ./serve.sh inside the container to cleanup -> build -> serve.
+CMD ["sleep", "infinity"]

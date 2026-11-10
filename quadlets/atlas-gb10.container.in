@@ -1,0 +1,62 @@
+# Podman Quadlet for the Atlas GB10 dev/serve container (rootless, user unit).
+#
+# Template: quadlets/install.sh replaces @REPO@ with the checkout path and
+# writes the result to ~/.config/containers/systemd/atlas-gb10.container.
+# Quadlet counterpart of `.devpod/compose.yml` + `.devpod/serve.override.yml`;
+# the image is built from quadlets/Containerfile before every start.
+#
+# Lifecycle: serve.sh is PID 1. When the server dies (e.g. OOM kill, status
+# 137) the container exits, ExecStopPost drops the host page cache (NVIDIA's
+# documented stopgap for unified memory that is not handed back), and systemd
+# starts the container again after RestartSec.
+
+[Unit]
+Description=Atlas GB10 inference server (dev container)
+After=network-online.target
+Wants=network-online.target
+# Crash-loop brake: more than 5 starts in 10 minutes -> unit stays failed.
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Container]
+Image=localhost/atlas-gb10-dev:local
+ContainerName=atlas-gb10
+Exec=./serve.sh
+PublishPort=127.0.0.1:11434:11434
+AddDevice=nvidia.com/gpu=all
+AddCapability=IPC_LOCK
+Ulimit=memlock=-1:-1
+# ipc: host as in compose.yml (Quadlet has no dedicated key).
+PodmanArgs=--ipc host
+
+# Live source and host caches.
+Volume=@REPO@:/workspace
+Volume=%h/.cache/huggingface:/root/.cache/huggingface
+Volume=%h/.claude:/root/.claude
+# Build caches: the named volumes podman-compose created (project prefix
+# `devpod_`), referenced by name so the existing caches are reused.
+Volume=devpod_atlas-cargo-registry:/root/.cargo/registry
+Volume=devpod_atlas-cargo-git:/root/.cargo/git
+Volume=devpod_atlas-target:/build/target
+Volume=devpod_atlas-sccache:/build/sccache
+
+# Single source for the container environment; read from the checkout on
+# every start, so edits only need `systemctl --user restart atlas-gb10`.
+EnvironmentFile=@REPO@/quadlets/atlas-gb10.env
+
+[Service]
+Restart=always
+# Let the GB10 driver pool hand back the dead process's memory first.
+RestartSec=15
+# Rebuild the image before every start. Unchanged Containerfile = layer-cache
+# no-op (seconds); a changed one is rebuilt, hence no start timeout. `-` = if
+# the build fails, the server still comes up on the previous image (the
+# failure is in the journal).
+TimeoutStartSec=infinity
+ExecStartPre=-/usr/bin/podman build --tag localhost/atlas-gb10-dev:local --file @REPO@/quadlets/Containerfile @REPO@/quadlets
+# Runs after EVERY container exit, before the restart. `-` = a failing
+# cache drop must not keep the server down.
+ExecStopPost=-/usr/bin/sudo -n /usr/local/sbin/atlas-drop-caches
+
+[Install]
+WantedBy=default.target
