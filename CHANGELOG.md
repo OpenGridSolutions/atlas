@@ -132,7 +132,7 @@ behind specific subsystems — see the
   over hysteresis, idle fast-path) replace the synchronous first-request-
   pays lazy swap. Swap costs (T_load/T_warmup/T_unload/T_persist) are
   measured per real swap, EWMA-refined and persisted next to the snapshots;
-  the measured runtime reserve feeds the KV budget (MEM-7). Queued
+  the measured build footprint (MEM-7) is stored for diagnosis. Queued
   streaming requests answer immediately with SSE keep-alives; non-streaming
   requests get estimated-wait 503s below the proxy timeout.
 - **Priority tier** behind `--trust-proxy-headers` (`X-Priority: high`,

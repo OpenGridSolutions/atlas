@@ -17,12 +17,15 @@
 //! (default 8 GiB/s — the on-box ATLASRAW number), 10 s warmup, 2 s
 //! unload.
 //!
-//! MEM-7: the measured post-build runtime reserve (derived buffers + SSM
-//! pools, without the KV pool) is stored per model and replaces the
-//! preflight estimate on later loads when it is plausible (within 0.5–2×
-//! of the estimate; outside that band the estimate wins and the
-//! discrepancy is logged — the GB10 driver pool can poison MemAvailable
-//! deltas).
+//! MEM-7: the measured build footprint without payload and KV pool
+//! (derived weights, buffer arena, SSM pools) is stored per model for
+//! diagnosis. It does NOT feed the KV budget: most of it is allocated
+//! before the pool is sized and is therefore already part of the measured
+//! Atlas-own footprint, so it is not the quantity the preflight reserve
+//! estimates (allocations AFTER the pool). Standing in for that reserve it
+//! halved the 27B's (4.3 instead of 8.5 GiB, a value learned while the
+//! GB10 driver pool hid allocations) and the host killed the server on
+//! 2026-11-10.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -48,7 +51,8 @@ pub struct CostEntry {
     pub t_persist_ms_per_gib: f64,
     /// Measured snapshot read bandwidth (GiB/s).
     pub read_gib_per_s: f64,
-    /// MEM-7: measured runtime reserve (bytes), KV pool excluded.
+    /// MEM-7: measured build footprint without payload and KV pool
+    /// (bytes). Diagnostic, not applied to the KV budget.
     pub runtime_reserve_bytes: u64,
     /// Observation counts (load, unload, persist, reserve).
     pub samples: (u32, u32, u32, u32),
@@ -202,7 +206,7 @@ pub fn observe_persist(model_id: &str, ms: f64, gib: f64) {
     });
 }
 
-/// MEM-7: measured post-build runtime reserve (KV pool excluded).
+/// MEM-7: measured build footprint without payload and KV pool.
 pub fn observe_runtime_reserve(model_id: &str, bytes: u64) {
     if bytes == 0 {
         return;
@@ -215,39 +219,6 @@ pub fn observe_runtime_reserve(model_id: &str, bytes: u64) {
             e.samples.3 = e.samples.3.saturating_add(1);
         })
     });
-}
-
-/// MEM-7 application policy: use the measurement when it is plausible
-/// relative to the preflight estimate, else keep the estimate.
-pub fn runtime_reserve_or(model_id: &str, estimate: usize) -> usize {
-    let Some(Some(e)) = with(|c| c.get(model_id)) else {
-        return estimate;
-    };
-    if e.samples.3 == 0 || e.runtime_reserve_bytes == 0 {
-        return estimate;
-    }
-    let measured = e.runtime_reserve_bytes as usize;
-    let lo = estimate / 2;
-    let hi = estimate.saturating_mul(2);
-    if measured >= lo && measured <= hi.max(1) {
-        if measured != estimate {
-            tracing::info!(
-                model = model_id,
-                measured_gib = measured as f64 / (1u64 << 30) as f64,
-                estimate_gib = estimate as f64 / (1u64 << 30) as f64,
-                "runtime reserve: using measured value (MEM-7)"
-            );
-        }
-        measured
-    } else {
-        tracing::warn!(
-            model = model_id,
-            measured_gib = measured as f64 / (1u64 << 30) as f64,
-            estimate_gib = estimate as f64 / (1u64 << 30) as f64,
-            "runtime reserve: measurement implausible (driver-pool noise?) — keeping estimate"
-        );
-        estimate
-    }
 }
 
 /// `/internal/state`: all measured cost entries.

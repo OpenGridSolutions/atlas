@@ -881,7 +881,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                         inference_reserve as f64 / (1u64 << 30) as f64,
                     );
                 }
-                crate::swap_costs::runtime_reserve_or(&prep.model_id, r.inference_reserve)
+                r.inference_reserve
             };
             // Track the rebuild's derived-buffer allocations for the next
             // unload (same window as the boot build).
@@ -1499,9 +1499,9 @@ fn vision_pad_id_of(config: &atlas_core::config::ModelConfig) -> u32 {
 }
 
 /// MEM-7 measurement: MemAvailable delta across `build_model` minus the
-/// KV pool the budget reserved — the model's real runtime footprint
-/// (derived buffers, SSM pools, CUDA workspaces). The plausibility clamp
-/// in `swap_costs::runtime_reserve_or` guards against driver-pool noise.
+/// KV pool the budget reserved — everything the build allocates besides
+/// the payload and the pool (derived weights, buffer arena, SSM pools).
+/// Diagnostic only, see `swap_costs`.
 fn observe_runtime_reserve_delta(model_id: &str, avail_before: Option<usize>) {
     let (Some(before), Some(after)) = (
         avail_before,
