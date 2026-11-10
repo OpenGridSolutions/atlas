@@ -179,11 +179,6 @@ impl Qwen3AttentionLayer {
         {
             ops::log_cutlass_nvfp4_route(label, n, out_dim, h);
             ops::cutlass_nvfp4_proj_from_fp8(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(fp8w) = weight_opt.and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, normed, fp8w, out, n, out_dim, h, stream)?;
         } else if let Some(fp8t) = fp8w_t
             && use_t_pipelined
             && self.w8a16_gemm_t_pipelined_k.0 != 0

@@ -172,7 +172,7 @@ pub fn cublas_fp8_rowwise_proj(
 
 /// Dequantize a block-scaled FP8 weight `[N,K]` → BF16 on-GPU once, cached by the
 /// FP8 weight pointer (weights are immutable after load). 128×128 blocks + FP32
-/// scales (the holo layout). Backs [`cublas_bf16_proj`].
+/// scales (the holo layout). Backs [`cutlass_bf16_proj`].
 fn dequant_fp8_bf16_cached(
     gpu: &dyn spark_runtime::gpu::GpuBackend,
     fp8w: &crate::weight_map::Fp8Weight,
@@ -243,8 +243,8 @@ fn dequant_fp8_bf16_uncached(
 
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16
 /// for a NATIVE BF16 dense weight (Plan.md H.2) — no dequant step at all,
-/// the weight pointer feeds cuBLASLt directly. Same `ATLAS_CUBLAS_GEMM=1`
-/// gate as `cublas_bf16_proj`; used by the bf16 QKV/FFN/o_proj prefill
+/// the weight pointer feeds cuBLASLt directly. Gated by
+/// `ATLAS_CUBLAS_GEMM=1`; used by the bf16 QKV/FFN/o_proj prefill
 /// dispatches where the hand-written pipelined kernel hits ~27% of the
 /// BF16 ceiling on GB10.
 #[allow(clippy::too_many_arguments)]
@@ -259,24 +259,6 @@ pub fn cublas_bf16_dense(
     stream: u64,
 ) -> anyhow::Result<()> {
     spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, dense.weight.0, out.0, m, n, k, stream)
-}
-
-/// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through cuBLASLt BF16.
-/// The FP8 weight is dequantized to BF16 once (cached); W16A16 here is strictly
-/// more accurate than the blockscaled W8A8 path it replaces.
-#[allow(clippy::too_many_arguments)]
-pub fn cublas_bf16_proj(
-    gpu: &dyn spark_runtime::gpu::GpuBackend,
-    act: spark_runtime::gpu::DevicePtr,
-    fp8w: &crate::weight_map::Fp8Weight,
-    out: spark_runtime::gpu::DevicePtr,
-    m: u32,
-    n: u32,
-    k: u32,
-    stream: u64,
-) -> anyhow::Result<()> {
-    let w_bf16 = dequant_fp8_bf16_cached(gpu, fp8w, stream)?;
-    spark_runtime::cublaslt::bf16_gemm_act_weight_t(act.0, w_bf16, out.0, m, n, k, stream)
 }
 
 /// Route a projection `out[M,N] = act[M,K] @ weightᵀ` through CUTLASS BF16.

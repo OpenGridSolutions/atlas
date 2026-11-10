@@ -66,6 +66,13 @@ behind specific subsystems — see the
   pool where 56 GB fit, and the host killed the server during the first
   request. The footprint is the unclamped difference now, and the reserve
   is always the estimate.
+- FP8 weights no longer take the cuBLASLt BF16 route under
+  `ATLAS_CUBLAS_GEMM=1` (GDN QKVZ, attention q/k/v on the cache-skip path,
+  o_proj). The route dequantized each FP8 weight to a BF16 copy on the
+  first prefill — after the KV pool was sized, so outside its budget
+  (Qwen3.8-27B: ≈ 10.6 GiB by calculation), and never freed at unload. The
+  switch now only applies to weights stored as BF16, as documented; FP8
+  projections run on the native FP8 kernels (W8A8 block-scaled / W8A16).
 - Fused prefill+decode step (`mixed_forward`): chunks inside a cached
   prefix now take the standard prefill path — the fused step has no cache
   skip / SSM replay and recomputed them (re-advancing SSM state). It also

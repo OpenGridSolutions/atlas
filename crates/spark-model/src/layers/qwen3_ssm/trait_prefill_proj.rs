@@ -45,11 +45,10 @@ impl Qwen3SsmLayer {
             Some("1")
         );
         let force_w8a8 = ops::fp8_blockscaled_prefill_enabled();
-        // High-efficiency cuBLASLt BF16 GEMM path (ATLAS_CUBLAS_GEMM=1). The
-        // hand-written blockscaled mma.sync GEMM hits only ~30% of the cuBLAS
-        // ceiling on GB10 (32 vs 85 TFLOPS bf16 on this shape). Dequant the FP8
-        // weight to BF16 once (cached), then route the projection through
-        // cuBLASLt. W16A16 here is strictly more accurate than the W8A8 path.
+        // `ATLAS_CUBLAS_GEMM=1` does not apply here: it routes weights that
+        // are stored as BF16 through cuBLASLt. An FP8 weight stays FP8 — the
+        // cuBLAS route needed a BF16 copy of it, allocated on the first
+        // prefill and so never part of the KV budget.
         if ops::cutlass_nvfp4_qkvz_enabled()
             && let Some(ref nvfp4_t) = self.qkvz_nvfp4_t
         {
@@ -99,19 +98,6 @@ impl Qwen3SsmLayer {
                 normed,
                 ctx.buffers.fp8_act(),
                 ctx.buffers.fp8_act_scale(),
-                fp8w,
-                proj_dst,
-                k,
-                qkvz_size as u32,
-                h as u32,
-                stream,
-            )?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(ref fp8w) = self.qkvz_fp8w
-        {
-            ops::cublas_bf16_proj(
-                ctx.gpu,
-                normed,
                 fp8w,
                 proj_dst,
                 k,

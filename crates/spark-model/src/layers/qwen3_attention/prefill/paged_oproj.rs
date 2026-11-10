@@ -45,11 +45,6 @@ impl Qwen3AttentionLayer {
                 nq * hd,
                 stream,
             )?;
-        } else if ops::cublas_gemm_enabled()
-            && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
-        {
-            // cuBLASLt BF16 (3x the hand-written mma.sync GEMM on GB10).
-            ops::cublas_bf16_proj(ctx.gpu, attn_out, fp8w, o_out, n, h, nq * hd, stream)?;
         } else if force_w8a8
             && let Some(fp8w) = self.o_weight.as_ref().and_then(|w| w.as_fp8())
             && self.per_token_group_quant_fp8_k.0 != 0
