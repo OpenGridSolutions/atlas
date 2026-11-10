@@ -37,4 +37,5 @@ pub(crate) mod ssm_snapshot;
 pub(crate) mod trait_impl;
 pub(crate) mod types;
 
+pub use ssm_pool::ssm_state_pool_bytes;
 pub use types::TransformerModel;

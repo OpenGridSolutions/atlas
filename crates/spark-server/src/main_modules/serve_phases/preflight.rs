@@ -24,15 +24,14 @@ pub(crate) fn preflight_reserve(
 ) -> Result<ReservePreflight> {
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
-    let ssm_multiplier = if args.speculative || args.self_speculative || args.ngram_speculative {
-        1 + (args.num_drafts + 1) + 1
-    } else {
-        1
-    };
-    let ssm_pool_bytes = args.max_batch_size
-        * config.num_ssm_layers()
-        * (h_state_bytes + conv_state_bytes)
-        * ssm_multiplier;
+    // SSOT: the pool's own byte formula (it allocates max_batch_size + 1
+    // slots — the dummy slot was missing from this estimate).
+    let ssm_pool_bytes = spark_model::model::ssm_state_pool_bytes(
+        config,
+        args.max_batch_size,
+        args.speculative || args.self_speculative || args.ngram_speculative,
+        args.num_drafts + 1,
+    );
     let spec_tokens_pre = if args.speculative || args.self_speculative || args.ngram_speculative {
         args.num_drafts + 2
     } else {
@@ -170,13 +169,13 @@ pub(crate) fn preflight_reserve(
     let spec_on = args.speculative || args.self_speculative || args.ngram_speculative;
     tracing::debug!(
         "Preflight reserve breakdown: \
-         ssm_pool={} MB ({}× max_batch × {} ssm_layers × (h+conv)), \
+         ssm_pool={} MB ({} slots incl. dummy × {} ssm_layers × (h+conv)), \
          ssm_snapshot={} MB ({} slots), \
          gdn_two_phase={} MB ({} tokens), \
          cuda_headroom={} MB ({}), \
          spec_on={}, num_drafts={}",
         ssm_pool_bytes / (1024 * 1024),
-        ssm_multiplier,
+        args.max_batch_size + 1,
         config.num_ssm_layers(),
         ssm_snapshot_bytes / (1024 * 1024),
         args.ssm_cache_slots,

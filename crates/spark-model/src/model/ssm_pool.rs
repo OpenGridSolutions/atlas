@@ -53,6 +53,28 @@ pub(crate) struct SsmStatePool {
     pub(super) free_slots: Mutex<Vec<usize>>,
 }
 
+/// Device bytes [`SsmStatePool::new`] allocates for `max_slots` claimable
+/// slots. SSOT for the server's reserve estimate: the pool is allocated
+/// after the KV pool is sized, so the KV budget has to set exactly this
+/// much aside.
+pub fn ssm_state_pool_bytes(
+    config: &ModelConfig,
+    max_slots: usize,
+    has_mtp: bool,
+    num_intermediates: usize,
+) -> usize {
+    let per_slot =
+        config.num_ssm_layers() * (config.ssm_h_state_bytes() + config.ssm_conv_state_bytes());
+    // State, plus (speculative only) the intermediates and one checkpoint.
+    let copies = if has_mtp {
+        1 + num_intermediates + 1
+    } else {
+        1
+    };
+    // +1: the dummy slot.
+    (max_slots + 1) * per_slot * copies
+}
+
 impl SsmStatePool {
     pub(super) fn new(
         config: &ModelConfig,
@@ -74,7 +96,8 @@ impl SsmStatePool {
         // claimed slots if the scheduler invariant ("active sequences
         // occupy contiguous slots [0..n)") is ever broken — silent SSM
         // state corruption. Costs `(h_bytes + conv_bytes) *
-        // num_ssm_layers` extra GPU memory (~kilobytes per pool).
+        // num_ssm_layers` extra GPU memory — one full slot (80B: 76.5 MiB),
+        // counted by `ssm_state_pool_bytes`.
         let total_slots = max_slots + 1;
 
         let mut h_state_pools = Vec::with_capacity(num_ssm_layers);
@@ -463,6 +486,60 @@ impl Drop for SlotGuard {
             tracing::debug!("SlotGuard::drop releasing un-freed SSM slot {idx}");
             self.pool.release_slot(idx);
         }
+    }
+}
+
+#[cfg(test)]
+mod pool_bytes_tests {
+    use super::*;
+    use spark_runtime::gpu::mock::MockGpuBackend;
+
+    fn small_config() -> ModelConfig {
+        let mut config = ModelConfig::qwen3_next_80b_nvfp4();
+        config.linear_num_key_heads = 1;
+        config.linear_key_head_dim = 4;
+        config.linear_num_value_heads = 2;
+        config.linear_value_head_dim = 4;
+        config
+    }
+
+    fn allocated(pool: &SsmStatePool, gpu: &MockGpuBackend) -> usize {
+        [
+            &pool.h_state_pools,
+            &pool.conv_state_pools,
+            &pool.h_intermediate_pools,
+            &pool.conv_intermediate_pools,
+            &pool.h_checkpoint_pools,
+            &pool.conv_checkpoint_pools,
+        ]
+        .into_iter()
+        .flatten()
+        .map(|&ptr| gpu.read_alloc(ptr).expect("pool pointer is live").len())
+        .sum()
+    }
+
+    #[test]
+    fn pool_bytes_match_what_the_pool_allocates() {
+        let config = small_config();
+        let gpu = MockGpuBackend::new();
+        let pool = SsmStatePool::new(&config, 4, false, 0, &gpu).unwrap();
+        let bytes = ssm_state_pool_bytes(&config, 4, false, 0);
+        assert_eq!(bytes, allocated(&pool, &gpu));
+        // Five slots, not four: the dummy slot is real memory.
+        let per_slot =
+            config.num_ssm_layers() * (config.ssm_h_state_bytes() + config.ssm_conv_state_bytes());
+        assert_eq!(bytes, 5 * per_slot);
+    }
+
+    #[test]
+    fn pool_bytes_include_the_speculative_pools() {
+        let config = small_config();
+        let gpu = MockGpuBackend::new();
+        let pool = SsmStatePool::new(&config, 4, true, 3, &gpu).unwrap();
+        assert_eq!(
+            ssm_state_pool_bytes(&config, 4, true, 3),
+            allocated(&pool, &gpu)
+        );
     }
 }
 

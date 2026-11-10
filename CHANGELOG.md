@@ -73,6 +73,10 @@ behind specific subsystems — see the
   (Qwen3.8-27B: ≈ 10.6 GiB by calculation), and never freed at unload. The
   switch now only applies to weights stored as BF16, as documented; FP8
   projections run on the native FP8 kernels (W8A8 block-scaled / W8A16).
+- KV reserve estimate: the SSM state pool was counted with
+  `max_batch_size` slots but allocates one more (the dummy slot; 76.5 MiB
+  on the 80B, 151.5 MiB on Qwen3.8-27B). Estimate and pool share one
+  formula now (`ssm_state_pool_bytes`).
 - Fused prefill+decode step (`mixed_forward`): chunks inside a cached
   prefix now take the standard prefill path — the fused step has no cache
   skip / SSM replay and recomputed them (re-advancing SSM state). It also
