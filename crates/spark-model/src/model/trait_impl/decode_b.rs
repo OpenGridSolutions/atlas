@@ -462,6 +462,14 @@ impl TransformerModel {
             &prefill_tokens[prefill_chunk_start..prefill_chunk_start + n_prefill],
         );
         prefill_seq.seq_len = prefill_chunk_start + n_prefill;
+        // This pass wrote KV for the whole chunk: extend the contiguous
+        // valid prefix like `prefill_b_proc_range` does, or the cache insert
+        // of a later standard-path chunk stops at the first fused chunk.
+        if prefill_chunk_start <= prefill_seq.kv_valid_tokens {
+            prefill_seq.kv_valid_tokens = prefill_seq
+                .kv_valid_tokens
+                .max(prefill_chunk_start + n_prefill);
+        }
 
         Ok(crate::traits::MixedForwardResult {
             decode_logits,
