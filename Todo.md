@@ -561,6 +561,71 @@ nicht kompetitiv zur Datalab-API einsetzbar) — vor Produktivnutzung klären.
       modifiziert: frei für Research/Startups < 2 M$, nicht kompetitiv
       zur Datalab-API) vor Produktivnutzung/Image-Publishing.
 
+---
+
+## Phase 4 — Speichermodell: offene Schwächen
+
+Stand: 2026-11-10. Grundlage: Messlauf über alle zehn Modelle mit korrigiertem
+KV-Budget (ein Request je Modell, höchstens 4k Tokens; Treiber 620.70.06). Das
+Budget von 107,7 GiB hielt bei allen Modellen, geladen blieben 6,4–7,7 GiB
+`MemAvailable`. Der Basen-Clamp aus 0.1 ist seitdem ersetzt: Atlas-own ist die
+ungeklemmte Differenz `Baseline − free-now`, die MEM-7-Messung speist das Budget
+nicht mehr.
+
+- [ ] **4.1 Lastlauf je Modell.** Gemessen ist nur leichte Last. Offen: vier
+      parallele Anfragen, volle Fenster (200k und mehr), Bildeingaben bei den
+      VL-Modellen, NVMe-Tier bei vollem Pool. Der KV-Pool ist ab dem Laden
+      vollständig belegt (das Füllen kostet nichts), der Prozessspeicher außerhalb
+      der Geräte-Allokationen wuchs aber schon bei einer Anfrage um bis zu
+      0,7 GiB. Ablesen: `MemAvailable`-Minimum, RSS-Spitze, `late_peak_mib`.
+- [ ] **4.2 Budget nach dem Laden durchsetzen.** Nach dem Build wird gemessen
+      (`late_alloc_mib` / `late_peak_mib` im Heartbeat), aber nicht begrenzt;
+      wächst später etwas, gibt es nur die Heartbeat-Warnung. Der Abstand zum
+      Speicherende (12 GiB außerhalb des Budgets, davon etwa 7 frei) ist ein
+      Erfahrungswert — herleiten oder als Grenze erzwingen.
+- [ ] **4.3 Reserve-Schätzung prüfen statt loggen.** Sie stimmt bei allen zehn
+      Modellen auf zwei Nachkommastellen, ist aber eine Formel je Modellfamilie;
+      ein neues Modell oder eine andere Batch-Größe kann sie falsch machen, und
+      das steht dann nur in der Zeile `Build allocations:`. Der Load soll
+      abbrechen, wenn nach dem KV-Pool mehr allokiert wird als geschätzt.
+- [ ] **4.4 Messung vom Maschinenzustand entkoppeln.** Atlas-own ist die
+      Differenz von `MemAvailable + SwapFree` vor und nach dem Laden; alles, was
+      sich in dieser Zeit sonst ändert, landet in der Rechnung. Ein Swap-Ereignis
+      hat den VL-30B-Pool um 2,7 GiB verkleinert (52,3 statt 55,0 GiB); die
+      Gegenrichtung (Pool zu groß) ist möglich, wenn während des Ladens woanders
+      Speicher frei wird. Kandidat: Atlas-own aus den eigenen Byte-Zählern
+      (Arena + Build-Allokationen) statt aus der Systemmessung.
+- [ ] **4.5 Auslagerbare Gewichte.** Die Arena ist normaler Prozessspeicher,
+      nicht gepinnt. Unter Druck lagert der Kernel Gewichte aus, statt dass etwas
+      fehlschlägt, und der Server wird still langsam (Chandra → VL-30B einmal
+      78 s statt 18 s Ladezeit, 5,7 GiB Swap; nicht reproduziert, Ursache offen).
+      Zu klären: Ursache, und ob Swap-Nutzung während eines Loads ein Alarm sein
+      soll.
+- [ ] **4.6 Warnschwelle des Heartbeats.** `ATLAS_MEM_WARN_AVAIL_GB` liegt bei
+      8 GiB, planmäßig bleiben etwa 7 GiB frei: jede Heartbeat-Zeile mit geladenem
+      Modell ist eine Warnung in `critical.log`, ein echter Engpass fällt darin
+      nicht auf. Schwelle festlegen (Entscheidung offen).
+- [ ] **4.7 Fenster schwankt von Laden zu Laden.** Bei VL-30B, 27B und
+      TranslateGemma sind mehr Sessions konfiguriert, als die Regel ergibt; das
+      Fenster folgt dann der gemessenen Poolgröße (VL-30B: 169.344 und
+      177.888 Tokens in zwei Läufen). `[serving].sessions` aus den Messwerten
+      neu festlegen: Regel / konfiguriert → Fenster — 80B 12 / 11 → 262.144;
+      Coder-Next 13 / 11 → 262.144; VL-30B 5 / 6 → 177.888; 27B 6 / 7 →
+      191.488; Embedding-8B und Reranker-8B 27 / 26 → 40.960; VL-Embedding-8B
+      5 / 4 → 262.144; VL-Reranker-8B 4 / 4 → 260.560; TranslateGemma 3 / 4 →
+      92.192; Chandra 11 / 11 → 251.280.
+- [ ] **4.8 Treiberabhängigkeit.** Bis zu 1,3 GiB Kernel- und Treiberspeicher
+      kann Atlas nicht zählen, und die Rechnung setzt voraus, dass der Treiber
+      seinen Speicher korrekt verbucht (610er-Zweig tut es nicht). Nach jedem
+      Treiber-Update den Messlauf wiederholen; als Skript ins Repo holen (bisher
+      nur im Scratchpad).
+- [ ] **4.9 Sidecars messen.** Whisper und Qwen-Image haben kein KV-Budget und
+      waren nicht Teil des Messlaufs.
+- [ ] **4.10 Prefill-Tempo 27B klären.** 597 Tokens/s bei 4180 Tokens (zweimal
+      gemessen), eine ältere Messung nennt etwa 899 Tokens/s bei 4424 Tokens.
+      Kein Vergleich unter gleichen Bedingungen; vermutlich der Preis dafür, dass
+      FP8-Gewichte nicht mehr über cuBLASLt laufen. A/B fahren.
+
 ## Bestandsaufnahme Tests/Benchmarks
 
 | Zweck | Existiert | Wo |
