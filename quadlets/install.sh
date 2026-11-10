@@ -33,7 +33,8 @@ sed "s|@REPO@|${REPO}|g" "${HERE}/atlas-gb10.container.in" \
 echo "==> [2/5] cache-drop helper -> ${DROP_BIN} (root-owned)"
 # Copied out of the checkout on purpose: the sudoers rule must never point at
 # a file the unprivileged user (or the container) can rewrite.
-sudo install -o root -g root -m 0755 "${HERE}/atlas-drop-caches.sh" "${DROP_BIN}"
+# -D: /usr/local/sbin does not exist on every host.
+sudo install -D -o root -g root -m 0755 "${HERE}/atlas-drop-caches.sh" "${DROP_BIN}"
 
 echo "==> [3/5] sudoers rule -> ${SUDOERS}"
 TMP="$(mktemp)"
