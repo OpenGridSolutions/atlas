@@ -13,6 +13,7 @@ use std::time::Instant;
 use super::super::decode_logits_step::process_decode_logits;
 use super::super::sample_first_token;
 use super::super::types::{ActiveSeq, PrefillInProgress};
+use crate::prefill_pacer::PrefillPacer;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn run_standard_chunk_loop(
@@ -35,6 +36,7 @@ pub(super) fn run_standard_chunk_loop(
     adaptive_sampling: bool,
     completed_indices: &mut Vec<(usize, Option<u32>)>,
     did_mixed_step: &mut bool,
+    pacer: Option<&mut PrefillPacer>,
 ) {
     // TQ+ InnerQ: poll once per chunk to see if calibration has banked
     // enough K² stats to finalize scales. The driver itself is idempotent
@@ -70,7 +72,7 @@ pub(super) fn run_standard_chunk_loop(
         effective_max.min(slice_budget)
     };
     let mut chunk_len = remaining.min(cap);
-    let is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
+    let mut is_last = p.chunk_offset + chunk_len >= p.prompt_tokens.len();
     // Align intermediate chunks to GDN WY4 boundary (4 tokens).
     if !is_last && chunk_len >= 4 {
         chunk_len = (chunk_len / 4) * 4;
@@ -78,7 +80,22 @@ pub(super) fn run_standard_chunk_loop(
     // mixed_forward has no prefix-cache skip / SSM replay: it would recompute
     // (and for SSM layers re-advance) what the chunk-0 lookup already
     // restored. Chunks inside the cached prefix take the standard path.
-    let fuse_ok = p.seq.marconi_skip_to == 0 || p.chunk_offset >= p.seq.cached_prefix_tokens;
+    let mut fuse_ok = p.seq.marconi_skip_to == 0 || p.chunk_offset >= p.seq.cached_prefix_tokens;
+    // Pacer: the chunk is sized by time, and chunk 0 (cache lookup) and the
+    // last chunk (tail checkpoint, cache insert) keep the standard path.
+    // Not for MLA (single chunk, see above) or vision prompts.
+    let mut pacer = pacer.filter(|_| !model.is_mla() && !p.has_media);
+    if let Some(pc) = pacer.as_deref() {
+        let plan = pc.plan(
+            p.chunk_offset,
+            p.prompt_tokens.len(),
+            p.seq.marconi_skip_to,
+            p.seq.cached_prefix_tokens,
+            slice_budget,
+            max_prefill_tokens,
+        );
+        (chunk_len, is_last, fuse_ok) = (plan.len, plan.is_last, plan.fuse_ok);
+    }
 
     // ── Mixed forward: fuse prefill chunk + decode in one pass ──
     // ATLAS_BISECT_NO_MIX=1 forces this branch to false so we can
@@ -114,6 +131,9 @@ pub(super) fn run_standard_chunk_loop(
         ) {
             Ok(result) => {
                 p.chunk_offset += chunk_len;
+                if let Some(pc) = pacer.as_deref_mut() {
+                    pc.note_chunk(chunk_len);
+                }
                 tracing::info!(
                     "Mixed forward: prefill {}/{} tokens + {} decode",
                     p.chunk_offset,
@@ -209,6 +229,11 @@ pub(super) fn run_standard_chunk_loop(
         prefill_stream,
     ) {
         Ok(logits) => {
+            if let Some(pc) = pacer {
+                // Tokens below the cache-skip point cost nothing.
+                let computed_from = p.chunk_offset.max(p.seq.marconi_skip_to);
+                pc.note_chunk((p.chunk_offset + chunk_len).saturating_sub(computed_from));
+            }
             p.chunk_offset += chunk_len;
             tracing::info!(
                 "Prefill chunk {}/{} tokens",

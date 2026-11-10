@@ -81,6 +81,9 @@ pub(super) struct PrefillInProgress {
     pub session_hash: u64,
     pub seq: SequenceState,
     pub chunk_offset: usize,
+    /// The prompt carries images: its chunk boundaries stay as they are
+    /// (the vision-embedding overwrite counts pad tokens per chunk).
+    pub has_media: bool,
     pub max_tokens: usize,
     pub min_tokens: usize,
     pub eos_tokens: Vec<u32>,

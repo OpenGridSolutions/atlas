@@ -229,6 +229,7 @@ pub fn run(
     kv_tier: Option<Arc<crate::kv_tier::KvTier>>,
     drain_grace: std::time::Duration,
     growth_reserve_pct: u8,
+    mut pacer: Option<crate::prefill_pacer::PrefillPacer>,
 ) {
     // BAT-3: a slice of the pool stays free for running sequences'
     // growth; admission (and its spill guard) must leave it untouched.
@@ -424,6 +425,10 @@ pub fn run(
                     prefill_event = model
                         .create_event()
                         .expect("Failed to recreate prefill event after hot-swap load");
+                    // The measured step costs belong to the old model.
+                    if let Some(pc) = pacer.as_mut() {
+                        pc.reset();
+                    }
                     model_ready.store(true, std::sync::atomic::Ordering::Relaxed);
                     tracing::info!("Hot-swap: scheduler reopened with reloaded model");
                 }
@@ -649,6 +654,12 @@ pub fn run(
             }
         }
 
+        // Prefill pacer (--prefill-max-pause-ms): time-sliced interleaving
+        // on top of the always-mixed scheduling (chunk 0 deferred, FIFO-head
+        // prefill). EP and MLA cannot take paced chunks — unchanged there.
+        let mut pacer_now = pacer.as_mut().filter(|_| !model.is_ep() && !model.is_mla());
+        let always_mixed = always_mixed || pacer_now.is_some();
+
         // ── Start new requests ──
         start_new_requests(
             &*model,
@@ -718,6 +729,7 @@ pub fn run(
         }
 
         // ── Continue in-progress prefills ──
+        let (pace_t0, pace_waiting) = (Instant::now(), active.len());
         let did_mixed_step = continue_in_progress_prefills(
             &*model,
             &*policy,
@@ -737,6 +749,7 @@ pub fn run(
             tool_call_start_token,
             tool_call_end_token,
             adaptive_sampling,
+            pacer_now.as_deref_mut(),
         );
 
         if active.is_empty() {
@@ -921,6 +934,11 @@ pub fn run(
                     adaptive_sampling,
                 );
             }
+        }
+
+        // Pacer: book what the sessions that were decoding just waited.
+        if let Some(pc) = pacer_now {
+            pc.end_iteration(pace_t0.elapsed(), pace_waiting);
         }
 
         // ATLAS_MEM_DEBUG: once-per-step decode tick BEFORE retirement so a

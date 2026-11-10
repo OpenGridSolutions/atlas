@@ -74,6 +74,8 @@ See the [MTP deep dive](../deep-dives/mtp.md). Only one of `--speculative`, `--s
 | `--ssm-checkpoint-interval` | `256` | Blocks between SSM checkpoints |
 | `--scheduling-policy` | `fifo` | `fifo` or `slai` (SLO-aware) |
 | `--tbt-deadline-ms` | `100` | SLAI decode deadline |
+| `--prefill-max-pause-ms` | `0` (off) | Prefill pacing: longest wait one prefill step may impose on generating sessions. The chunk size follows from it (measured per model at runtime, capped by `--max-prefill-tokens`). Only while a session generates; not for EP, MLA models, prompts with images |
+| `--prefill-decode-share` | `50` | Prefill pacing: percent of GPU time generating sessions keep while a prompt is prefilled (`0` = a prefill step every iteration, `100` = the prefill waits until nobody generates). Needs `--prefill-max-pause-ms` > 0 |
 | `--auto-compact` | off | Active context compression threshold (e.g. 0.75 = 75% of max-seq-len) |
 | `--warmup-prompt` | — | File path; pre-filled at startup, its KV enters the prefix cache |
 

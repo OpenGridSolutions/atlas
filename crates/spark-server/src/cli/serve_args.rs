@@ -252,6 +252,24 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 8192)]
     pub max_prefill_tokens: usize,
 
+    /// Prefill pacing: longest wait (milliseconds) one prefill step may
+    /// impose on sessions that are generating. The chunk size follows
+    /// from it — measured per model at runtime instead of a fixed token
+    /// count — capped by --max-prefill-tokens. Only applies while a
+    /// session generates; a prefill running alone keeps full chunks.
+    /// 0 (default) = off: fixed chunks, scheduling policy decides.
+    /// Not applied to EP, MLA models and prompts with images.
+    #[arg(long, default_value_t = 0)]
+    pub prefill_max_pause_ms: u64,
+
+    /// Prefill pacing: share of GPU time (percent) the generating
+    /// sessions keep while a prompt is prefilled. After each prefill step
+    /// they get decode-only steps until the share is met. 0 = a prefill
+    /// step every iteration; 100 = the prefill waits until nobody
+    /// generates. Only used with --prefill-max-pause-ms > 0.
+    #[arg(long, default_value_t = 50, value_parser = clap::value_parser!(u8).range(0..=100))]
+    pub prefill_decode_share: u8,
+
     /// Minimum free GPU memory (in MB) to keep as a safety margin during
     /// model loading. If free memory drops below this threshold after any
     /// shard, loading is aborted to prevent system OOM. Default 4096 MB

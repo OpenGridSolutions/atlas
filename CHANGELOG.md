@@ -57,6 +57,17 @@ behind specific subsystems — see the
 
 ### Added
 
+- **Prefill pacing** (`--prefill-max-pause-ms`, `--prefill-decode-share`;
+  off by default): while a prompt is prefilled next to running sessions,
+  the prefill chunk is sized by time instead of tokens — the scheduler
+  measures fixed and per-token cost of a step per model and keeps one step
+  near the configured pause — and the running sessions keep the configured
+  share of GPU time through decode-only steps between chunks (100 = the
+  prefill waits until nobody generates). Chunk 0 is part of the
+  interleaving; middle chunks ride fused with the decode step. Without a
+  running session a prefill keeps full chunks. Not applied to EP, MLA
+  models and prompts with images. `serve.sh` reads
+  `ATLAS_PREFILL_MAX_PAUSE_MS` / `ATLAS_PREFILL_DECODE_SHARE`.
 - **NVMe KV tier** (`--nvme-cache-dir`): content-addressed block store for
   KV blocks, SSM snapshots and tail records, keyed by chained BLAKE3 block
   keys (`k_i = H(k_{i-1} ‖ tokens_i ‖ media_digests_i)`) shared with the RAM

@@ -1099,6 +1099,21 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     let max_prefill_tokens = prefill_budget;
     let swap_space_gb = args.swap_space_gb;
     let block_size = args.block_size;
+    // Prefill pacer: needs chunked prefill (it sizes the chunks).
+    let prefill_pacer = crate::prefill_pacer::PacerConfig::from_cli(
+        args.prefill_max_pause_ms,
+        args.prefill_decode_share,
+    )
+    .filter(|_| max_prefill_tokens > 0)
+    .map(|cfg| {
+        tracing::info!(
+            "Prefill pacing: max pause {} ms, decode share {} % (chunk ≤ {} tokens)",
+            cfg.max_pause.as_millis(),
+            args.prefill_decode_share,
+            max_prefill_tokens,
+        );
+        crate::prefill_pacer::PrefillPacer::new(cfg, max_prefill_tokens, block_size)
+    });
 
     // ── --high-speed-swap config validation (PCND: required-when-set) ──
     let high_speed_swap_cfg = serve_phases::validate_head_high_speed_swap(
@@ -1158,6 +1173,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             boot_kv_tier,
             std::time::Duration::from_millis(args.drain_grace_ms.max(1)),
             args.growth_reserve_pct,
+            prefill_pacer,
         );
     });
 

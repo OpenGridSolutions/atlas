@@ -83,6 +83,12 @@ EXTRA_ARGS=(${ATLAS_SERVE_EXTRA_ARGS:-})
 NTFY_ARGS=()
 [[ -n "${ATLAS_NTFY_TOPIC:-}" ]] && NTFY_ARGS=(--ntfy-topic "${ATLAS_NTFY_TOPIC}")
 [[ -n "${ATLAS_EVENT_DB:-}" ]] && NTFY_ARGS+=(--event-db "${ATLAS_EVENT_DB}")
+# Prefill pacing: while a prompt is read in, running sessions wait at most
+# ATLAS_PREFILL_MAX_PAUSE_MS per step and keep ATLAS_PREFILL_DECODE_SHARE
+# percent of the GPU time. Unset or 0 = off (fixed prefill chunks).
+PACE_ARGS=()
+[[ -n "${ATLAS_PREFILL_MAX_PAUSE_MS:-}" ]] && PACE_ARGS=(--prefill-max-pause-ms "${ATLAS_PREFILL_MAX_PAUSE_MS}")
+[[ -n "${ATLAS_PREFILL_DECODE_SHARE:-}" ]] && PACE_ARGS+=(--prefill-decode-share "${ATLAS_PREFILL_DECODE_SHARE}")
 set +e
 "${BIN}" serve "${MODEL_ARG[@]}" \
     --bind 0.0.0.0 \
@@ -95,6 +101,7 @@ set +e
     --scheduling-policy slai \
     --enable-prefix-caching \
     "${NTFY_ARGS[@]}" \
+    "${PACE_ARGS[@]}" \
     "${EXTRA_ARGS[@]}" \
     2>&1 | tee "${LOG}"
 STATUS=${PIPESTATUS[0]}

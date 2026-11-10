@@ -48,6 +48,7 @@ mod ngram;
 mod observe;
 mod ocr;
 mod openai;
+mod prefill_pacer;
 mod rate_limiter;
 pub mod reasoning_parser;
 mod refusal;

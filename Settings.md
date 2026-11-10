@@ -100,6 +100,8 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--enable-prefix-caching` | aus | Radix-Prefix-Cache |
 | `--ssm-cache-slots` / `--ssm-checkpoint-interval` | 0 / 0 | Marconi-SSM-Snapshots (16 / 256 für Multi-Turn) |
 | `--scheduling-policy` / `--tbt-deadline-ms` | fifo | SLAI = SLO-aware |
+| `--prefill-max-pause-ms` | 0 (aus) | Prefill-Taktung: längste Pause, die ein Prefill-Schritt laufenden Sessions zumutet. Die Stückgröße ergibt sich daraus (pro Modell zur Laufzeit gemessen, höchstens `--max-prefill-tokens`). Wirkt nur, solange gleichzeitig generiert wird; nicht bei EP, MLA-Modellen und Bild-Prompts. Prod (`ATLAS_PREFILL_MAX_PAUSE_MS`): 500 |
+| `--prefill-decode-share` | 50 | Prefill-Taktung: GPU-Zeitanteil in Prozent, den laufende Sessions behalten, während ein Prompt eingelesen wird (0 = Prefill-Schritt in jeder Iteration, 100 = Prefill wartet, bis niemand mehr generiert). Nur mit `--prefill-max-pause-ms` > 0. Prod (`ATLAS_PREFILL_DECODE_SHARE`): 50 |
 
 ### Per-Modell-relevant — CLI ist hier nur noch der EXPLIZITE Override
 

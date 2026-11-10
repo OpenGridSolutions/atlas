@@ -173,6 +173,7 @@ pub fn start_chunked_prefill(
                 req_session_hash,
                 seq,
                 0,
+                false, // vision is excluded from deferral (asserted above)
                 max_tokens,
                 req_min_tokens,
                 eos_tokens.to_vec(),
@@ -560,6 +561,7 @@ pub fn start_chunked_prefill(
                 req_session_hash,
                 seq,
                 chunk_len,
+                vision_slice.is_some() || !image_pixels.is_empty(),
                 max_tokens,
                 req_min_tokens,
                 eos_tokens.to_vec(),

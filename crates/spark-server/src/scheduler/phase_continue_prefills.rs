@@ -33,6 +33,7 @@ use spark_model::traits::Model;
 use super::phase_promote_prefills::promote_completed_prefills;
 use super::sample_first_token;
 use super::types::{ActiveSeq, PrefillInProgress};
+use crate::prefill_pacer::PrefillPacer;
 use crate::scheduling_policy::{ActiveSeqTiming, SchedulingPolicy};
 
 use run_batched_mixed::run_batched_mixed_step;
@@ -58,6 +59,19 @@ pub(super) fn poll_innerq() {
 #[cfg(not(feature = "cuda"))]
 pub(super) fn poll_innerq() {}
 
+/// B4: largest prefill slice that still fuses with `n_decode` decode lanes —
+/// padded decode + slice must fit the hidden buffer (else mixed_forward
+/// silently de-fuses to sequential decode_batch + prefill_chunk — weights
+/// loaded twice).
+fn fuse_cap(max_batch_tokens: usize, n_decode: usize) -> usize {
+    let padded_n = [2usize, 4, 8]
+        .iter()
+        .copied()
+        .find(|&s| s >= n_decode)
+        .unwrap_or(n_decode);
+    max_batch_tokens.saturating_sub(padded_n).max(4)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn continue_in_progress_prefills(
     model: &dyn Model,
@@ -78,8 +92,16 @@ pub(super) fn continue_in_progress_prefills(
     tool_call_start_token: Option<u32>,
     tool_call_end_token: Option<u32>,
     adaptive_sampling: bool,
+    mut pacer: Option<&mut PrefillPacer>,
 ) -> bool {
     let mut did_mixed_step = false;
+
+    // The pacer only applies while a decode waits on a prefill.
+    if active.is_empty()
+        && let Some(pc) = pacer.take()
+    {
+        pc.idle();
+    }
 
     if prefilling.is_empty() {
         return did_mixed_step;
@@ -114,7 +136,17 @@ pub(super) fn continue_in_progress_prefills(
     // return) for the cases that truly cannot fuse: EP, single-active-spec,
     // no active decode + policy says wait, or the hard-deadline slice==0.
     let mut slice_budget = max_prefill_tokens;
-    if always_mixed {
+    if let Some(pc) = pacer.as_deref_mut() {
+        // Pacer: the decode share replaces the policy gates — after a chunk
+        // the running sessions get their decode-only steps first.
+        if pc.decode_owed() {
+            return did_mixed_step;
+        }
+        // A prefill step runs this iteration; the chunk loop reports the
+        // tokens of a paced chunk (0 = cached / unpaced: no cost sample).
+        pc.note_chunk(0);
+        slice_budget = slice_budget.min(fuse_cap(max_batch_tokens, active.len()));
+    } else if always_mixed {
         // Can this iteration fuse a prefill chunk into active decode? The
         // single-stream mixed path (run_standard) requires: active decode,
         // not EP, not a single-active speculative path.
@@ -136,20 +168,8 @@ pub(super) fn continue_in_progress_prefills(
             if slice_budget == 0 {
                 return did_mixed_step;
             }
-            // B4: clamp so padded decode + prefill slice fit the hidden
-            // buffer (else mixed_forward silently de-fuses to sequential
-            // decode_batch + prefill_chunk — weights loaded twice).
-            let padded_n = [2usize, 4, 8]
-                .iter()
-                .copied()
-                .find(|&s| s >= active.len())
-                .unwrap_or(active.len());
-            let fuse_cap = max_batch_tokens.saturating_sub(padded_n).max(4);
-            debug_assert!(
-                fuse_cap >= 4,
-                "fuse cap underflow: max_batch_tokens={max_batch_tokens} padded_n={padded_n}"
-            );
-            slice_budget = slice_budget.min(fuse_cap);
+            // B4: clamp so padded decode + prefill slice fit the hidden buffer.
+            slice_budget = slice_budget.min(fuse_cap(max_batch_tokens, active.len()));
         }
     } else {
         // Resting production path — unchanged binary gate.
@@ -344,6 +364,7 @@ pub(super) fn continue_in_progress_prefills(
                 adaptive_sampling,
                 &mut completed_indices,
                 &mut did_mixed_step,
+                pacer,
             );
         }
     }

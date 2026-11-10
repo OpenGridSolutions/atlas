@@ -244,3 +244,39 @@ fn test_cli_default_kv_high_precision_layers() {
         }
     }
 }
+
+#[test]
+fn test_cli_parse_prefill_pacing() {
+    // Off unless asked for; the share defaults to an even split.
+    let Command::Serve(args) = Cli::try_parse_from(["spark", "serve", "nvidia/model"])
+        .unwrap()
+        .command;
+    assert_eq!(args.prefill_max_pause_ms, 0);
+    assert_eq!(args.prefill_decode_share, 50);
+
+    let Command::Serve(args) = Cli::try_parse_from([
+        "spark",
+        "serve",
+        "nvidia/model",
+        "--prefill-max-pause-ms",
+        "500",
+        "--prefill-decode-share",
+        "100",
+    ])
+    .unwrap()
+    .command;
+    assert_eq!(args.prefill_max_pause_ms, 500);
+    assert_eq!(args.prefill_decode_share, 100);
+
+    // The share is a percentage.
+    assert!(
+        Cli::try_parse_from([
+            "spark",
+            "serve",
+            "nvidia/model",
+            "--prefill-decode-share",
+            "101",
+        ])
+        .is_err()
+    );
+}
