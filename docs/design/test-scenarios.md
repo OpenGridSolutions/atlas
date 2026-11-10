@@ -115,7 +115,7 @@ und T-PRI-03 sind gestrichen.
 | T-MEM-04 | P2 · Unit – Gemischte Layer-Dtypes; Bytes/Token = Summe. | MEM-3, MEM-9 | Unit `kv_budget.rs` teilweise |
 | T-MOD-01 bis 04 | P2 – Messung, Persistenz, Verwurf bei neuem Hash, EWMA. | MOD-5..8 | Unit `swap_costs.rs` teilweise; On-Box offen |
 | T-MOD-05 | P2 · Integration – Laden schlägt fehl; vorheriges Modell zurück, Wartende 503. | MOD-10 | Unit **neu** `queued_sse_tests.rs::rejected_ticket_reports_the_failed_load` (Stream-Seite); Integration offen |
-| T-MOD-06 | P2 · Integration – Embed unter `sidecar_small_max_gib` als Sidecar, Arena unverändert. | MOD-3, MOD-4 | offen (`text_sidecar.rs` ohne Tests) |
+| T-MOD-06 | P2 · Integration – Embed unter `sidecar_small_max_gib` als Sidecar, Arena unverändert (nur noch mit explizitem Flag; Default 0 = aus). | MOD-3, MOD-4 | offen (`text_sidecar.rs` ohne Tests) |
 | T-MOD-07 | P2 · Integration – Embed über der Grenze in die Arena-Queue. | MOD-4, SCH-2 | offen |
 | T-MOD-08 | P2 · Integration – Unbekanntes Modell: 404 mit Liste. | MOD-9 | offen |
 

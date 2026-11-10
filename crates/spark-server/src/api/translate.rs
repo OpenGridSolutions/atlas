@@ -321,7 +321,7 @@ async fn translate_admitted(
     let max_tokens = req
         .max_tokens
         .unwrap_or(1024)
-        .min(state.max_seq_len.saturating_sub(prompt_len));
+        .min(state.max_seq_len().saturating_sub(prompt_len));
     // <end_of_turn> terminates the model turn (generation_config eos
     // [1, 106]; the scheduler's implicit eos covers id 1).
     let stop_tokens: Vec<u32> = rt
@@ -364,14 +364,7 @@ async fn translate_admitted(
         grammar_spec: None,
         seed: None,
         top_logprobs: None,
-        timeout_at: admission.clamp_timeout({
-            let secs = state.request_timeout as f32;
-            if secs > 0.0 {
-                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
-            } else {
-                None
-            }
-        }),
+        timeout_at: admission.clamp_timeout(None),
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,

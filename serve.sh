@@ -72,9 +72,17 @@ echo "==> logging to ${LOG}"
 
 MODEL_ARG=()
 [[ -n "${MODEL}" ]] && MODEL_ARG=("${MODEL}")
-# ATLAS_SERVE_EXTRA_ARGS: additional serve flags for test runs, e.g.
-#   ATLAS_SERVE_EXTRA_ARGS="--nvme-cache-dir /var/tmp/atlas-nvme --kv-pool-gb 1"
-# ATLAS_MAX_SEQ_LEN overrides the serving window (default 104416).
+# Context window: not set here. Each model's MODEL.toml names how many
+# sessions stay warm ([serving] sessions) and the server splits the KV pool
+# evenly across them. ATLAS_MAX_SEQ_LEN pins a fixed window instead - for
+# test runs only.
+SEQ_ARGS=()
+[[ -n "${ATLAS_MAX_SEQ_LEN:-}" ]] && SEQ_ARGS=(--max-seq-len "${ATLAS_MAX_SEQ_LEN}")
+# NVMe KV tier: always on. Only one model is in memory at a time, so this
+# store is what carries sessions across a model switch.
+NVME_CACHE_DIR="${ATLAS_NVME_CACHE_DIR:?set ATLAS_NVME_CACHE_DIR (.devpod/atlas-gb10.env) to the NVMe session store directory}"
+# ATLAS_SERVE_EXTRA_ARGS: additional serve flags, e.g.
+#   ATLAS_SERVE_EXTRA_ARGS="--kv-pool-gb 1"
 # shellcheck disable=SC2206 — word-splitting of the extra args is intended.
 EXTRA_ARGS=(${ATLAS_SERVE_EXTRA_ARGS:-})
 # ATLAS_NTFY_TOPIC: pushes anomalies from inside the server (--ntfy-topic)
@@ -93,8 +101,9 @@ set +e
 "${BIN}" serve "${MODEL_ARG[@]}" \
     --bind 0.0.0.0 \
     --port 11434 \
-    --max-seq-len "${ATLAS_MAX_SEQ_LEN:-104416}" \
+    "${SEQ_ARGS[@]}" \
     --max-batch-size 4 \
+    --nvme-cache-dir "${NVME_CACHE_DIR}" \
     --swap-space-gb 32 \
     --gpu-memory-utilization 0.90 \
     --kv-high-precision-layers 3 \

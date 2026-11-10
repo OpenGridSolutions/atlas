@@ -103,6 +103,9 @@ struct Target {
     /// `[estimate]` section if present in MODEL.toml — admission cost
     /// constants (see `EstimateProfile` in lib.rs).
     estimate: Option<EstimateRaw>,
+    /// `[serving]` of MODEL.toml (see `TargetPtxSet::sessions` and
+    /// `TargetPtxSet::moe_prefill_transpose` in lib.rs).
+    serving: build_serving::ServingRaw,
 }
 
 #[derive(Default, Clone)]
@@ -782,6 +785,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
             let model_type_matches = parse_model_types(&model_dir);
             let dflash = parse_dflash(&model_dir);
             let estimate = parse_estimate(&model_dir);
+            let serving = parse_serving(&model_dir);
             let hf_id = parse_hf_id(&model_dir);
 
             targets.push(Target {
@@ -829,6 +833,7 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
                 model_type_matches,
                 dflash,
                 estimate,
+                serving,
             });
         }
     }
@@ -861,6 +866,10 @@ use build_parse::{
     parse_behavior, parse_dflash, parse_estimate, parse_hf_id, parse_kernel_toml,
     parse_model_types, parse_sampling_presets,
 };
+
+#[path = "build_serving.rs"]
+mod build_serving;
+use build_serving::parse_serving;
 
 /// Collect kernel-source files with shadowing: common dir provides the
 /// base set, model-specific dir can override individual files by matching

@@ -105,11 +105,13 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
 }
 
 mod build;
+mod context_window;
 mod kv_budget;
 mod lm_head_setup;
 mod m2_setup;
 
-pub use build::build_model;
+pub use build::{BuiltModel, build_model};
+pub use context_window::ContextWindow;
 
 #[cfg(test)]
 mod tests {
@@ -134,7 +136,7 @@ mod tests {
             Box::new(gpu),
             1,
             16,
-            4096,
+            ContextWindow::Fixed(4096),
             8,
             MtpQuantization::Nvfp4,
             false,

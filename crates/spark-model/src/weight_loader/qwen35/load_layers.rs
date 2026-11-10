@@ -133,30 +133,7 @@ pub(super) fn load_layers(
         quant_format,
     );
 
-    // Estimate MoE transpose memory: 3 projections × num_experts × (packed + scale) per layer.
-    // Skip transposition if GPU memory is insufficient — fallback grouped GEMM is used instead.
-    let skip_moe_transpose = {
-        let inter = config.moe_intermediate_size;
-        let group_size = 16usize;
-        // gate/up: [inter, h/2] packed + [inter, h/group] scale
-        let gu_bytes = inter * h / 2 + inter * h / group_size;
-        // down:    [h, inter/2] packed + [h, inter/group] scale
-        let d_bytes = h * inter / 2 + h * inter / group_size;
-        let per_layer = config.num_experts * (2 * gu_bytes + d_bytes);
-        let total = per_layer * config.num_hidden_layers;
-        let available = gpu.free_memory().unwrap_or(0);
-        let headroom = 2 * 1024 * 1024 * 1024; // 2 GB for KV cache + buffers
-        let skip = total > available.saturating_sub(headroom);
-        if skip {
-            tracing::warn!(
-                "Skipping MoE weight transposition ({:.1} GB needed, {:.1} GB available). \
-                 Prefill will use fallback grouped GEMM.",
-                total as f64 / (1024.0 * 1024.0 * 1024.0),
-                available as f64 / (1024.0 * 1024.0 * 1024.0),
-            );
-        }
-        skip
-    };
+    let skip_moe_transpose = super::super::moe_prefill_copies::skip_moe_transpose(config, gpu);
     if low_memory_modelopt_moe {
         if let (Some(mode), Some(spec)) = (holo_fast_moe_mode, holo_fast_moe_spec.as_deref()) {
             tracing::info!(

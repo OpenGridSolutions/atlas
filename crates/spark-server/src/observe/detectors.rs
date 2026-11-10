@@ -18,6 +18,8 @@ pub struct DetectorConfig {
     pub interval: Duration,
     /// Seconds without a scheduler loop iteration while work is active.
     pub stall_secs: f64,
+    /// Seconds of the same condition after which the process ends itself.
+    pub stall_exit_secs: f64,
     /// A swap in flight longer than this is stuck.
     pub swap_stuck_secs: f64,
     /// 5xx responses per minute that count as an incident.
@@ -170,6 +172,19 @@ pub fn evaluate(s: &Sample, cfg: &DetectorConfig) -> Vec<Event> {
     out
 }
 
+/// Open sequences that no longer generate are a runtime error of the
+/// server, not of the request: past `stall_exit_secs` the process ends and
+/// the supervisor restarts it. Returns the last words when that is due.
+pub fn fatal_stall(s: &Sample, cfg: &DetectorConfig) -> Option<String> {
+    (s.scheduler_load > 0 && s.secs_since_last_step > cfg.stall_exit_secs).then(|| {
+        format!(
+            "scheduler loop has not iterated for {:.0}s with {} active sequences \
+             (limit {:.0}s) — terminating",
+            s.secs_since_last_step, s.scheduler_load, cfg.stall_exit_secs
+        )
+    })
+}
+
 pub fn spawn(state: Arc<AppState>, cfg: DetectorConfig) {
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(cfg.interval);
@@ -207,6 +222,13 @@ pub fn spawn(state: Arc<AppState>, cfg: DetectorConfig) {
             for ev in evaluate(&sample, &cfg) {
                 super::emit(ev);
             }
+            if let Some(last_words) = fatal_stall(&sample, &cfg) {
+                tracing::error!("{last_words}");
+                // Pushes the notification and writes logs/crash-<ts>.log
+                // synchronously; nothing async would flush after exit.
+                spark_runtime::crash::write_crash_snapshot("scheduler_stall", &last_words);
+                std::process::exit(1);
+            }
         }
     });
 }
@@ -223,6 +245,7 @@ mod tests {
         DetectorConfig {
             interval: Duration::from_secs(10),
             stall_secs: 60.0,
+            stall_exit_secs: 300.0,
             swap_stuck_secs: 600.0,
             http_5xx_per_min: 10,
             rejections_per_min: 10,
@@ -249,6 +272,27 @@ mod tests {
             ..Default::default()
         };
         assert!(evaluate(&idle, &cfg()).is_empty());
+    }
+
+    #[test]
+    fn stall_ends_the_process_only_with_open_sequences() {
+        let stalled = |secs: f64, load: usize| Sample {
+            secs_since_last_step: secs,
+            scheduler_load: load,
+            elapsed_secs: 10.0,
+            ..Default::default()
+        };
+        // Alert threshold passed, exit threshold not: push only.
+        assert!(fatal_stall(&stalled(61.0, 1), &cfg()).is_none());
+        assert_eq!(
+            kinds(&evaluate(&stalled(61.0, 1), &cfg())),
+            vec!["scheduler_stall"]
+        );
+        assert!(fatal_stall(&stalled(300.0, 1), &cfg()).is_none());
+        let words = fatal_stall(&stalled(301.0, 2), &cfg()).expect("stall past the limit");
+        assert!(words.contains("301s") && words.contains("2 active"));
+        // An idle server never stalls, however old the last step is.
+        assert!(fatal_stall(&stalled(100_000.0, 0), &cfg()).is_none());
     }
 
     #[test]

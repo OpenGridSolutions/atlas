@@ -45,6 +45,9 @@ pub(crate) struct PreparedSwap {
     pub hss_cache_blocks_per_seq: Option<u32>,
     /// MODEL.toml `default_mtp_quantization` of the target (may be "").
     pub default_mtp_quantization: &'static str,
+    /// Where the target's context window comes from; the model build
+    /// resolves it once the KV pool is sized.
+    pub context_window: spark_model::factory::ContextWindow,
 }
 
 /// Stable registry key for a kernel target.
@@ -114,6 +117,7 @@ pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Resu
     } else {
         ptx_set.behavior.fp8_kv_calibration_tokens
     };
+    config.moe_prefill_transpose = ptx_set.moe_prefill_transpose;
 
     // 6. Tokenizer + tokenizer-derived runtime. `resolve_tokenizer_runtime`
     // INSTALLS the numeric/boundary/mid-word masks (ArcSwap since 1.2, so
@@ -138,6 +142,13 @@ pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Resu
     super::cap_vocab_size_to_tokenizer(&model_dir, &mut config);
     let kv = super::resolve_kv_cache_config(args, &config, ptx_set.behavior.default_kv_dtype)?;
     let tool_call_parser = super::resolve_tool_call_parser(args, &ptx_set, &config)?;
+    let context_window = super::resolve_context_window(
+        args.max_seq_len,
+        ptx_set.sessions,
+        config.max_position_embeddings,
+        args.max_batch_size,
+        args.high_speed_swap,
+    )?;
 
     // Install the remaining per-model globals (loop-watchdog flag,
     // watchdog params, TSCG) + emit the behavior audit log.
@@ -173,7 +184,8 @@ pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Resu
         think_start_token_id: tr.think_start_token,
         sampling_presets: ptx_set.sampling,
         tool_call_start_token_id: tr.tool_call_start_token,
-        effective_context: 0,
+        // Set by the loader once the model build has sized the KV pool.
+        max_seq_len: 0,
         behavior,
     };
     let scheduler_params = crate::scheduler::SchedulerModelParams {
@@ -200,5 +212,6 @@ pub(crate) fn prepare_swap_target(args: &cli::ServeArgs, model_id: &str) -> Resu
         layer_dtypes: kv.layer_dtypes,
         hss_cache_blocks_per_seq: kv.hss_cache_blocks_per_seq,
         default_mtp_quantization: ptx_set.behavior.default_mtp_quantization,
+        context_window,
     })
 }

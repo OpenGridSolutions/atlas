@@ -354,6 +354,10 @@ pub(super) fn unload_and_park(
                 }
                 ControlMsg::Load { model, reply } => {
                     hotswap.set_state(SwapState::Loading);
+                    // One model in memory at a time: a resident sidecar
+                    // goes first. Waits for its in-flight requests — they
+                    // cannot be cancelled.
+                    crate::sidecars::unload_all_blocking();
                     match reload(model.as_deref()) {
                         Ok(mut outcome) => {
                             hotswap.set_state(SwapState::Running);

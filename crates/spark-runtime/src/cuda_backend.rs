@@ -12,6 +12,8 @@ use anyhow::{Result, bail};
 use atlas_core::registry::AtlasRegistry;
 
 mod gpu_impl;
+mod sidecar_ledger;
+pub use sidecar_ledger::{SidecarAllocs, free_sidecar_allocs};
 
 // ── Raw CUDA driver API for memory operations ──
 
@@ -224,6 +226,7 @@ impl Drop for UntrackedAllocs {
 
 pub(super) fn tracker_record(ptr: u64) {
     if UNTRACKED_ALLOCS.with(|c| c.get()) {
+        sidecar_ledger::record(ptr);
         return;
     }
     let mut t = ALLOC_TRACKER.lock().expect("ALLOC_TRACKER poisoned");
@@ -235,6 +238,7 @@ pub(super) fn tracker_record(ptr: u64) {
 /// Unrecord on free — unconditionally, so tracked build-time allocations
 /// freed later (e.g. MoE transpose originals) never double-free at unload.
 pub(super) fn tracker_unrecord(ptr: u64) {
+    sidecar_ledger::unrecord(ptr);
     ALLOC_TRACKER
         .lock()
         .expect("ALLOC_TRACKER poisoned")

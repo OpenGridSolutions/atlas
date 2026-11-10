@@ -35,7 +35,7 @@ pub(super) fn reject_response(state: &AppState, prompt_len: usize) -> Response {
         format!(
             "Prompt too long: {prompt_len} tokens exceeds max_seq_len {} (context policy: reject; \
              leave room for output tokens)",
-            state.max_seq_len
+            state.max_seq_len()
         ),
         Some("messages"),
         Some(CODE),
@@ -65,13 +65,13 @@ fn not_compactable(state: &AppState, max_tokens: usize, err: &CompactError) -> R
         "Request does not fit the {}-token context window even after compaction: head {head_tokens} \
          tokens + newest message {newest_tokens} tokens + summary {summary_tokens} tokens + reserved \
          output {reserve} tokens. Shorten the newest message or the system prompt.",
-        state.max_seq_len
+        state.max_seq_len()
     );
     crate::observe::emit(
         crate::observe::Event::new(2, "compaction_rejected", msg.clone()).detail(
             serde_json::json!({
                 "head_tokens": head_tokens, "newest_tokens": newest_tokens,
-                "summary_tokens": summary_tokens, "reserve": reserve, "window": state.max_seq_len,
+                "summary_tokens": summary_tokens, "reserve": reserve, "window": state.max_seq_len(),
             }),
         ),
     );
@@ -106,11 +106,11 @@ pub(super) async fn resolve_overflow(
     let prompt_len = prepared.prompt_tokens.len();
     if !state
         .compaction
-        .fits(prompt_len, max_tokens, state.max_seq_len)
+        .fits(prompt_len, max_tokens, state.max_seq_len())
     {
         tracing::warn!(
             prompt_len,
-            window = state.max_seq_len,
+            window = state.max_seq_len(),
             "compaction: effective context still does not fit after a fresh entry"
         );
         return Err(not_compactable(state, max_tokens, &cmp.ctx6(rt)));

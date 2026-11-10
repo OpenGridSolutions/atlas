@@ -167,14 +167,7 @@ async fn rerank_admitted(
 
     let instruction = req.instruction.as_deref().unwrap_or(DEFAULT_INSTRUCTION);
 
-    let timeout_at = admission.clamp_timeout(if state.request_timeout > 0 {
-        Some(
-            std::time::Instant::now()
-                + std::time::Duration::from_secs(state.request_timeout as u64),
-        )
-    } else {
-        None
-    });
+    let timeout_at = admission.clamp_timeout(None);
 
     // Enqueue every (query, document) pair before awaiting any reply so
     // concurrent prefills can batch.
@@ -200,14 +193,14 @@ async fn rerank_admitted(
             }
         };
         let prompt_tokens = encoded.tokens;
-        if prompt_tokens.len() >= state.max_seq_len {
+        if prompt_tokens.len() >= state.max_seq_len() {
             crate::metrics::REQUESTS_ACTIVE.dec();
             return openai_error_response(
                 StatusCode::BAD_REQUEST,
                 format!(
                     "document {index}: rerank prompt is {} tokens, exceeds max_seq_len {}",
                     prompt_tokens.len(),
-                    state.max_seq_len
+                    state.max_seq_len()
                 ),
             );
         }

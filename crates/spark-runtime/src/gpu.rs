@@ -32,33 +32,20 @@ pub fn baseline_free_bytes() -> Option<usize> {
     }
 }
 
-/// Bytes a configured-but-not-yet-resident sidecar (the Qwen-Image
-/// pipeline) will allocate OUTSIDE the arena / KV pool on its first request.
-/// The KV-budget sizing subtracts it so a generative model built first does
-/// not claim the memory the sidecar still needs (Todo 3.2b). Once the
-/// sidecar is resident its weights show up in `baseline_free − free_now`
-/// like any other Atlas-own allocation, and the reserve drops to its
-/// working-memory share.
-static SIDECAR_PENDING_RESERVE_BYTES: AtomicUsize = AtomicUsize::new(0);
-
-pub fn set_sidecar_pending_reserve_bytes(bytes: usize) {
-    SIDECAR_PENDING_RESERVE_BYTES.store(bytes, Ordering::Relaxed);
-}
-
 /// Resident/pending reserve of the SMALL TEXT sidecars (embed/rerank,
-/// MEM-6) — additive to the image sidecar's reserve above.
+/// MEM-6) — the only models that may stay in memory beside the arena
+/// model, and only with `--sidecar-small-max-gib` above 0.
 static TEXT_SIDECAR_RESERVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 pub fn set_text_sidecar_reserve_bytes(bytes: usize) {
     TEXT_SIDECAR_RESERVE_BYTES.store(bytes, Ordering::Relaxed);
 }
 
-/// Total sidecar reserve the KV budget must subtract: the image
-/// pipeline's pending/working reserve PLUS the small embed/rerank
-/// sidecars (MEM-6).
+/// Sidecar reserve the KV budget must subtract: the small embed/rerank
+/// sidecars (MEM-6). Whisper and the image pipeline need none — they are
+/// never in memory beside the arena model.
 pub fn sidecar_pending_reserve_bytes() -> usize {
-    SIDECAR_PENDING_RESERVE_BYTES.load(Ordering::Relaxed)
-        + TEXT_SIDECAR_RESERVE_BYTES.load(Ordering::Relaxed)
+    TEXT_SIDECAR_RESERVE_BYTES.load(Ordering::Relaxed)
 }
 
 /// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).

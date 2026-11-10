@@ -17,6 +17,7 @@ pub(crate) struct PrefillBudget {
 pub(crate) fn resolve_prefill_budget(
     args: &cli::ServeArgs,
     ssm_prefill_chunk: usize,
+    max_seq_len: usize,
 ) -> PrefillBudget {
     let spec_tokens = if args.speculative || args.self_speculative || args.ngram_speculative {
         args.num_drafts + 2
@@ -31,7 +32,7 @@ pub(crate) fn resolve_prefill_budget(
     } else if args.max_prefill_tokens > 0 {
         args.max_prefill_tokens
     } else {
-        args.max_seq_len
+        max_seq_len
     };
     // Issue #15 (resolved 2026-07-02): the old auto-clamp of the prefill
     // budget to `ssm_checkpoint_interval * block_size` forced micro-chunked
@@ -64,7 +65,7 @@ pub(crate) fn resolve_prefill_budget(
         // earlier startup WARN that flagged this combination as broken is
         // obsolete and has been removed. Per-config diagnostics live at
         // INFO level on the next line.
-        if args.max_seq_len > hss_cap_tokens {
+        if max_seq_len > hss_cap_tokens {
             tracing::info!(
                 "--high-speed-swap engaged: cap={} blocks × bs={} = {} tokens HBM-resident, \
                  --max-seq-len={} tokens total. Prefill slides will advance per-layer offload \
@@ -72,7 +73,7 @@ pub(crate) fn resolve_prefill_budget(
                 args.high_speed_swap_cache_blocks_per_seq,
                 args.block_size,
                 hss_cap_tokens,
-                args.max_seq_len,
+                max_seq_len,
             );
         }
         clamped
@@ -146,13 +147,13 @@ pub(crate) fn resolve_prefill_budget(
         prefill_budget,
         max_batch_tokens,
     );
-    if args.max_prefill_tokens == 0 && args.max_seq_len > 32768 {
+    if args.max_prefill_tokens == 0 && max_seq_len > 32768 {
         tracing::warn!(
             "--max-prefill-tokens=0 with --max-seq-len={} disables chunked prefill. \
              Long agentic sessions may eventually fail with 'CUDA kernel launch failed (status 1)' \
              when an unchunked prefill exceeds device launch grid limits. \
              Consider --max-prefill-tokens=8192 (default) for sessions that grow past 32K tokens.",
-            args.max_seq_len,
+            max_seq_len,
         );
     }
     PrefillBudget {

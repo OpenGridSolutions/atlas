@@ -142,25 +142,7 @@ pub async fn prepare_model_gate(
         let ticket = match dispatcher.queues.submit(requested, priority, streaming) {
             Ok(t) => t,
             Err(crate::arena_sched::SubmitError::QueueFull { retry_after_secs }) => {
-                let body = serde_json::json!({
-                    "error": {
-                        "message": format!(
-                            "queue for model '{requested}' is full; retry shortly"
-                        ),
-                        "type": "server_error",
-                        "param": "model",
-                        "code": "model_queue_full",
-                    },
-                });
-                return Err((
-                    StatusCode::TOO_MANY_REQUESTS,
-                    [(
-                        axum::http::header::RETRY_AFTER,
-                        retry_after_secs.to_string(),
-                    )],
-                    axum::Json(body),
-                )
-                    .into_response());
+                return Err(queue_full(requested, retry_after_secs));
             }
         };
         dispatcher.poke();
@@ -258,42 +240,20 @@ pub async fn prepare_model_gate(
 /// admin snapshot/unload/load operations by the same `admin_lock`.
 pub(crate) async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), Response> {
     let _admin = ctx.admin_lock.lock().await;
+    // A sidecar target loads outside the arena, as the only model in memory.
+    if let Some(kind) = super::sidecar_gate::kind_of(target) {
+        return super::sidecar_gate::load_exclusive(ctx, kind, target)
+            .await
+            .map_err(|e| swap_error(format!("load '{target}' failed: {e:#}")));
+    }
     // Re-check under the lock: a concurrent request may have completed
     // this exact swap while we waited.
     if ctx.state() == SwapState::Running && ctx.active_model().model_id == target {
         return Ok(());
     }
+    unload_arena(ctx).await.map_err(swap_error)?;
 
-    // Unload whatever is running (empty/short drain; in-flight decode gets
-    // the existing 2 s grace, then finish_reason "model_swap").
-    if ctx.state() == SwapState::Running {
-        ctx.set_state(SwapState::Draining);
-        let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
-        ctx.scheduler
-            .push_control(crate::scheduler::ControlMsg::Unload { reply: reply_tx });
-        match tokio::time::timeout(std::time::Duration::from_secs(60), reply_rx).await {
-            Ok(Ok(Ok(_))) => {}
-            Ok(Ok(Err(e))) => return Err(swap_error(format!("unload failed: {e:#}"))),
-            Ok(Err(_)) => {
-                return Err(swap_error("unload reply channel dropped (scheduler died?)"));
-            }
-            Err(_) => return Err(swap_error("unload timed out after 60 s")),
-        }
-        // The scheduler flips to NoModel just after replying.
-        for _ in 0..100 {
-            if ctx.state() == SwapState::NoModel {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-        }
-    }
-    if ctx.state() != SwapState::NoModel {
-        return Err(swap_error(format!(
-            "cannot load '{target}': state is '{}' (want 'unloaded')",
-            ctx.state().as_str()
-        )));
-    }
-
+    // The scheduler unloads a resident sidecar before it loads `target`.
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     ctx.scheduler
         .push_control(crate::scheduler::ControlMsg::Load {
@@ -308,18 +268,16 @@ pub(crate) async fn swap_to(ctx: &Arc<HotswapCtx>, target: &str) -> Result<(), R
     }
 }
 
-/// Drain and unload the active arena model; the lazy-swap machinery
-/// reloads it on its next request. Serialized against swaps and admin
-/// operations by `admin_lock`. Returns `true` when a model was actually
-/// unloaded, `false` when the arena was already empty. Used by the image
-/// sidecar's memory-pressure eviction.
-pub async fn unload_active(ctx: &Arc<HotswapCtx>) -> anyhow::Result<bool> {
-    let _admin = ctx.admin_lock.lock().await;
+/// Drain and unload the active arena model (empty/short drain; in-flight
+/// decode gets the existing 2 s grace, then finish_reason "model_swap").
+/// Returns `true` when a model was unloaded, `false` when the arena was
+/// already empty. The caller holds `admin_lock`.
+pub(super) async fn unload_arena(ctx: &Arc<HotswapCtx>) -> anyhow::Result<bool> {
     match ctx.state() {
         SwapState::NoModel => return Ok(false),
         SwapState::Running => {}
         other => anyhow::bail!(
-            "cannot evict the arena model: state is '{}' (a swap is in flight)",
+            "cannot unload the arena model: state is '{}' (want 'running' or 'unloaded')",
             other.as_str()
         ),
     }
@@ -377,6 +335,27 @@ pub(crate) fn wait_outcome_response(
             "model '{requested}' failed to load; the previous model was restored"
         )),
     }
+}
+
+/// The per-model queue is at its cap: 429 + Retry-After.
+pub(super) fn queue_full(requested: &str, retry_after_secs: u64) -> Response {
+    let body = serde_json::json!({
+        "error": {
+            "message": format!("queue for model '{requested}' is full; retry shortly"),
+            "type": "server_error",
+            "param": "model",
+            "code": "model_queue_full",
+        },
+    });
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(
+            axum::http::header::RETRY_AFTER,
+            retry_after_secs.to_string(),
+        )],
+        axum::Json(body),
+    )
+        .into_response()
 }
 
 /// WAIT-3: predicted wait already exceeds the non-streaming bound.

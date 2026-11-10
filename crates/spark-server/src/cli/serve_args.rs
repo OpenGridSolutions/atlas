@@ -39,9 +39,12 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 0)]
     pub gpu_ordinal: usize,
 
-    /// Maximum sequence length.
-    #[arg(long, default_value_t = 32768)]
-    pub max_seq_len: usize,
+    /// Context window in tokens (prompt + thinking + answer per sequence).
+    /// Unset: derived per model from MODEL.toml `[serving].sessions` — the KV
+    /// pool is split into that many equal windows (32768 for targets without
+    /// a `[serving]` section). Setting it pins one window for every model.
+    #[arg(long)]
+    pub max_seq_len: Option<usize>,
 
     /// KV cache block size (tokens per block).
     #[arg(long, default_value_t = 16)]
@@ -504,10 +507,6 @@ pub struct ServeArgs {
     #[arg(long, default_value_t = 64)]
     pub high_speed_swap_cache_blocks_per_seq: u32,
 
-    /// Default request timeout in seconds. 0 = no timeout.
-    #[arg(long, default_value_t = 300)]
-    pub request_timeout: u32,
-
     /// Enable per-kernel profiling: sync + time each operation within layers.
     /// Disables CUDA graphs for accurate per-op timing. Adds ~10% overhead.
     #[arg(long, default_value_t = false)]
@@ -698,8 +697,10 @@ pub struct ServeArgs {
 
     /// Embed/rerank models at or below this checkpoint size load as
     /// RESIDENT sidecars beside the arena model (E4/MOD-3); larger ones
-    /// take the arena queue. 0 disables text sidecars.
-    #[arg(long, default_value_t = 4.0)]
+    /// take the arena queue. 0 (the default) disables text sidecars, so
+    /// only one model is in memory at a time; any other value gives that
+    /// up for embed/rerank.
+    #[arg(long, default_value_t = 0.0)]
     pub sidecar_small_max_gib: f64,
 
     /// Trust proxy-injected headers (AUTH-3): only with this flag does
@@ -807,6 +808,14 @@ pub struct ServeArgs {
     /// sequences are active) that count as a stall.
     #[arg(long, default_value_t = 60)]
     pub alert_stall_s: u64,
+
+    /// Seconds without a scheduler loop iteration (while sequences are
+    /// active) after which the server ends itself with exit code 1: open
+    /// requests that no longer generate are a runtime error, and the
+    /// supervisor restarts the process. There is no per-request time
+    /// limit; this is the only server-side abort.
+    #[arg(long, default_value_t = 300)]
+    pub stall_exit_s: u64,
 
     /// Detector: 5xx responses per minute that trigger a push.
     #[arg(long, default_value_t = 10)]

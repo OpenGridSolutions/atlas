@@ -61,6 +61,7 @@ pub mod responses_stream_finalize;
 pub mod responses_translate;
 pub mod sanitizer;
 pub mod session_state;
+pub mod sidecar_gate;
 pub mod stats;
 pub mod stored;
 pub mod stream_guards;

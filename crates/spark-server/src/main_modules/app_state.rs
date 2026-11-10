@@ -18,8 +18,8 @@ use crate::{
 /// snapshot per request via [`AppState::runtime`] so a swap mid-request can
 /// never mix model A's tokenizer with model B's masks or defaults.
 ///
-/// CLI-derived, model-independent values (max_seq_len, tool_max_tokens,
-/// vision_max_pixels, auto_compact_threshold, request_timeout, …) stay on
+/// CLI-derived, model-independent values (tool_max_tokens,
+/// vision_max_pixels, auto_compact_threshold, …) stay on
 /// [`AppState`] — move a field here only if a different model would need a
 /// different value.
 pub struct ModelRuntime {
@@ -61,10 +61,10 @@ pub struct ModelRuntime {
     pub sampling_presets: atlas_kernels::SamplingPresets,
     /// Token ID for `<tool_call>` — used for logit bias boost when tools are active.
     pub tool_call_start_token_id: Option<u32>,
-    /// Effective context length for agentic tasks (from MODEL.toml).
-    /// Compaction triggers when prompt exceeds 50% of this value.
-    /// 0 = use max_seq_len instead.
-    pub effective_context: usize,
+    /// Context window in tokens (prompt + thinking + answer per sequence).
+    /// Per model: derived from MODEL.toml `[serving].sessions` and the KV
+    /// pool this model was loaded with, unless `--max-seq-len` pins it.
+    pub max_seq_len: usize,
     /// Model-specific behavior overrides from MODEL.toml `[behavior]`
     /// (with CLI overlays applied). Embedded at build time via atlas-kernels.
     pub behavior: atlas_kernels::ModelBehavior,
@@ -80,7 +80,6 @@ pub struct AppState {
     /// scheduler-side reload closure, which installs the new model's
     /// runtime during a swap.
     pub runtime: Arc<arc_swap::ArcSwap<ModelRuntime>>,
-    pub max_seq_len: usize,
     pub request_tx: mpsc::Sender<InferenceRequest>,
     /// Optional vLLM-style image area cap applied before vision patching.
     pub vision_max_pixels: Option<usize>,
@@ -107,8 +106,6 @@ pub struct AppState {
     /// phases (weight loader, KV dtype resolution), which are
     /// args-parameterised.
     pub serve_args: std::sync::Arc<crate::cli::ServeArgs>,
-    /// Default request timeout in seconds. 0 = no timeout.
-    pub request_timeout: u32,
     /// Global kill switch for thinking / reasoning output. When true,
     /// thinking is forced OFF regardless of the request body or the
     /// model's MODEL.toml default. Wired from `--disable-thinking`.
@@ -159,6 +156,11 @@ impl AppState {
     /// observe a hot-swap and mix two models' tokenizers/defaults.
     pub fn runtime(&self) -> Arc<ModelRuntime> {
         self.runtime.load_full()
+    }
+
+    /// Context window of the model that is loaded right now.
+    pub fn max_seq_len(&self) -> usize {
+        self.runtime.load().max_seq_len
     }
 }
 

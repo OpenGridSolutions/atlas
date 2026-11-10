@@ -11,5 +11,9 @@ atlas-core = { workspace = true }
 [build-dependencies]
 toml = "0.8"
 
+[dev-dependencies]
+# tests/serving_parse.rs compiles the build-script parser directly.
+toml = "0.8"
+
 [lints]
 workspace = true

@@ -41,3 +41,7 @@ thinking_default = false
 [[model_types]]
 model_type = "whisper"
 hidden_size = 1280
+
+# No [serving] section: this model has no token context window, so there
+# are no sessions to keep warm. It is still the only model in memory while
+# it serves.

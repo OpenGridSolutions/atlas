@@ -15,7 +15,9 @@ aarch64, 128 GB Unified Memory, SM 12.1). Ein einziges Rust-Binary
 kann **mehrere Modelle** verwalten: Genau ein Modell ist zur Zeit in der
 GPU-Gewichts-Arena resident, weitere registrierte Modelle werden bei
 Bedarf per **Lazy Hot-Swap** in Sekunden aus Snapshots eingewechselt.
-Whisper läuft als dauerhaft residenter **Sidecar** daneben.
+Das gilt auch für Whisper und Qwen-Image: sie haben eigene Pipelines
+(**Sidecars**), verdrängen aber das Arena-Modell und werden vom nächsten
+Arena-Modell verdrängt — es ist immer nur ein Modell im Speicher.
 
 Die wichtigsten Designentscheidungen:
 
@@ -157,8 +159,6 @@ crates/
 1. **Kategorisierte Preseed-Listen** aus den sieben ENV-Vars
    `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE,OCR,IMAGE}`
    parsen (jede Kategorie ↔ genau ein Endpunkt; falscher Endpunkt ⇒ 400).
-   Ist ein Image-Modell gelistet, wird sofort die Sidecar-Reserve fürs
-   KV-Budget gesetzt (`ATLAS_IMAGE_RESERVE_GB`).
 2. Boot-Modell: config.json parsen (dispatch) → Kernel-Target wählen
    (`ptx_for_config`) → Quant-Kompatibilität prüfen
    (`quant_pair_compatible`: nvfp4↔fp8↔bf16-Matrix) → Safetensors
@@ -166,7 +166,8 @@ crates/
 3. **Registry** aufbauen: pro Preseed-Eintrag `registered_model_checked`
    (Config parst? Loader existiert? Target existiert? Quant passt?) —
    nicht ladbare Einträge werden mit WARN übersprungen, Boot läuft
-   weiter. Whisper und Qwen-Image werden nie registriert (Sidecars).
+   weiter. Whisper und Qwen-Image werden nie registriert (Sidecars; sie
+   werden beim ersten Request zum Wechselziel, `api/sidecar_gate.rs`).
 4. Scheduler-Thread starten, **Boot-Preseed**: Boot-Modell snapshotten,
    entladen, fehlende Snapshots aller anderen Modelle einmalig erzeugen
    (`serve_phases/preseed.rs`). Danach: Server idle, Arena leer.
@@ -198,13 +199,20 @@ serverseitig (kein generisches Template). `/v1/audio/transcriptions`
 geht am Scheduler vorbei in den Whisper-Sidecar.
 
 `/v1/images/generations` geht ebenfalls am Scheduler vorbei: der
-Qwen-Image-Sidecar (`spark-model/src/qwen_image/`, lädt beim ersten
-Request, 26.7 GiB resident) fährt Text-Encoder → DiT-Sampler →
-VAE-Decoder synchron auf einem Blocking-Thread; ein Bild zur Zeit,
-weitere Requests warten am Sidecar-Lock. Das aktive Chat-Modell bleibt
-geladen. Vor dem Laden und vor jeder Generierung prüft ein
-Speicher-Preflight `MemAvailable` (ohne Swap) gegen Bedarf + 4 GiB
-Marge (sonst 503).
+Qwen-Image-Sidecar (`spark-model/src/qwen_image/`, 26.7 GiB) fährt
+Text-Encoder → DiT-Sampler → VAE-Decoder synchron auf einem
+Blocking-Thread; ein Bild zur Zeit, weitere Requests warten am
+Sidecar-Lock. Vor jeder Generierung prüft ein Speicher-Preflight
+`MemAvailable` (ohne Swap) gegen Bedarf + 4 GiB Marge (sonst 503).
+
+Beide Sidecars sind Wechselziele wie ein Arena-Modell
+(`api/sidecar_gate.rs`): der Request reiht ein Ticket beim Dispatcher
+ein, der Wechsel entlädt das Arena-Modell und einen anderen Sidecar und
+lädt dann den angefragten. Der Rückweg liegt im Scheduler: vor jedem
+Laden eines Arena-Modells werden alle Sidecars entladen
+(`sidecars::unload_all_blocking`, wartet auf laufende Requests) und ihre
+Geräte-Puffer über das Allokations-Ledger freigegeben
+(`spark-runtime/src/cuda_backend/sidecar_ledger.rs`).
 
 Speicher-Eigenheit der GB10 (gemessen 2026-10-02): der NVIDIA-Treiber
 gibt freigegebenen Gerätespeicher — beendete Prozesse, der beim
@@ -271,10 +279,10 @@ einstellbaren Anteil der GPU-Zeit. Details:
 Jedes registrierte Modell trägt die Kategorie seiner ENV-Liste
 (`ModelCategory`), `ensure_model_active` erzwingt sie **vor** dem
 Fast-Path. Whisper ist bewusst kein Scheduler-Modell: der Sidecar
-(`api/audio.rs`) lädt beim ersten Request eigenständig (eigenes
-Kernel-Target, eigener Backend-Handle, tokio-OnceCell) und bleibt
-resident — ein registriertes Whisper wäre lazy-swappable und würde am
-fehlenden Model-Trait-Loader sterben.
+(`api/audio.rs`) lädt eigenständig (eigenes Kernel-Target, eigener
+Backend-Handle, `SidecarSlot`) — ein registriertes Whisper würde am
+fehlenden Model-Trait-Loader sterben. Im Speicher ist er trotzdem nur
+allein: `api/sidecar_gate.rs` macht ihn zum Wechselziel des Dispatchers.
 
 ---
 
@@ -479,7 +487,10 @@ Umsetzung des Anforderungsdokuments vom 2026-10-05 (Analyse:
 | Swap-Kosten (EWMA, `snapshots/swap_costs.json`) | `spark-server/src/swap_costs.rs` |
 | Queues + reine Wechselentscheidung + Dispatcher | `spark-server/src/arena_sched/` |
 | Warte-SSE (`: queued`/`: waiting`) | `api/queued_sse.rs` |
-| Embed/Rerank-Sidecars | `main_modules/text_sidecar.rs` |
+| Embed/Rerank-Sidecars (seit 2026-11-10 per Default aus) | `main_modules/text_sidecar.rs` |
+| Ein Modell zur Zeit: Sidecar-Gate, Slots, Allokations-Ledger | `api/sidecar_gate.rs`, `sidecars.rs`, `spark-runtime/src/cuda_backend/sidecar_ledger.rs` |
+| Sessions je Modell → Kontextfenster (`[serving] sessions`) | `atlas-kernels/build_serving.rs`, `spark-model/src/factory/context_window.rs`, `serve_phases/context_window.rs` |
+| MoE-Prefill-Kopien je Modell (`[serving] moe_prefill_transpose`) | `atlas-kernels/build_serving.rs`, `spark-model/src/weight_loader/moe_prefill_copies.rs` |
 | `/internal/state`, neue Metriken | `api/internal_state.rs`, `metrics.rs` |
 
 Ablauf eines Modellwechsels (Abschnitt 10 des Dokuments): Gate

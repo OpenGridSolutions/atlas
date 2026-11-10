@@ -19,6 +19,7 @@ pub mod dflash_loader;
 mod gemma3;
 mod gemma4;
 mod minimax;
+mod moe_prefill_copies;
 mod nemotron;
 mod qwen3;
 mod qwen35;

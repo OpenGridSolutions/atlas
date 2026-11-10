@@ -20,6 +20,7 @@ pub(crate) fn preflight_reserve(
     args: &cli::ServeArgs,
     config: &ModelConfig,
     free_mem: usize,
+    max_seq_len: usize,
 ) -> Result<ReservePreflight> {
     let h_state_bytes = config.ssm_h_state_bytes();
     let conv_state_bytes = config.ssm_conv_state_bytes();
@@ -45,9 +46,9 @@ pub(crate) fn preflight_reserve(
     // bound GDN persistent-buffer reservation for unbounded `max_seq_len`.
     let ssm_prefill_chunk: usize = if config.num_ssm_layers() > 0 {
         if args.max_prefill_tokens != 8192 && args.max_prefill_tokens > 0 {
-            args.max_seq_len.min(args.max_prefill_tokens)
+            max_seq_len.min(args.max_prefill_tokens)
         } else {
-            args.max_seq_len.min(8192)
+            max_seq_len.min(8192)
         }
     } else {
         0
@@ -60,7 +61,7 @@ pub(crate) fn preflight_reserve(
     } else if args.max_prefill_tokens > 0 {
         args.max_prefill_tokens
     } else {
-        args.max_seq_len
+        max_seq_len
     };
     // Issue #15 auto-clamp removed (2026-07-02): snapshot reachability is
     // handled by the tail-checkpoint split in `prefill_chunk_dispatch`, so
@@ -71,7 +72,7 @@ pub(crate) fn preflight_reserve(
     let buffer_arena_bytes = spark_runtime::buffers::BufferSizes::from_config(
         config,
         max_batch_tokens_pre,
-        args.max_seq_len,
+        max_seq_len,
         args.block_size,
     )
     .total_bytes();
@@ -136,7 +137,7 @@ pub(crate) fn preflight_reserve(
             .checked_div(per_tok_bytes)
             .map(|q| q.max(2048))
             .unwrap_or(0);
-        let hint = if suggested > 0 && suggested < args.max_seq_len {
+        let hint = if suggested > 0 && suggested < max_seq_len {
             format!(
                 " Try --max-seq-len {} (or lower --max-batch-size / --num-drafts).",
                 suggested
@@ -151,7 +152,7 @@ pub(crate) fn preflight_reserve(
              (before weights load). SSM pool + GDN chunked prefill scales with --max-seq-len={} × --max-batch-size={}.{}",
             need_gb,
             free_gb,
-            args.max_seq_len,
+            max_seq_len,
             args.max_batch_size,
             hint,
         );
@@ -260,6 +261,7 @@ pub(crate) fn post_load_memory_audit(
     total_reserve: usize,
     gdn_two_phase_bytes: usize,
     max_batch_tokens_pre: usize,
+    max_seq_len: usize,
 ) -> Result<()> {
     let estimated_free = free_mem.saturating_sub(weight_bytes);
     let actual_free = gpu.free_memory().unwrap_or(estimated_free);
@@ -300,12 +302,12 @@ pub(crate) fn post_load_memory_audit(
         let hint = if args.max_batch_size > 1 {
             format!(
                 " Reduce --max-batch-size (currently {}) or --max-seq-len (currently {}).",
-                args.max_batch_size, args.max_seq_len
+                args.max_batch_size, max_seq_len
             )
         } else {
             format!(
                 " Reduce --max-seq-len (currently {}) or use a smaller model.",
-                args.max_seq_len
+                max_seq_len
             )
         };
         anyhow::bail!("{msg}{hint}");
@@ -315,7 +317,7 @@ pub(crate) fn post_load_memory_audit(
             "GDN chunked prefill reserve: {} MB (chunk_size={}, max_seq_len={})",
             gdn_two_phase_bytes / (1024 * 1024),
             max_batch_tokens_pre,
-            args.max_seq_len,
+            max_seq_len,
         );
     }
     tracing::info!(

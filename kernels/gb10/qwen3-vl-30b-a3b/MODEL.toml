@@ -90,3 +90,14 @@ max_thinking_budget = 2048
 [estimate]
 prefill_tok_s = 1112
 decode_step_ms = [11.0, 19.9, 36.7, 36.8]
+
+# Sessions kept warm in the KV pool. The server splits the pool into this
+# many equal context windows when the model loads, capped at the native
+# window (262144 tokens); it is the only model in memory while it serves.
+# Rule: ceil(pool tokens / native window), raised where it does not divide
+# evenly so every session gets the same share. Computed, not measured, for
+# GB10 with a 100 GiB serving block (2026-11-10): ~222k tokens per session.
+# The load logs the real pool, the rule's count for it and the window
+# ("Context window: ..."); set the count from that line.
+[serving]
+sessions = 6

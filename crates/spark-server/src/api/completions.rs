@@ -160,13 +160,12 @@ async fn completions_admitted(
     };
 
     let prompt_len = prompt_tokens.len();
-    if prompt_len >= state.max_seq_len {
+    // The window is per model: read it from this request's snapshot.
+    let window = rt.max_seq_len;
+    if prompt_len >= window {
         return openai_error_response(
             StatusCode::BAD_REQUEST,
-            format!(
-                "Prompt too long: {prompt_len} tokens exceeds max_seq_len {}",
-                state.max_seq_len
-            ),
+            format!("Prompt too long: {prompt_len} tokens exceeds max_seq_len {window}"),
         );
     }
     // Clamp the generation budget to the context that is actually left
@@ -174,14 +173,13 @@ async fn completions_admitted(
     // unclamped budget runs the sequence past the context window until
     // the KV pool starves — which kills the whole decode batch with an
     // untyped stream error instead of a clean `finish_reason: "length"`.
-    let max_tokens = req.max_tokens.min(state.max_seq_len - prompt_len);
+    let max_tokens = req.max_tokens.min(window - prompt_len);
     if max_tokens < req.max_tokens {
         tracing::info!(
             requested = req.max_tokens,
             clamped = max_tokens,
             prompt_len,
-            "max_tokens clamped to remaining context (max_seq_len {})",
-            state.max_seq_len
+            "max_tokens clamped to remaining context (max_seq_len {window})",
         );
     }
 
@@ -267,14 +265,7 @@ async fn completions_admitted(
         grammar_spec: None,
         seed: req.seed,
         top_logprobs: None,
-        timeout_at: admission.clamp_timeout({
-            let secs = state.request_timeout as f32;
-            if secs > 0.0 {
-                Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
-            } else {
-                None
-            }
-        }),
+        timeout_at: admission.clamp_timeout(None),
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,

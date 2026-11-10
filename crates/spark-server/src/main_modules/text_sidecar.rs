@@ -243,6 +243,7 @@ fn load_sidecar(
         );
     }
     config.fp8_kv_calibration_tokens = ptx_set.behavior.fp8_kv_calibration_tokens;
+    config.moe_prefill_transpose = ptx_set.moe_prefill_transpose;
 
     let key = serve_phases::target_key(&ptx_set.target);
     let backend =
@@ -272,7 +273,7 @@ fn load_sidecar(
         Box::new(backend),
         SIDECAR_MAX_TOKENS, // max_batch_tokens: single-shot prefill window
         args.block_size,
-        SIDECAR_MAX_TOKENS,
+        spark_model::factory::ContextWindow::Fixed(SIDECAR_MAX_TOKENS),
         1, // one sequence at a time
         spark_model::layers::MtpQuantization::Bf16,
         false,
@@ -290,7 +291,8 @@ fn load_sidecar(
         None,
         None,
         Some(SIDECAR_KV_POOL_BYTES),
-    )?;
+    )?
+    .model;
 
     let (jobs_tx, mut jobs_rx) = tokio::sync::mpsc::channel::<Job>(16);
     let worker_id = model_id.to_string();

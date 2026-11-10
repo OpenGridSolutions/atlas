@@ -6,6 +6,7 @@
 
 mod build;
 mod config;
+mod context_window;
 mod kv_cache;
 mod preflight;
 #[cfg(feature = "cuda")]
@@ -25,6 +26,7 @@ pub(super) use config::{
     apply_lm_head_dtype_override, apply_model_default_num_drafts, cap_vocab_size_to_tokenizer,
     load_model_config, merge_sidecar_quant_config, resolve_model_dir,
 };
+pub(super) use context_window::resolve_context_window;
 pub(super) use kv_cache::{
     KvCacheConfig, PrefillBudget, resolve_kv_cache_config, resolve_prefill_budget,
 };

@@ -165,7 +165,7 @@ impl RequestCompaction {
         max_tokens: usize,
     ) -> Result<Vec<IncomingMessage>, CompactError> {
         let cfg: &CompactionConfig = &state.compaction;
-        let window = state.max_seq_len;
+        let window = state.max_seq_len();
         let sizes = self.sizes(rt);
         let roles: Vec<&str> = self.raw.iter().map(|m| m.role.as_str()).collect();
         let first = self.first();

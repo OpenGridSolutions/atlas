@@ -38,6 +38,9 @@ Volume=devpod_atlas-cargo-registry:/root/.cargo/registry
 Volume=devpod_atlas-cargo-git:/root/.cargo/git
 Volume=devpod_atlas-target:/build/target
 Volume=devpod_atlas-sccache:/build/sccache
+# NVMe session store (ATLAS_NVME_CACHE_DIR in atlas-gb10.env): sessions
+# survive model switches and container restarts.
+Volume=atlas-gb10-nvme-cache:/var/cache/atlas-nvme
 
 # Single source for the container environment; read from the checkout on
 # every start, so edits only need `systemctl --user restart atlas-gb10`.

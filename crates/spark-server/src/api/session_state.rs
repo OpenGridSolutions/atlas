@@ -226,7 +226,7 @@ pub async fn session_state(
 
     // ── Context fit: the per-sequence bound is the serving window
     //    (--max-seq-len); capacity across sequences is block-based ──
-    let context_tokens = state.max_seq_len;
+    let context_tokens = state.max_seq_len();
     let planned_output = req.max_tokens.unwrap_or(0);
     let remaining = context_tokens.saturating_sub(tokens.len());
 

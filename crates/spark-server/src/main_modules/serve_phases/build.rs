@@ -90,7 +90,8 @@ pub(crate) fn build_model(
     comm: Option<std::sync::Arc<dyn spark_comm::CommBackend>>,
     dflash_args: Option<spark_model::factory::DflashBuildArgs<'_>>,
     default_mtp_quantization: &str,
-) -> Result<Box<dyn spark_model::traits::Model>> {
+    context_window: spark_model::factory::ContextWindow,
+) -> Result<spark_model::factory::BuiltModel> {
     // Same MODEL.toml-first contract as resolve_kv_cache_config (Todo.md
     // 0.7): explicit --mtp-quantization wins, else the kernel target's
     // default_mtp_quantization, else bf16 (highest acceptance rate).
@@ -127,13 +128,13 @@ pub(crate) fn build_model(
         &layer_dtypes,
     )
     .seed;
-    let mut model = spark_model::factory::build_model(
+    let mut built = spark_model::factory::build_model(
         config.clone(),
         store,
         gpu,
         max_batch_tokens,
         args.block_size,
-        args.max_seq_len,
+        context_window,
         args.max_batch_size,
         mtp_quant,
         args.speculative || args.dflash,
@@ -159,8 +160,8 @@ pub(crate) fn build_model(
             .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as usize),
     )
     .context("Failed to build model")?;
-    model.set_block_key_seed(seed);
-    Ok(model)
+    built.model.set_block_key_seed(seed);
+    Ok(built)
 }
 
 pub(crate) fn build_high_speed_swap_config(

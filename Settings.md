@@ -41,6 +41,20 @@ festschreiben — nicht in serve.sh/compose.
 | `rom_head` | "" | ROM-Head-Variante. |
 | `tscg` | false | Tool-Sequence-Constrained-Generation. |
 
+### `[serving]` — warme Sessions und Kontextfenster
+
+| Key | Default | Wirkung |
+|---|---|---|
+| `sessions` | – (fehlt = `--max-seq-len`, sonst 32768) | Anzahl der Sessions, die für dieses Modell parallel warm im Speicher liegen. Der Server teilt den KV-Pool gleichmäßig auf: Fenster je Session = `min(natives Maximum des Modells, KV-Pool / sessions)`, auf 16-Token-Blöcke abgerundet. Muss ≥ `--max-batch-size` sein (sonst Abbruch beim Laden). |
+| `moe_prefill_transpose` | – (fehlt = der Loader entscheidet nach dem beim Laden freien Speicher) | `false`: keine transponierten Kopien der MoE-Expertengewichte für den Prefill; der Prefill läuft über das Grouped-GEMM auf dem Originallayout, der Speicher bleibt dem KV-Pool. `true`: Kopien immer anlegen. Gilt für die Qwen3-/Qwen3.5-Loader. Beim 80B (`qwen3-next-80b-a3b`) `false`: die Kopien kosten 40,5 GiB zusätzlich zu 47,3 GiB Gewichten. |
+
+Regel für den Wert: das native Maximum des Modells (`max_position_embeddings`)
+so oft in den KV-Pool legen, wie es hineinpasst, und aufrunden. Es ist immer
+nur ein Modell im Speicher; kleine Modelle haben deshalb einen größeren KV-Pool
+und mehr Sessions. Whisper und Qwen-Image haben keinen KV-Cache und keine
+`[serving]`-Tabelle. Das tatsächliche Fenster steht beim Laden im Log (`Context window: …`) und
+in `/internal/state` (`capacity_profile.max_context_tokens`).
+
 Außerdem pro Modell in MODEL.toml: `[sampling.*]`-Presets (thinking_text,
 thinking_coding, non_thinking, tools), `[dflash]` (draft_model etc.),
 `[[model_types]]` sowie die Architektur-/Geometrie-Keys (`layers_*`, `moe_*`,
@@ -70,7 +84,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--weights-arena-gb` / `--arena-host-register` | an / aus | Hot-Swap-Arena (0 = Hot-Swap aus) |
 | `--preseed-model` (+ `ATLAS_PRESEED_*`-Envs) | — | Modell-Registry & Kategorien |
 | `--rank`/`--world-size`/`--tp-size`/`--ep-size`/`--master-*` | 1 Node | Multi-GPU/EP |
-| `--request-timeout` | 300 s | HTTP-Timeout |
+| `--stall-exit-s` | 300 s | Einziger serverseitiger Abbruch: offene Sequenzen, aber so lange kein Scheduler-Schritt ⇒ Prozess endet mit Exit 1 (Neustart durch die Unit). Kein Zeitlimit pro Anfrage; Clients können `timeout` im Request-Body setzen |
 | `--ocr-result-ttl-s` / `--ocr-poll-idle-s` | 900 / 120 | `/convert`-Jobs: Ergebnis-Haltezeit, Verwaist-Schwelle ohne Poll |
 | `--ocr-store-max-mb` / `--ocr-max-jobs` | 512 / 64 | `/convert`-Job-Store-Grenzen (voll ⇒ 503 `capacity_exceeded`) |
 | `--ocr-page-parallelism` / `--ocr-max-pages` | 4 / 500 | Seiten-Fan-out je Job; Seitenlimit (`document_too_large`) |
@@ -80,7 +94,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `--ntfy-topic` / `--ntfy-url` | aus / ntfy.sh | Anomalie-Pushes (Prio ≥ 3): Panics, CUDA-Fehler, Stalls, 5xx-Rate, Schätzung verfehlt, … |
 | `--alert-min-interval-s` / `--alert-max-per-hour` | 300 / 6 | Dedupe je Art+Modell |
 | `--event-db` / `--event-db-max-mb` / `--event-snapshot-interval-s` | aus / 512 / 30 | SQLite-Ereignisspeicher: `events`, `snapshots` (/internal/state), `requests` |
-| `--alert-stall-s` / `--alert-5xx-per-min` | 60 / 10 | Detektor-Schwellen |
+| `--alert-stall-s` / `--alert-5xx-per-min` | 60 / 10 | Detektor-Schwellen (Push; Abbruch erst bei `--stall-exit-s`) |
 | `ATLAS_NTFY_TOPIC` / `ATLAS_EVENT_DB` (serve.sh) | — | setzen die beiden Flags; serve.sh meldet zusätzlich einen Exit ≠ 0 per ntfy |
 | `--oom-guard-mb` | 4096 | Lade-Abbruchschwelle |
 | `--dump` | aus | Request/Response-Mitschnitt (Debug) |
@@ -90,7 +104,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | Flag | Default | Tuning |
 |---|---|---|
 | `--gpu-memory-utilization` | 0.9 | Gesamt-Cap (vLLM-Semantik) |
-| `--max-seq-len` | 32768 | Worst-Case-Kontext; treibt KV-Boot-Check (mit `ATLAS_KV_OVERCOMMIT=1` nur Warnung) |
+| `--max-seq-len` | aus | Festes Kontextfenster für alle Modelle (Testläufe). Ohne Flag gilt `[serving].sessions` aus MODEL.toml; Targets ohne `[serving]` und `--high-speed-swap` bekommen 32768. Ein festes Fenster treibt den KV-Boot-Check (mit `ATLAS_KV_OVERCOMMIT=1` nur Warnung) |
 | `--max-batch-size` | 8 | Parallele Decode-Sequenzen (Prod: 4, 8 nach Todo 0.6) |
 | `--block-size` | 16 | KV-Blockgröße |
 | `--kv-pool-gb` | aus | KV-Pool pinnen (deterministische Hot-Swaps) |
@@ -127,9 +141,11 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | Variable | Wirkung |
 |---|---|
 | `ATLAS_PRESEED_{GENERATIVE,EMBED,RERANK,TRANSCRIBE,TRANSLATE,OCR,IMAGE}` | Kategorisierte Modell-Registry (JSON-Arrays) |
-| `ATLAS_IMAGE_RESERVE_GB` | Speicher, den das KV-Budget für den Qwen-Image-Sidecar freihält, solange er konfiguriert, aber nicht geladen ist (Default 34 = 27 Gewichte + 7 Arbeitsspeicher; nach dem Laden bleiben 7) |
 | `ATLAS_IMAGE_NO_CUBLAS=1` | Qwen-Image-Sidecar: In-Tree-GEMM statt cuBLASLt für die Projektionen (Debug) |
-| `ATLAS_KV_OVERCOMMIT=1` | Boot-Worst-Case-Check → Warnung (paged on-demand) |
+| `ATLAS_KV_OVERCOMMIT=1` | Boot-Worst-Case-Check → Warnung (paged on-demand). Nur mit festem `--max-seq-len` nötig; mit `[serving].sessions` passt jede Session per Konstruktion |
+| `ATLAS_NVME_CACHE_DIR` | `serve.sh`: Verzeichnis des NVMe-Session-Stores, Pflicht (wird zu `--nvme-cache-dir`) |
+| `ATLAS_MAX_SEQ_LEN` | `serve.sh`: festes Kontextfenster für Testläufe (wird zu `--max-seq-len`); unset = `[serving].sessions` |
+| `ATLAS_NVIDIA_SYSTEM_MEMORY_POOLS` | Nur Host (`.devpod/install.sh`, wirkt nach Reboot): Wert für die Treiber-Option `NVreg_EnableSystemMemoryPools`. `0` = der Treiber gibt freigegebenen Speicher an den Kernel zurück, statt ihn in seinen Pools zu halten (dort sieht ihn keine Frei-Speicher-Messung, der KV-Pool fällt zu klein aus). `driver` = Treiber-Default belassen. Stand live: `/proc/driver/nvidia/params` |
 | `ATLAS_KV_EXTERNAL_RESERVE_GB` | Manueller Co-Tenant-Abzug im KV-Budget |
 | `ATLAS_SKIP_OOM_PREFLIGHT=1` | Loader-Preflight aus (UMA-False-Negatives) |
 | `ATLAS_MEM_DEBUG=1` (+ `RUST_LOG=off,memdebug=debug`) | Per-Request-KV-Tracing (Doku.md §7) |
@@ -155,7 +171,9 @@ schreiben — danach startet der Server ohne modellbezogene CLI-Flags:
 ## NVMe-Tier, Druck-Scheduler und Priorität (Okt 2026)
 
 Neue Serve-Flags (Anforderungsdokument Okt 2026). Der NVMe-Tier ist aus,
-solange `--nvme-cache-dir` fehlt; der Druck-Scheduler ersetzt den
+solange `--nvme-cache-dir` fehlt — `serve.sh` setzt das Flag immer
+(`ATLAS_NVME_CACHE_DIR`), weil nur ein Modell zur Zeit im Speicher ist und
+Sessions einen Modellwechsel nur über den Store überstehen. Der Druck-Scheduler ersetzt den
 synchronen Lazy-Swap automatisch, sobald eine Preseed-Liste konfiguriert
 ist.
 
@@ -189,7 +207,7 @@ ist.
 | `--compaction-prompt-file` | eingebaut | Prompt der Zusammenfassung |
 | `--compaction-no-keep-first-user` | aus | erste User-Nachricht nicht im Kopf behalten (CMP-4) |
 | `--trust-proxy-headers` | aus | `X-Priority: high` auswerten (nur Loopback-Bind) |
-| `--sidecar-small-max-gib` | 4 | Embed/Rerank-Modelle bis zu dieser Größe laufen als residente Sidecars |
+| `--sidecar-small-max-gib` | 0 (aus) | 0 = nur ein Modell zur Zeit im Speicher, Embed/Rerank laufen über die Arena-Queue. Jeder andere Wert gibt das auf: Embed/Rerank-Modelle bis zu dieser Größe bleiben als Sidecars neben dem Arena-Modell resident |
 | `--growth-reserve-pct` | 10 | Anteil des KV-Pools, den die Admission für wachsende Sequenzen freilässt |
 
 Hinweis: `--write-batch-interval-ms` aus dem Anforderungsdokument gehört

@@ -10,8 +10,48 @@ behind specific subsystems — see the
 
 ## [Unreleased]
 
+### Changed
+
+- **One model in memory at a time, sidecars included.** Whisper and
+  Qwen-Image no longer stay resident beside the arena model: a request for
+  one queues with the arena dispatcher like any other model switch, the
+  arena model is unloaded first, and the next arena load unloads the sidecar
+  again (its device buffers are freed through a per-owner allocation
+  ledger). Without a dispatcher (no preseed list) a sidecar only loads into
+  an empty server; otherwise the request gets a 409.
+- **Context window from `MODEL.toml`**: `[serving] sessions = N` names how
+  many sessions stay warm for a model; the server splits the KV pool evenly
+  across them (`window = min(native max, pool / N)`, rounded down to
+  blocks). `--max-seq-len` is now optional and pins a fixed window for
+  every model; targets without `[serving]` and `--high-speed-swap` keep the
+  former 32768 default. `sessions < --max-batch-size` fails the load.
+- **`[serving] moe_prefill_transpose`** in `MODEL.toml` pins whether the
+  Qwen3 / Qwen3.5-family loaders build the transposed MoE expert copies for
+  prefill; without the key they keep deciding by the free memory at load
+  time. Set to `false` for `qwen3-next-80b-a3b`, whose copies (40.5 GiB)
+  never fit on GB10 so far and would otherwise appear as soon as the free
+  reading is accurate.
+- `.devpod/install.sh` writes the NVIDIA module option
+  `NVreg_EnableSystemMemoryPools` from `ATLAS_NVIDIA_SYSTEM_MEMORY_POOLS`
+  (required; `0` in the checked-in env). With the driver default the freed
+  load staging stays cached in the driver, invisible to `MemAvailable` and
+  `cuMemGetInfo`, and the KV pool is sized too small (80B: 11 GiB). Needs a
+  host reboot.
+- `--sidecar-small-max-gib` defaults to 0: embed/rerank models go through
+  the arena queue instead of staying resident beside the arena model.
+- `serve.sh` requires `ATLAS_NVME_CACHE_DIR` and always passes
+  `--nvme-cache-dir` — with one model in memory, the NVMe tier is what
+  carries sessions across a model switch. It no longer passes a
+  `--max-seq-len` unless `ATLAS_MAX_SEQ_LEN` is set.
+
 ### Removed
 
+- `--request-timeout`: there is no server-side time limit per request any
+  more. A scheduler that makes no step for `--stall-exit-s` (default 300)
+  while sequences are open ends the process with exit code 1 instead.
+- `ATLAS_IMAGE_RESERVE_GB` and the KV-budget reserve for a configured but
+  not yet loaded image model: the image model never shares memory with an
+  arena model's KV pool any more.
 - **Session slots (E6)**: `--slot-tokens`, `--priority-reserved-slots`,
   `[behavior].slot_tokens`, the `slots_total` admission cap and the
   `X-Atlas-Context-Remaining` header are gone (32fb1126 reverted). Capacity

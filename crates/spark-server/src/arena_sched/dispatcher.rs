@@ -124,9 +124,12 @@ impl ArenaDispatcher {
         }
     }
 
+    /// The one model in memory: the arena model, or — with the arena
+    /// empty — a resident sidecar.
     fn loaded_model(&self) -> Option<String> {
         match self.hotswap.state() {
             SwapState::Running => Some(self.hotswap.active_model().model_id),
+            SwapState::NoModel => crate::sidecars::resident_model(),
             _ => None,
         }
     }
@@ -148,7 +151,7 @@ impl ArenaDispatcher {
             .map(|(_, s)| s.clone())
             .unwrap_or_default();
         let active = ActiveStats {
-            n_active: crate::scheduler::scheduler_load(),
+            n_active: crate::scheduler::scheduler_load() + crate::sidecars::in_flight(),
             n_queued: active_snap.priority_len + active_snap.normal_len,
             lambda: active_snap.lambda,
             resident_secs: match loaded {
@@ -164,7 +167,10 @@ impl ArenaDispatcher {
         let candidates: Vec<CandidateStats> = snapshots
             .iter()
             .filter(|(id, s)| Some(id.as_str()) != loaded && s.normal_len > 0)
-            .filter(|(id, _)| self.hotswap.registered(id).is_some())
+            .filter(|(id, _)| {
+                self.hotswap.registered(id).is_some()
+                    || crate::api::sidecar_gate::kind_of(id).is_some()
+            })
             .map(|(id, s)| {
                 let est = crate::swap_costs::estimate(id, self.snapshot_bytes(id));
                 CandidateStats {

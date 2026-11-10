@@ -82,16 +82,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             }
         }
     }
-    // The image sidecar loads on its first request, long after the boot
-    // model sized its KV pool — reserve its memory in the budget now.
-    if preseed_by_category
-        .iter()
-        .any(|(cat, ids)| *cat == ModelCategory::Image && !ids.is_empty())
-    {
-        spark_runtime::gpu::set_sidecar_pending_reserve_bytes(
-            crate::api::images::pending_reserve_bytes(),
-        );
-    }
     for (cat, ids) in &preseed_by_category {
         if !ids.is_empty() {
             tracing::info!(
@@ -249,6 +239,14 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
 
     let (gpu, free_mem) = serve_phases::init_gpu_backend(&args, &ptx_set)?;
 
+    let context_window = serve_phases::resolve_context_window(
+        args.max_seq_len,
+        ptx_set.sessions,
+        config.max_position_embeddings,
+        args.max_batch_size,
+        args.high_speed_swap,
+    )?;
+
     // ── Pre-load reserve preflight ──
     let serve_phases::ReservePreflight {
         inference_reserve,
@@ -256,7 +254,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         gdn_two_phase_bytes,
         ssm_prefill_chunk,
         max_batch_tokens_pre,
-    } = serve_phases::preflight_reserve(&args, &config, free_mem)?;
+    } = serve_phases::preflight_reserve(&args, &config, free_mem, context_window.upper_bound())?;
     let total_reserve = inference_reserve + buffer_arena_bytes;
 
     // 2a-2. OOM watchdog: background async task that polls GPU memory every 2s.
@@ -288,6 +286,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     } else {
         ptx_set.behavior.fp8_kv_calibration_tokens
     };
+    config.moe_prefill_transpose = ptx_set.moe_prefill_transpose;
 
     // 3. Load model weights
     let oom_reserve_bytes = args.oom_guard_mb * 1024 * 1024;
@@ -360,6 +359,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         total_reserve,
         gdn_two_phase_bytes,
         max_batch_tokens_pre,
+        context_window.upper_bound(),
     )?;
 
     // 5. Build model via factory.
@@ -367,7 +367,11 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         prefill_budget,
         max_batch_tokens,
         spec_tokens: _spec_tokens,
-    } = serve_phases::resolve_prefill_budget(&args, ssm_prefill_chunk);
+    } = serve_phases::resolve_prefill_budget(
+        &args,
+        ssm_prefill_chunk,
+        context_window.upper_bound(),
+    );
     if args.dflash && args.enable_prefix_caching {
         tracing::warn!(
             "dflash: --enable-prefix-caching has a community-reported correctness regression on SM12.x with DFlash; outputs may be wrong on multi-turn cache hits. Run a greedy diff-test against a non-DFlash baseline before relying on outputs."
@@ -482,7 +486,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         },
         std::sync::Arc::clone(&prefix_cache),
     );
-    let model = serve_phases::build_model(
+    let spark_model::factory::BuiltModel { model, max_seq_len } = serve_phases::build_model(
         &args,
         &boot_model_id,
         &config,
@@ -497,6 +501,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         comm,
         dflash_args,
         ptx_set.behavior.default_mtp_quantization,
+        context_window,
     )?;
     // Stop recording: serving-time allocations come from pre-allocated
     // pools (runtime invariant); anything allocated after this line is not
@@ -626,8 +631,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         think_start_token_id: think_start_token,
         sampling_presets,
         tool_call_start_token_id: tool_call_start_token,
-        // Behavior and effective_context from MODEL.toml, embedded at build time.
-        effective_context: 0, // TODO: embed effective_context in TargetPtxSet
+        max_seq_len,
+        // Behavior from MODEL.toml, embedded at build time.
         behavior: {
             let mut b = ptx_set.behavior.clone();
             if let Some(cli_budget) = args.max_thinking_budget {
@@ -658,8 +663,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
     // Model registry (Task 6 Phase 2): boot model + categorized preseed
     // lists, deduped. Lazy request-time swaps and the listing APIs only
     // see these. TRANSCRIBE ids are deliberately NOT registered here —
-    // whisper is served by the resident sidecar, never by the arena — but
-    // are collected for the /v1/audio/transcriptions model check.
+    // whisper is served by its sidecar, never by the arena — but are
+    // collected for the /v1/audio/transcriptions model check.
     let boot_revision = model_dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -686,8 +691,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         for id in ids {
             if *cat == ModelCategory::Transcribe {
                 tracing::info!(
-                    "Preseed [transcribe]: '{id}' is served by the resident Whisper sidecar \
-                     ({} loads it on first request) — not part of the arena swap registry",
+                    "Preseed [transcribe]: '{id}' is served by the Whisper sidecar ({} swaps \
+                     it in as the only model in memory) — not part of the arena swap registry",
                     cat.endpoint(),
                 );
                 transcribe_models.push(id.clone());
@@ -695,8 +700,8 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             }
             if *cat == ModelCategory::Image {
                 tracing::info!(
-                    "Preseed [image]: '{id}' is served by the resident Qwen-Image sidecar \
-                     ({} loads it on first request) — not part of the arena swap registry",
+                    "Preseed [image]: '{id}' is served by the Qwen-Image sidecar ({} swaps it \
+                     in as the only model in memory) — not part of the arena swap registry",
                     cat.endpoint(),
                 );
                 image_models.push(id.clone());
@@ -862,8 +867,13 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 // "8.69 GB free" with ~40 GB pool-held). Whether things fit
                 // is decided by the KV budget's pinnable clamp and, finally,
                 // by the allocations themselves.
-                let r = serve_phases::preflight_reserve(&reload_args, &config, usize::MAX)
-                    .context("inference-reserve computation failed for swap target")?;
+                let r = serve_phases::preflight_reserve(
+                    &reload_args,
+                    &config,
+                    usize::MAX,
+                    prep.context_window.upper_bound(),
+                )
+                .context("inference-reserve computation failed for swap target")?;
                 if r.inference_reserve != inference_reserve {
                     tracing::info!(
                         "Swap target inference reserve: {:.2} GiB (boot model's was {:.2} GiB)",
@@ -880,56 +890,61 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             let avail_before_build = spark_runtime::meminfo::read().map(|m| m.mem_available);
             let prefix_cache = serve_phases::build_prefix_cache(&reload_args);
             let reload_prefix_cache = std::sync::Arc::clone(&prefix_cache);
-            let model = match serve_phases::build_model(
-                &reload_args,
-                &prep.model_id,
-                &config,
-                &store,
-                gpu,
-                max_batch_tokens,
-                prep.kv_dtype,
-                inference_reserve,
-                prep.layer_dtypes.clone(),
-                prep.hss_cache_blocks_per_seq,
-                prefix_cache,
-                reload_comm.clone(),
-                None, // dflash out of hot-swap scope
-                prep.default_mtp_quantization,
-            ) {
-                Ok(m) => {
-                    crate::memdebug::on_build_phase("ok", &prep.model_id);
-                    observe_runtime_reserve_delta(&prep.model_id, avail_before_build);
-                    m
-                }
-                Err(e) => {
-                    crate::memdebug::on_build_phase("fail", &prep.model_id);
-                    // Todo.md 0.4: an aborted rebuild must not strand its
-                    // device allocations — the 2026-09-11 retry loop leaked
-                    // memory on every failed load until nothing fit anymore.
-                    // build_model consumed the backend Box, so drain the
-                    // process-global tracker handle-less, and DONTNEED the
-                    // half-written arena payload right away instead of at
-                    // the next attempt's reset.
-                    let (freed, failed) =
-                        spark_runtime::cuda_backend::drain_and_free_tracked_allocs();
-                    ctx.arena.reset();
-                    tracing::warn!(
-                        target: "hotswap",
-                        event = "load_fail_cleanup",
-                        freed,
-                        failed,
-                        "freed device allocations from aborted model build"
-                    );
-                    return Err(e);
-                }
-            };
+            let spark_model::factory::BuiltModel { model, max_seq_len } =
+                match serve_phases::build_model(
+                    &reload_args,
+                    &prep.model_id,
+                    &config,
+                    &store,
+                    gpu,
+                    max_batch_tokens,
+                    prep.kv_dtype,
+                    inference_reserve,
+                    prep.layer_dtypes.clone(),
+                    prep.hss_cache_blocks_per_seq,
+                    prefix_cache,
+                    reload_comm.clone(),
+                    None, // dflash out of hot-swap scope
+                    prep.default_mtp_quantization,
+                    prep.context_window,
+                ) {
+                    Ok(m) => {
+                        crate::memdebug::on_build_phase("ok", &prep.model_id);
+                        observe_runtime_reserve_delta(&prep.model_id, avail_before_build);
+                        m
+                    }
+                    Err(e) => {
+                        crate::memdebug::on_build_phase("fail", &prep.model_id);
+                        // Todo.md 0.4: an aborted rebuild must not strand its
+                        // device allocations — the 2026-09-11 retry loop leaked
+                        // memory on every failed load until nothing fit anymore.
+                        // build_model consumed the backend Box, so drain the
+                        // process-global tracker handle-less, and DONTNEED the
+                        // half-written arena payload right away instead of at
+                        // the next attempt's reset.
+                        let (freed, failed) =
+                            spark_runtime::cuda_backend::drain_and_free_tracked_allocs();
+                        ctx.arena.reset();
+                        tracing::warn!(
+                            target: "hotswap",
+                            event = "load_fail_cleanup",
+                            freed,
+                            failed,
+                            "freed device allocations from aborted model build"
+                        );
+                        return Err(e);
+                    }
+                };
             if let Some(g) = model.gpu_backend() {
                 g.set_alloc_tracking(false);
             }
 
             // Install the target's per-request CPU state and identity —
             // handlers snapshot the new ModelRuntime from here on.
-            reload_runtime_cell.store(Arc::new(prep.model_runtime));
+            reload_runtime_cell.store(Arc::new(crate::main_modules::ModelRuntime {
+                max_seq_len,
+                ..prep.model_runtime
+            }));
             *ctx.manifest.write() = Arc::new(manifest);
             *ctx.active.write() = crate::main_modules::hotswap::ActiveModel {
                 model_id: prep.model_id.clone(),
@@ -1236,7 +1251,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         // Created next to the reload closure — the hot-swap handover
         // stores a new ModelRuntime into the same cell.
         runtime: runtime_cell,
-        max_seq_len: args.max_seq_len,
         request_tx,
         vision_max_pixels,
         tool_max_tokens: args.tool_max_tokens,
@@ -1250,7 +1264,6 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
         trust_proxy_headers: args.trust_proxy_headers,
         serve_args: std::sync::Arc::new(args.clone()),
         nonstream_max_wait: std::time::Duration::from_secs(args.nonstream_max_wait_s.max(1)),
-        request_timeout: args.request_timeout,
         disable_thinking: args.disable_thinking,
         default_chat_template_kwargs: args
             .default_chat_template_kwargs
@@ -1298,6 +1311,7 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
             crate::observe::detectors::DetectorConfig {
                 interval: std::time::Duration::from_secs(10),
                 stall_secs: args.alert_stall_s as f64,
+                stall_exit_secs: args.stall_exit_s as f64,
                 swap_stuck_secs: 600.0,
                 http_5xx_per_min: args.alert_5xx_per_min,
                 rejections_per_min: 10,

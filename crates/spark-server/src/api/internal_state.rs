@@ -126,7 +126,7 @@ pub fn build_state_json(state: &AppState) -> serde_json::Value {
             "transcribe": state.transcribe_models,
             "image": state.image_models,
         },
-        "capacity_profile": capacity_profile(state.max_seq_len),
+        "capacity_profile": capacity_profile(state.max_seq_len()),
         "kv_pool": pool,
         "batch": {
             "scheduler_load": crate::scheduler::scheduler_load(),

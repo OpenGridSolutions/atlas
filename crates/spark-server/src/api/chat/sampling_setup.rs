@@ -305,13 +305,12 @@ pub(super) fn build_sampling(
         None
     };
 
-    // Timeout deadline.
-    let timeout_secs = req.timeout.unwrap_or(state.request_timeout as f32);
-    let timeout_at = if timeout_secs > 0.0 {
-        Some(std::time::Instant::now() + std::time::Duration::from_secs_f32(timeout_secs))
-    } else {
-        None
-    };
+    // Deadline only when the client asks for one (`timeout` in the body).
+    // The server sets none: a request runs as long as it generates.
+    let timeout_at = req
+        .timeout
+        .filter(|secs| *secs > 0.0)
+        .map(|secs| std::time::Instant::now() + std::time::Duration::from_secs_f32(secs));
     // accepted_processing_time: an accepted request that overruns its
     // budget ends (finish_reason "length"), never a late success.
     let timeout_at = match req.accepted_processing_time {

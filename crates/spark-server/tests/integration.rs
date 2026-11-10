@@ -102,7 +102,7 @@ fn setup_model(
         gpu,
         4,          // max_batch_tokens: up to 3 spec-decode verification tokens
         block_size, // kv_block_size = 16
-        4096,       // max_seq_len
+        spark_model::factory::ContextWindow::Fixed(4096), // max_seq_len
         8,          // max_batch_size
         spark_model::layers::MtpQuantization::Nvfp4,
         false, // use_speculative
@@ -120,7 +120,8 @@ fn setup_model(
         None,               // hss_cache_blocks_per_seq
         None,               // dflash_args (no speculative-decoding pairing)
         None,               // kv_pool_bytes_override (--kv-pool-gb)
-    )?;
+    )?
+    .model;
 
     Ok((model, config))
 }

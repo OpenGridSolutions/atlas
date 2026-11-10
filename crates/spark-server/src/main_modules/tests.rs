@@ -25,7 +25,7 @@ fn test_cli_parse_positional_model() {
             );
             assert!(args.model_from_path.is_none());
             assert_eq!(args.port, 9999);
-            assert_eq!(args.max_seq_len, 8192);
+            assert_eq!(args.max_seq_len, Some(8192));
             assert_eq!(args.gpu_memory_utilization, 0.90);
             assert_eq!(args.scheduling_policy, "fifo");
             assert_eq!(args.tbt_deadline_ms, 100);

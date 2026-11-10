@@ -168,14 +168,10 @@ async fn embeddings_admitted(
     };
     let rt = state.runtime();
 
-    let timeout_at = if state.request_timeout > 0 {
-        Some(
-            std::time::Instant::now()
-                + std::time::Duration::from_secs(state.request_timeout as u64),
-        )
-    } else {
-        None
-    };
+    // No server-side deadline: a request runs as long as the scheduler
+    // makes progress (a stalled scheduler ends the process, see
+    // `observe::detectors`).
+    let timeout_at = None;
 
     crate::metrics::REQUESTS_TOTAL.inc();
     crate::metrics::REQUESTS_ACTIVE.inc();
@@ -201,14 +197,14 @@ async fn embeddings_admitted(
             }
         };
         let prompt_tokens = encoded.tokens;
-        if prompt_tokens.len() >= state.max_seq_len {
+        if prompt_tokens.len() >= state.max_seq_len() {
             crate::metrics::REQUESTS_ACTIVE.dec();
             return openai_error_response(
                 StatusCode::BAD_REQUEST,
                 format!(
                     "input {index}: {} tokens exceeds max_seq_len {}",
                     prompt_tokens.len(),
-                    state.max_seq_len
+                    state.max_seq_len()
                 ),
             );
         }

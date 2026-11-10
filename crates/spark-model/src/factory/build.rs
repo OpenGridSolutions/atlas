@@ -12,6 +12,7 @@ use spark_runtime::prefix_cache::PrefixCache;
 use spark_runtime::weights::WeightStore;
 
 use super::DflashBuildArgs;
+use super::context_window::ContextWindow;
 use super::loader_for_config;
 use super::m2_setup::maybe_run_minimax_m2_moe_transpose;
 use crate::layers::MtpQuantization;
@@ -21,13 +22,20 @@ use crate::weight_loader::load_dflash_weights;
 
 mod kv_summary;
 
+/// A built model together with the context window it was built for.
+pub struct BuiltModel {
+    pub model: Box<dyn Model>,
+    /// Context window in tokens (prompt + thinking + answer per sequence).
+    pub max_seq_len: usize,
+}
+
 pub fn build_model(
     mut config: ModelConfig,
     store: &WeightStore,
     gpu: Box<dyn GpuBackend>,
     max_batch_tokens: usize,
     kv_block_size: usize,
-    max_seq_len: usize,
+    context_window: ContextWindow,
     max_batch_size: usize,
     mtp_quant: MtpQuantization,
     use_speculative: bool,
@@ -52,7 +60,7 @@ pub fn build_model(
     // `Some(bytes)` pins the KV pool budget (--kv-pool-gb), bypassing the
     // free-memory measurement whose baseline is stale on hot-swap reloads.
     kv_pool_bytes_override: Option<usize>,
-) -> Result<Box<dyn Model>> {
+) -> Result<BuiltModel> {
     // ── Step 1: Select weight loader (only model-specific dispatch) ──
     let loader = loader_for_config(&config)?;
 
@@ -216,7 +224,7 @@ pub fn build_model(
     let buffers = BufferArena::new(
         &config,
         max_batch_tokens,
-        max_seq_len,
+        context_window.upper_bound(),
         kv_block_size,
         gpu.as_ref(),
     )?;
@@ -415,6 +423,13 @@ pub fn build_model(
             // increases pool size by `(max_seq_len_blocks - cap) × max_batch`
             // bytes per block. The existing post-load OOM check (line 304+)
             // catches infeasible configs at startup with a clear message.
+            let ContextWindow::Fixed(max_seq_len) = context_window else {
+                anyhow::bail!(
+                    "--high-speed-swap sizes the KV pool from the context window, so it \
+                     needs an explicit --max-seq-len (MODEL.toml [serving].sessions derives \
+                     the window from the pool instead)"
+                );
+            };
             let max_seq_blocks = max_seq_len.div_ceil(kv_block_size);
             let per_seq = (cap as usize + 1).max(max_seq_blocks);
             let n = max_batch_size * per_seq + 1;
@@ -460,7 +475,7 @@ pub fn build_model(
             n
         }
     };
-    let _max_kv_tokens = num_kv_blocks * kv_block_size;
+    let max_seq_len = context_window.resolve(num_kv_blocks, kv_block_size)?;
     // Phase 6.1.f / 6.2.c — when --high-speed-swap is on with HBM-shrink, the
     // production KV cache only has to fit the per-seq HBM window, not the full
     // sequence (older blocks live on disk). Compare against `cache_blocks_per_seq`
@@ -617,5 +632,8 @@ pub fn build_model(
         }
     }
 
-    Ok(Box::new(model))
+    Ok(BuiltModel {
+        model: Box::new(model),
+        max_seq_len,
+    })
 }

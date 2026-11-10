@@ -42,7 +42,7 @@ pub(super) async fn finish_request(
     let prompt_len = prompt_tokens.len();
     // The orchestrator guarantees `prompt_len < max_seq_len` (fit rule or
     // the `reject` policy's legacy check); keep the invariant explicit.
-    debug_assert!(prompt_len < state.max_seq_len);
+    debug_assert!(prompt_len < state.max_seq_len());
 
     // ── Phase 6: sampling preset / stop / grammar / timeout ─────
     let sampling_setup::SamplingSetup {
@@ -84,14 +84,14 @@ pub(super) async fn finish_request(
     // the KV pool starves — which kills the whole decode batch with an
     // untyped stream error instead of a clean `finish_reason: "length"`.
     let requested_max_tokens = max_tokens;
-    let max_tokens = max_tokens.min(state.max_seq_len.saturating_sub(prompt_len).max(1));
+    let max_tokens = max_tokens.min(state.max_seq_len().saturating_sub(prompt_len).max(1));
     if max_tokens < requested_max_tokens {
         tracing::info!(
             requested = requested_max_tokens,
             clamped = max_tokens,
             prompt_len,
             "max_tokens clamped to remaining context (max_seq_len {})",
-            state.max_seq_len
+            state.max_seq_len()
         );
     }
 

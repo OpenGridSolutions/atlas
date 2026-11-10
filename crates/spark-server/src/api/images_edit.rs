@@ -28,9 +28,10 @@ use spark_model::qwen_image::{self, EditImage, GenParams, QwenImage};
 
 use super::compact::openai_error_response;
 use super::images::{
-    Background, DEFAULT_STEPS, MAX_PROMPT_TOKENS, MAX_STEPS, Sidecar, bad_request, check_dims,
-    dims_for_aspect, encode_image, ensure_free_memory, failure, parse_size, sidecar_with_eviction,
+    ALLOC_OWNER, Background, DEFAULT_STEPS, MAX_PROMPT_TOKENS, MAX_STEPS, SLOT, bad_request,
+    check_dims, dims_for_aspect, encode_image, ensure_free_memory, failure, parse_size,
 };
+use super::sidecar_gate::SidecarKind;
 use crate::main_modules::AppState;
 
 /// Model-card limit on condition images.
@@ -313,16 +314,11 @@ pub async fn edits(State(state): State<Arc<AppState>>, req: Request) -> Response
         Err(e) => return bad_request(e),
     };
 
-    let sc: Arc<Sidecar> = match sidecar_with_eviction(&state, &model_id).await {
-        Ok(s) => s,
-        Err(e) => return failure("image sidecar init failed", &e),
+    let sc = match super::sidecar_gate::acquire(&state, SidecarKind::Image, &model_id, &SLOT).await
+    {
+        Ok(lease) => lease,
+        Err(resp) => return resp,
     };
-    if sc.model_id != model_id {
-        return bad_request(format!(
-            "image model '{}' is resident; only one image pipeline can be loaded per server",
-            sc.model_id
-        ));
-    }
 
     // Tokenize the ti2i template and expand each single `<|image_pad|>`
     // to the image's merged ViT token count, recording the spans.
@@ -376,25 +372,10 @@ pub async fn edits(State(state): State<Arc<AppState>>, req: Request) -> Response
     let sc2 = sc.clone();
     let fmt = output_format.clone();
     let edit_images: Vec<EditImage> = prepared.into_iter().map(|p| p.edit).collect();
-    {
-        let cond_tokens: usize = edit_images.iter().map(|i| i.span.1 * 4).sum();
-        let stack_overhead = if sc.pipeline.lock().await.edit_ready() {
-            0
-        } else {
-            super::images::gib_bytes(EDIT_STACK_GIB)
-        };
-        super::images::maybe_evict_for(
-            &state,
-            QwenImage::working_bytes(width, height, tokens.len() + 3 * cond_tokens / 4)
-                + stack_overhead,
-            "this edit",
-        )
-        .await;
-    }
     let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(u64, Vec<u8>)>> {
         let mut pipeline = sc2.pipeline.blocking_lock();
         pipeline.gpu_backend().bind_to_thread()?;
-        let _untracked = spark_runtime::cuda_backend::UntrackedAllocs::enter();
+        let _allocs = spark_runtime::cuda_backend::SidecarAllocs::enter(ALLOC_OWNER);
         // The joint sequence adds 4 latent tokens per VLM image slot; the
         // prefix K/V and score rows scale with it.
         let cond_tokens: usize = edit_images.iter().map(|i| i.span.1 * 4).sum();

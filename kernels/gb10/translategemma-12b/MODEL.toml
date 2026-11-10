@@ -79,3 +79,16 @@ dry_multiplier = 0.0
 [[model_types]]
 model_type = "gemma3"
 hidden_size = 3840
+
+# Sessions kept warm in the KV pool. The server splits the pool into this
+# many equal context windows when the model loads, capped at the native
+# window (131072 tokens); it is the only model in memory while it serves.
+# Rule: ceil(pool tokens / native window), raised where it does not divide
+# evenly so every session gets the same share. Computed, not measured, for
+# GB10 with a 100 GiB serving block (2026-11-10): the rule gives 3 (~121k
+# tokens each); 4 because the server runs 4 requests in parallel and each
+# needs a full window: ~91k tokens. The load logs the real pool, the rule's
+# count for it and the window ("Context window: ..."); set the count from
+# that line.
+[serving]
+sessions = 4

@@ -159,9 +159,14 @@ two models are requested alternately. Requests for a non-resident model queue (H
 keep-alive comments while they wait; non-streaming clients get an estimate and a hard wait
 bound. The triggering request carries `X-Atlas-Model-Swap: <ms>`.
 
-**Sidecars for what should not swap.** Whisper and Qwen-Image are small or shaped
-differently enough to stay resident on their own CUDA stream next to the arena model. Small
-embedding and reranker models (≤ `--sidecar-small-max-gib`) can run the same way.
+**One model in memory at a time.** Whisper and Qwen-Image run on their own pipelines
+(sidecars), but they are swap targets like every arena model: a request for one queues with
+the dispatcher, the arena model is unloaded, and the next arena request unloads the sidecar
+again. Whatever is loaded has the whole memory, so its KV pool is as large as the model
+allows. Each model's `MODEL.toml` names how many sessions stay warm (`[serving] sessions`);
+the server splits the KV pool evenly across them, which gives every session the same
+context window (no `--max-seq-len` needed). `--sidecar-small-max-gib` (default 0 = off)
+trades this for small embedding and reranker models resident beside the arena model.
 
 Where to read more: [`docs/hotswap/task6-decisions.md`](docs/hotswap/task6-decisions.md)
 (why synchronous swap, what dual residency would buy),
@@ -258,7 +263,7 @@ block-streaming path for single very long contexts),
 ## Numbers
 
 All numbers below were measured on **one DGX Spark (GB10, 119.7 GB unified LPDDR5X, 4 TB
-NVMe)** against the running server in this repository's deployment configuration
+NVMe)** against the running server in a measurement configuration
 (`serve.sh`, `--max-seq-len 16384 --max-batch-size 4 --kv-pool-gb 1 --nvme-cache-dir …`),
 with snapshots on the same NVMe. `--kv-pool-gb 1` is deliberately tiny: it forces eviction
 so the NVMe path is exercised on every revisit. A production pool would be tens of GB and
@@ -381,8 +386,9 @@ sessions with SSM resume at **0.31 s TTFT instead of 8.5 s** of recompute.
 
 ```bash
 # server with the KV tier and a deliberately small pool, see serve.sh for the model registry
-ATLAS_MAX_SEQ_LEN=16384 \
-ATLAS_SERVE_EXTRA_ARGS="--nvme-cache-dir /var/tmp/atlas-nvme --kv-pool-gb 1" ./serve.sh
+# (ATLAS_KV_OVERCOMMIT=1: four 16k sequences do not fit a 1 GiB pool)
+ATLAS_NVME_CACHE_DIR=/var/tmp/atlas-nvme ATLAS_MAX_SEQ_LEN=16384 ATLAS_KV_OVERCOMMIT=1 \
+ATLAS_SERVE_EXTRA_ARGS="--kv-pool-gb 1" ./serve.sh
 
 # switch + reactivation benchmark (2 cycles over every registered arena model, ~10 min)
 python3 tests/switch_bench.py --url http://127.0.0.1:11434 --cycles 2 --new-sessions 2
@@ -405,7 +411,8 @@ snapshot per model (roughly the checkpoint size each) plus the KV store.
 **1. Container as a systemd service.** [`.devpod/`](.devpod/) holds a rootless Podman
 Quadlet: a CUDA 13 dev image with persistent cargo and sccache volumes, and the model
 registry and serve flags in [`.devpod/atlas-gb10.env`](.devpod/atlas-gb10.env). Install it
-once on the host (asks for sudo; reboot afterwards so the memlock limit applies):
+once on the host (asks for sudo; it offers the reboot that the memlock limit and the
+NVIDIA driver option need):
 
 ```bash
 ./.devpod/install.sh

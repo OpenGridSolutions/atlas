@@ -237,8 +237,7 @@ pub(crate) fn log_behavior_audit(args: &cli::ServeArgs, ptx_set: &atlas_kernels:
         tail_pct = args.compaction_tail_pct,
         summary_max_tokens = args.compaction_summary_max_tokens,
         output_reserve = args.compaction_output_reserve,
-        "E7 context compaction configured (max_seq_len {})",
-        args.max_seq_len
+        "E7 context compaction configured"
     );
 }
 

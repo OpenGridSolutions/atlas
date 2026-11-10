@@ -48,3 +48,14 @@ thinking_default = false
 [[model_types]]
 model_type = "qwen3"
 hidden_size = 4096
+
+# Sessions kept warm in the KV pool. The server splits the pool into this
+# many equal context windows when the model loads, capped at the native
+# window (40960 tokens); it is the only model in memory while it serves.
+# Rule: ceil(pool tokens / native window), raised where it does not divide
+# evenly so every session gets the same share. Computed, not measured, for
+# GB10 with a 100 GiB serving block (2026-11-10): ~40k tokens per session.
+# The load logs the real pool, the rule's count for it and the window
+# ("Context window: ..."); set the count from that line.
+[serving]
+sessions = 26

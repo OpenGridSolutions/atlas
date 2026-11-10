@@ -330,7 +330,7 @@ pub(crate) async fn rate_limit_middleware(
     // for streaming paths (handlers call `refund_tokens` with the actual
     // usage). This over-counts for small requests but prevents a single
     // client from consuming the whole TPM budget in one burst.
-    let estimated = state.max_seq_len as u64;
+    let estimated = state.max_seq_len() as u64;
 
     let decision = state.rate_limiter.admit(&identity, estimated);
     if !decision.allowed {

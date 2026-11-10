@@ -110,7 +110,7 @@ See [Multi-GPU & EP=2](./multi-gpu.md) for the full setup, including the NCCL en
 | `--default-top-n-sigma` | `1.0` | Default σ for top-n-sigma sampler |
 | `--default-min-p` | `0.0` | Default min-p |
 | `--swap-space-gb` | `3` | Disk-backed KV swap at `/tmp/atlas-swap/` |
-| `--request-timeout` | `300` | Per-request seconds, 0 disables |
+| `--stall-exit-s` | `300` | Seconds without a scheduler step while sequences are open before the server exits with code 1. There is no per-request time limit |
 
 ## Endpoints
 

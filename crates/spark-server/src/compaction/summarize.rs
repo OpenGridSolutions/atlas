@@ -102,7 +102,7 @@ pub async fn summarize(
     msgs: &[IncomingMessage],
     sizes: &[usize],
 ) -> Result<String> {
-    let window = state.max_seq_len;
+    let window = state.max_seq_len();
     let mut summary: Option<String> = previous.map(str::to_string);
     let mut i = 0;
     while i < msgs.len() {
@@ -162,15 +162,13 @@ async fn generate(
         .apply_chat_template_openai(&messages, None, false, rt.behavior.disable_tool_steering)
         .context("render summarisation prompt")?;
     let prompt_len = prompt_tokens.len();
+    // The window is per model: read it from the caller's snapshot.
+    let window = rt.max_seq_len;
     anyhow::ensure!(
-        prompt_len < state.max_seq_len,
-        "summarisation prompt ({prompt_len} tokens) exceeds the window ({})",
-        state.max_seq_len
+        prompt_len < window,
+        "summarisation prompt ({prompt_len} tokens) exceeds the window ({window})"
     );
-    let max_tokens = cfg
-        .summary_max_tokens
-        .min(state.max_seq_len - prompt_len)
-        .max(1);
+    let max_tokens = cfg.summary_max_tokens.min(window - prompt_len).max(1);
     let stop_tokens: Vec<u32> = rt
         .tokenizer
         .inner()
@@ -179,10 +177,6 @@ async fn generate(
         .collect();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(&prompt_tokens);
-    let timeout_at = {
-        let secs = state.request_timeout as f32;
-        (secs > 0.0).then(|| std::time::Instant::now() + std::time::Duration::from_secs_f32(secs))
-    };
     let request = InferenceRequest::Blocking {
         prompt_tokens: Arc::new(prompt_tokens),
         session_hash,
@@ -213,7 +207,7 @@ async fn generate(
         grammar_spec: None,
         seed: None,
         top_logprobs: None,
-        timeout_at,
+        timeout_at: None,
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,

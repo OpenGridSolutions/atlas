@@ -114,31 +114,54 @@ The bulk of the inference logic:
 
 ### `spark-server`
 HTTP + scheduling:
-- `main_modules/serve.rs` — boot sequence (12 phases under `serve_phases/`).
+- `main_modules/serve.rs` — boot sequence (phases 0–11, helpers under `serve_phases/`).
+- `main_modules/serve_router.rs` — route table and middleware stack; `main_modules/middleware.rs` holds the middleware (observability headers, bearer auth, rate limit, model-state gate, priority).
+- `main_modules/hotswap.rs` — hot-swap context shared by the admin endpoints and the scheduler (weights arena, manifest, swap state machine).
+- `main_modules/text_sidecar.rs` — small text-model sidecars for embeddings and rerank.
 - `scheduler/` — main scheduler loop (`run()`), per-step phases (decode, verify K=2/3/γ, MTP, NGram, prefill, sample, emit, lifecycle).
 - `prefill_pacer.rs` — prefill pacing: time-sized prefill chunks and the decode share while a prompt is prefilled next to running sessions (`docs/design/prefill-pacing.md`).
-- `api/` — OpenAI-compat handlers (`chat_completions`, `responses`, `completions`, etc.).
-- `anthropic/` — Anthropic API translation layer.
+- `arena_sched.rs` — pressure-based arena scheduler: per-model queues, swap decision, completion estimate + reservation ledger. `swap_costs.rs` keeps the swap-cost bookkeeping.
+- `api/` — HTTP handlers:
+  - text generation: `/v1/chat/completions`, `/v1/completions`, `/v1/responses`, `/v1/conversations`;
+  - other modalities: `/v1/embeddings`, `/v1/rerank`, `/v1/translate`, `/v1/ocr`, `/convert` (async document-conversion jobs), `/v1/audio/transcriptions`, `/v1/images/generations`, `/v1/images/edits`;
+  - operations: `/admin/models*` (snapshot / load / unload), `/tokenize`, `/detokenize`, `/v1/stats`, `/internal/state`, `/health`, `/metrics`;
+  - cross-cutting: `admission.rs` (`accepted_processing_time`), `lazy_swap.rs` (request-time model swap), `queued_sse.rs` (SSE keep-alives while a request waits).
+- `anthropic/` — Anthropic API translation layer (`/v1/messages`).
 - `openai/` — OpenAI request/response types.
+- `compaction/` — context compaction when a conversation outgrows the window (`docs/design/context-compaction.md`).
+- `kv_tier.rs` — NVMe KV tier glue: per-model block store, background writer, scheduler-side persist hooks.
+- `session_manager.rs` — session-scoped SSM state.
+- `response_store.rs`, `conversation_store.rs` — stores behind stateful Responses resume, opt-in chat-completion storage and the Conversations API.
+- `ocr/` — native OCR pipeline behind `/v1/ocr` and `/convert`.
 - `tool_parser/` — per-model tool-call format parsers (Hermes JSON, Qwen3-coder XML, Gemma-4 native, MiniMax XML, Mistral native, bare JSON, etc.).
+- `reasoning_parser/` — per-model-family thinking/reasoning block detection.
 - `grammar/` — XGrammar-backed constrained decoding (tool schemas, JSON mode).
 - `tokenizer.rs` — chat-template rendering via Jinja, streaming decode.
+- `auth.rs`, `rate_limiter.rs` — bearer-token auth and per-identity token-bucket rate limiting.
+- `observe/`, `metrics.rs` — anomaly events (ntfy push + SQLite store), state snapshots, per-request records; Prometheus metrics.
 
 ## Request lifecycle (decode path)
 
-1. **HTTP** — Axum receives `POST /v1/chat/completions`, body parsed in `api/chat/mod.rs`.
-2. **Pre-process** — `chat/msg_entry::build_msg_entries` extracts messages + tools; `chat/template::render_template` renders the chat template; `chat/sampling_setup::build_sampling` resolves sampling preset, stops, grammar.
-3. **Submit** — request enqueued onto the scheduler's pending queue.
-4. **Scheduler tick** (`scheduler/mod.rs::run` loop):
-   - Promote prefill-completed sequences to active.
+1. **HTTP + middleware** — Axum receives `POST /v1/chat/completions` (`main_modules/serve_router.rs`). The request passes the middleware stack in `main_modules/middleware.rs`, outermost first: panic catch, CORS, observability headers, bearer auth (`--require-auth`), per-identity rate limit (429), model-state gate (503 while no model is `Running`; lazy-load endpoints pass through), context policy, proxy-asserted priority, body-size limit.
+2. **Admission** — `api/chat/mod.rs::chat_completions` parses the body, then calls `api/admission::admit` before anything is enqueued: the estimate is reserved in the ledger, and a request whose `accepted_processing_time` budget cannot be met is rejected synchronously with 503 `capacity_exceeded`. See `docs/design/deadline-admission.md`.
+3. **Model gate** — `api/lazy_swap::prepare_model_gate` makes the requested model the active one (lazy multi-model mode only; otherwise a pass-through). An unregistered model is a 404. If the request has to wait for a swap, a streaming client gets HTTP 200 + SSE keep-alives immediately (`api/queued_sse.rs`), a blocking client waits on its ticket.
+4. **Pre-process** — `chat_completions_inner` takes one per-request `ModelRuntime` snapshot so a hot-swap cannot mix two models' state. `chat/prepare::prepare_prompt` then injects the tool system prompt, runs `chat/msg_entry::build_msg_entries` (messages, tools, image preprocessing), resolves thinking, runs loop detection, and renders + tokenizes the chat template via `chat/template::render_template`.
+5. **Context fit** — if the prompt does not fit the window, the context policy decides: `reject` returns 400, otherwise a compaction entry is created synchronously and the prompt is rendered again (streaming clients receive `: compacting` keep-alives meanwhile). See `docs/design/context-compaction.md`.
+6. **Sampling setup + submit** — `chat/finish::finish_request` resolves sampling preset, stops and grammar via `chat/sampling_setup::build_sampling`, clamps `max_tokens` to the remaining context, and sends an `InferenceRequest` over `state.request_tx` from the streaming (`api/chat_stream/`) or blocking (`api/chat_blocking.rs`) path.
+7. **Scheduler tick** (`scheduler/mod.rs::run` loop, single GPU thread; a receiver thread feeds the pending queue):
+   - Apply hot-swap control commands; import completed NVMe restores.
+   - Drain pending requests; a request whose prefix is available on the NVMe tier is staged for restore first (`kv_tier.rs`).
+   - Swap out active sequences to disk when KV blocks run low; swap them back in when blocks free up.
+   - Start and continue prefills; promote prefill-completed sequences to active.
    - Sample drafts (MTP / NGram / DFlash if enabled).
    - Verify drafts via the model's verify path (`decode_verify_k2/k3/k4/kgamma`).
-   - Emit accepted tokens via SSE or buffer for blocking response.
-5. **Per-token forward**:
+   - Emit accepted tokens as `StreamEvent`s on the request's channel.
+8. **Per-token forward**:
    - For each layer: `TransformerLayer::decode` — `qwen3_attention`, `qwen3_ssm`, `moe`, etc.
    - GPU kernels launched via `gpu.kernel(module, fn)` lookups against the embedded `TargetPtxSet`.
    - KV cache append, paged decode attention, SSM state update, MoE routing + expert GEMV.
-6. **Sample** — host pulls logits, applies sampling, emits token.
+9. **Sample** — host pulls logits, applies sampling, emits token.
+10. **Response** — the streaming handler turns `StreamEvent`s into SSE chunks (reasoning / tool-call parsing, stop strings); the blocking path collects them into one JSON response.
 
 ## Build pipeline
 

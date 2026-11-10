@@ -3,26 +3,32 @@
 //! `POST /v1/audio/transcriptions` — Whisper speech-to-text (multiclass
 //! Plan.md W.3). Replaces the 501 stub.
 //!
-//! Whisper runs as a RESIDENT SIDECAR (gate finding W.0): loaded once on
-//! first request via its own kernel target + backend, never entering the
-//! scheduler / hot-swap arena — transcription does not evict the active
-//! chat model. FP32 checkpoint → BF16; no quantization.
+//! Whisper runs as a SIDECAR (gate finding W.0): its own kernel target +
+//! backend outside the scheduler / hot-swap arena. Only one model is in
+//! memory at a time, so a transcription request swaps Whisper in like any
+//! other model (`sidecar_gate`): the arena model is unloaded first, and
+//! Whisper is unloaded again before the next model loads. FP32 checkpoint
+//! → BF16; no quantization.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::{Multipart, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 
 use crate::main_modules::app_state::AppState;
+use crate::sidecars::{Residency, SidecarSlot};
 use spark_model::audio_preprocess;
 use spark_model::whisper::Whisper;
 
 use super::compact::openai_error_response;
+use super::sidecar_gate::SidecarKind;
 
-const WHISPER_ID: &str = "openai/whisper-large-v3";
+pub(crate) const WHISPER_ID: &str = "openai/whisper-large-v3";
+/// Owner of the sidecar's device allocations in the runtime's ledger.
+const ALLOC_OWNER: &str = "whisper";
 
-struct Sidecar {
+pub(super) struct Sidecar {
     whisper: tokio::sync::Mutex<Whisper>,
     tokenizer: tokenizers::Tokenizer,
     sot: u32,
@@ -34,16 +40,21 @@ struct Sidecar {
     lang_to_id: std::collections::HashMap<String, u32>,
 }
 
-static SIDECAR: tokio::sync::OnceCell<Arc<Sidecar>> = tokio::sync::OnceCell::const_new();
+pub(super) static SLOT: LazyLock<SidecarSlot<Sidecar>> =
+    LazyLock::new(|| SidecarSlot::new(release));
 
-/// Resident BF16 weight bytes of the sidecar, set once at load
-/// (Σ tensor elements × 2 — the FP32 store is converted 1:1 to BF16
-/// buffers). 0 = sidecar not loaded. Read by /v1/stats (Phase S).
+pub(crate) fn residency() -> &'static dyn Residency {
+    &*SLOT
+}
+
+/// Resident BF16 weight bytes of the sidecar, set at load (Σ tensor
+/// elements × 2 — the FP32 store is converted 1:1 to BF16 buffers).
+/// 0 = sidecar not loaded. Read by /v1/stats (Phase S).
 static SIDECAR_WEIGHTS_BYTES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 /// /v1/stats residency probe: `Some(weights_bytes)` when the whisper
-/// sidecar is resident, `None` before its first request.
+/// sidecar is resident, `None` while it is not in memory.
 pub fn sidecar_stats() -> Option<usize> {
     match SIDECAR_WEIGHTS_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
@@ -83,109 +94,124 @@ fn shadow_dir(model_dir: &std::path::Path) -> anyhow::Result<std::path::PathBuf>
     Ok(shadow)
 }
 
-async fn sidecar() -> anyhow::Result<Arc<Sidecar>> {
-    SIDECAR
-        .get_or_try_init(|| async {
-            tokio::task::spawn_blocking(|| -> anyhow::Result<Arc<Sidecar>> {
-                let t0 = std::time::Instant::now();
-                // Keep the sidecar's buffers out of a concurrent hot-swap
-                // build's watermark set (they would be freed at its unload).
-                let _untracked = spark_runtime::cuda_backend::UntrackedAllocs::enter();
-                let model_dir = crate::model_resolver::resolve_model_dir(WHISPER_ID, None)?;
-                let set = atlas_kernels::ptx_for_config("whisper", 1280).ok_or_else(|| {
-                    anyhow::anyhow!("no compiled kernel target for whisper (hidden 1280)")
-                })?;
-                let key = format!(
-                    "{}/{}/{}",
-                    set.target.arch, set.target.model, set.target.quant
-                );
-                let backend = spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
-                    &key,
-                    &set.modules,
-                )?;
-                let gpu: &dyn spark_runtime::gpu::GpuBackend = &backend;
-                gpu.bind_to_thread()?;
+/// Load Whisper into its slot. `sidecar_gate` calls this once nothing else
+/// is in memory; a resident Whisper is left alone.
+pub(super) async fn load() -> anyhow::Result<()> {
+    SLOT.install(WHISPER_ID, || {
+        crate::sidecars::load_blocking(ALLOC_OWNER, load_blocking)
+    })
+    .await
+}
 
-                let shadow = shadow_dir(&model_dir)?;
-                use spark_runtime::weights::WeightLoader;
-                let store = spark_runtime::fast_weights::FastSafetensorsLoader::new().load(
-                    &shadow,
-                    gpu,
-                    2 * 1024 * 1024 * 1024,
-                )?;
-                let whisper = Whisper::load(&store, Box::new(backend))?;
-                // Resident footprint for /v1/stats: every checkpoint tensor
-                // lives on as a BF16 buffer (2 bytes/element).
-                let bf16_bytes: usize = store
-                    .names()
-                    .filter_map(|n| store.get(n).ok())
-                    .map(|w| w.shape.iter().product::<usize>() * 2)
-                    .sum();
-                SIDECAR_WEIGHTS_BYTES.store(bf16_bytes, std::sync::atomic::Ordering::Relaxed);
-                // The FP32 store (~6.2 GiB device) is fully converted into
-                // the sidecar's BF16 buffers — release it.
-                let mut freed = 0usize;
-                for name in store.names() {
-                    if let Ok(w) = store.get(name)
-                        && whisper_free_ok(&whisper, w.ptr)
-                    {
-                        freed += 1;
-                    }
-                }
-                tracing::info!(
-                    "Whisper sidecar ready in {:.1}s (fp32 store released: {freed} tensors)",
-                    t0.elapsed().as_secs_f64()
-                );
+/// What a load needs before it touches any memory: the checkpoint on disk
+/// and a compiled kernel target. `sidecar_gate` checks this before a
+/// request may evict another model for Whisper.
+pub(super) fn load_source() -> anyhow::Result<(std::path::PathBuf, atlas_kernels::TargetPtxSet)> {
+    let model_dir = crate::model_resolver::resolve_model_dir(WHISPER_ID, None)?;
+    let set = atlas_kernels::ptx_for_config("whisper", 1280)
+        .ok_or_else(|| anyhow::anyhow!("no compiled kernel target for whisper (hidden 1280)"))?;
+    Ok((model_dir, set))
+}
 
-                let tokenizer = tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
-                    .map_err(|e| anyhow::anyhow!("whisper tokenizer: {e}"))?;
-                let gc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
-                    model_dir.join("generation_config.json"),
-                )?)?;
-                let u = |k: &str| gc[k].as_u64().map(|v| v as u32);
-                let list = |k: &str| -> Vec<u32> {
-                    gc[k]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|v| v.as_u64().map(|x| x as u32))
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                let lang_to_id = gc["lang_to_id"]
-                    .as_object()
-                    .map(|m| {
-                        m.iter()
-                            .filter_map(|(k, v)| {
-                                let code = k
-                                    .trim_start_matches("<|")
-                                    .trim_end_matches("|>")
-                                    .to_string();
-                                v.as_u64().map(|id| (code, id as u32))
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                Ok(Arc::new(Sidecar {
-                    whisper: tokio::sync::Mutex::new(whisper),
-                    tokenizer,
-                    sot: u("decoder_start_token_id").unwrap_or(50_258),
-                    eot: u("eos_token_id").unwrap_or(50_257),
-                    task_transcribe: gc["task_to_id"]["transcribe"]
-                        .as_u64()
-                        .map(|v| v as u32)
-                        .unwrap_or(50_360),
-                    no_timestamps: u("no_timestamps_token_id").unwrap_or(50_364),
-                    suppress: list("suppress_tokens"),
-                    begin_suppress: list("begin_suppress_tokens"),
-                    lang_to_id,
-                }))
+fn load_blocking() -> anyhow::Result<Sidecar> {
+    let t0 = std::time::Instant::now();
+    let (model_dir, set) = load_source()?;
+    let key = format!(
+        "{}/{}/{}",
+        set.target.arch, set.target.model, set.target.quant
+    );
+    let backend =
+        spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(&key, &set.modules)?;
+    let gpu: &dyn spark_runtime::gpu::GpuBackend = &backend;
+    gpu.bind_to_thread()?;
+
+    let shadow = shadow_dir(&model_dir)?;
+    use spark_runtime::weights::WeightLoader;
+    let store = spark_runtime::fast_weights::FastSafetensorsLoader::new().load(
+        &shadow,
+        gpu,
+        2 * 1024 * 1024 * 1024,
+    )?;
+    let whisper = Whisper::load(&store, Box::new(backend))?;
+    // Resident footprint for /v1/stats: every checkpoint tensor
+    // lives on as a BF16 buffer (2 bytes/element).
+    let bf16_bytes: usize = store
+        .names()
+        .filter_map(|n| store.get(n).ok())
+        .map(|w| w.shape.iter().product::<usize>() * 2)
+        .sum();
+    SIDECAR_WEIGHTS_BYTES.store(bf16_bytes, std::sync::atomic::Ordering::Relaxed);
+    // The FP32 store (~6.2 GiB device) is fully converted into
+    // the sidecar's BF16 buffers — release it.
+    let mut freed = 0usize;
+    for name in store.names() {
+        if let Ok(w) = store.get(name)
+            && whisper_free_ok(&whisper, w.ptr)
+        {
+            freed += 1;
+        }
+    }
+    tracing::info!(
+        "Whisper sidecar ready in {:.1}s (fp32 store released: {freed} tensors)",
+        t0.elapsed().as_secs_f64()
+    );
+
+    let tokenizer = tokenizers::Tokenizer::from_file(model_dir.join("tokenizer.json"))
+        .map_err(|e| anyhow::anyhow!("whisper tokenizer: {e}"))?;
+    let gc: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(
+        model_dir.join("generation_config.json"),
+    )?)?;
+    let u = |k: &str| gc[k].as_u64().map(|v| v as u32);
+    let list = |k: &str| -> Vec<u32> {
+        gc[k]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_u64().map(|x| x as u32))
+                    .collect()
             })
-            .await?
+            .unwrap_or_default()
+    };
+    let lang_to_id = gc["lang_to_id"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .filter_map(|(k, v)| {
+                    let code = k
+                        .trim_start_matches("<|")
+                        .trim_end_matches("|>")
+                        .to_string();
+                    v.as_u64().map(|id| (code, id as u32))
+                })
+                .collect()
         })
-        .await
-        .cloned()
+        .unwrap_or_default();
+    Ok(Sidecar {
+        whisper: tokio::sync::Mutex::new(whisper),
+        tokenizer,
+        sot: u("decoder_start_token_id").unwrap_or(50_258),
+        eot: u("eos_token_id").unwrap_or(50_257),
+        task_transcribe: gc["task_to_id"]["transcribe"]
+            .as_u64()
+            .map(|v| v as u32)
+            .unwrap_or(50_360),
+        no_timestamps: u("no_timestamps_token_id").unwrap_or(50_364),
+        suppress: list("suppress_tokens"),
+        begin_suppress: list("begin_suppress_tokens"),
+        lang_to_id,
+    })
+}
+
+/// Unload: drop the model and hand ALL of its device memory back.
+fn release(sidecar: Sidecar) {
+    let whisper = sidecar.whisper.into_inner();
+    let gpu = whisper.gpu_backend();
+    if let Err(e) = gpu.bind_to_thread().and_then(|()| gpu.device_synchronize()) {
+        tracing::warn!("whisper sidecar unload: {e:#}");
+    }
+    drop(whisper);
+    crate::sidecars::free_allocs(ALLOC_OWNER);
+    SIDECAR_WEIGHTS_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Free a store tensor's device allocation via the sidecar's backend.
@@ -318,14 +344,11 @@ pub async fn transcriptions(
         Ok(a) => a,
         Err(r) => return super::admission::openai_refusal(WHISPER_ID, r),
     };
-    let sc = match sidecar().await {
-        Ok(s) => s,
-        Err(e) => {
-            return openai_error_response(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("whisper sidecar init failed: {e:#}"),
-            );
-        }
+    let sc = match super::sidecar_gate::acquire(&_state, SidecarKind::Whisper, WHISPER_ID, &SLOT)
+        .await
+    {
+        Ok(lease) => lease,
+        Err(resp) => return resp,
     };
     let lang_code = language.unwrap_or_else(|| "en".into());
     let Some(&lang_id) = sc.lang_to_id.get(lang_code.as_str()) else {
@@ -337,8 +360,11 @@ pub async fn transcriptions(
     let prompt = vec![sc.sot, lang_id, sc.task_transcribe, sc.no_timestamps];
 
     // ── decode + mel on a blocking thread, then chunk-serial GPU work ──
+    // The closure owns a lease of its own: Whisper stays in memory until
+    // the GPU work is done, also when the client has gone away.
     let sc2 = sc.clone();
     let text = tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+        let _allocs = spark_runtime::cuda_backend::SidecarAllocs::enter(ALLOC_OWNER);
         let samples = audio_preprocess::decode_audio(bytes)?;
         let secs = samples.len() as f64 / audio_preprocess::SAMPLE_RATE as f64;
         let chunks = audio_preprocess::log_mel_chunks(&samples);

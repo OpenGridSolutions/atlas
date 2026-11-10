@@ -57,8 +57,8 @@ pub(crate) struct BudgetInputs {
     /// first prefill. `actual_free` keeps the swap-inclusive basis for
     /// the baseline delta (both readings share it).
     pub pinnable_free: Option<usize>,
-    /// `gpu::sidecar_pending_reserve_bytes()` — memory a configured sidecar
-    /// (Qwen-Image) will still allocate outside the arena and the KV pool.
+    /// `gpu::sidecar_pending_reserve_bytes()` — memory the small text
+    /// sidecars (embed/rerank) hold outside the arena and the KV pool.
     pub sidecar_reserve: usize,
 }
 

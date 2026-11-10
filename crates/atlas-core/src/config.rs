@@ -337,6 +337,12 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub fp8_kv_calibration_tokens: usize,
 
+    // ── MoE prefill copies (set at runtime from MODEL.toml [serving]) ──
+    /// Whether the loader builds the transposed MoE expert copies for
+    /// prefill. `None` = it decides by the free memory at load time.
+    #[serde(skip)]
+    pub moe_prefill_transpose: Option<bool>,
+
     // ── Gemma-4 specific ──
     /// Final logit softcapping: logits = cap * tanh(logits / cap).
     /// 0.0 = disabled (default for all models except Gemma-4 which uses 30.0).

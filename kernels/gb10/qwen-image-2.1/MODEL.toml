@@ -37,3 +37,7 @@ mtp_layers = 0
 [behavior]
 enable_loop_watchdog = false
 thinking_default = false
+
+# No [serving] section: this model has no token context window, so there
+# are no sessions to keep warm. It is still the only model in memory while
+# it serves.

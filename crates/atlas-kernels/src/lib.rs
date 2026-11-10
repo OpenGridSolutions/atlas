@@ -379,6 +379,12 @@ pub struct TargetPtxSet {
     pub dflash: Option<DflashConfig>,
     /// `[estimate]` cost constants; `None` when the MODEL.toml has none.
     pub estimate: Option<EstimateProfile>,
+    /// `[serving].sessions`: sessions kept warm in the KV pool. The server
+    /// splits the pool into this many equal context windows at load time.
+    pub sessions: Option<u32>,
+    /// `[serving].moe_prefill_transpose`: whether the loader builds the
+    /// transposed MoE expert copies for prefill (`None`: by free memory).
+    pub moe_prefill_transpose: Option<bool>,
 }
 
 /// The `[estimate]` profile of the target whose `[model].hf_id` equals

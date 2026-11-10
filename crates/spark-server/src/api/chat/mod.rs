@@ -184,7 +184,7 @@ pub(crate) async fn chat_completions_inner(
         Err(resp) => return resp,
     };
 
-    let window = state.max_seq_len;
+    let window = state.max_seq_len();
     let prompt_len = prepared.prompt_tokens.len();
     let fits = match policy {
         // CTX-2: `reject` keeps the pre-E7 rule (output is clamped).

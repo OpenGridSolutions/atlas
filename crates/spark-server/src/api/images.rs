@@ -4,11 +4,12 @@
 //! Replaces the 501 stub for servers that list an image model in
 //! `ATLAS_PRESEED_IMAGE`.
 //!
-//! The pipeline runs as a RESIDENT SIDECAR (the Whisper pattern): loaded
-//! once on first request via its own kernel target + backend, never
-//! entering the scheduler / hot-swap arena — generating an image does not
-//! evict the active chat model. One generation runs at a time; further
-//! requests queue on the sidecar lock.
+//! The pipeline runs as a SIDECAR (the Whisper pattern): its own kernel
+//! target + backend outside the scheduler / hot-swap arena. Only one model
+//! is in memory at a time, so an image request swaps the pipeline in like
+//! any other model (`sidecar_gate`): the arena model is unloaded first,
+//! and the pipeline is unloaded again before the next model loads. One
+//! generation runs at a time; further requests queue on the sidecar lock.
 //!
 //! OpenAI-Images-compatible request: `prompt`, `model`, `n`, `size`
 //! (`"WxH"` or `"auto"`), `response_format` (`b64_json` | `url` — the URL is
@@ -17,7 +18,7 @@
 //! `seed`, `num_inference_steps`, `aspect_ratio` (`"16:9"`, used when no
 //! `size` is given).
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use axum::extract::State;
 use axum::extract::rejection::JsonRejection;
@@ -26,7 +27,9 @@ use axum::response::{IntoResponse, Json, Response};
 use base64::Engine;
 use serde::Deserialize;
 
+use super::sidecar_gate::SidecarKind;
 use crate::main_modules::app_state::AppState;
+use crate::sidecars::{Residency, SidecarSlot};
 use spark_model::qwen_image::{self, GenParams, GeneratedImage, QwenImage};
 
 use super::compact::openai_error_response;
@@ -42,13 +45,11 @@ pub(super) const MAX_PROMPT_TOKENS: usize = 2048;
 
 /// Resident weights of the pipeline (DiT + text tower + VAE decoder), GiB.
 const WEIGHTS_RESERVE_GIB: f64 = 27.0;
-/// Working memory of one generation at the largest size (attention scores,
-/// MLP activations, VAE feature maps), GiB.
-const WORKING_RESERVE_GIB: f64 = 7.0;
 /// Free memory that must remain after the sidecar took its share — other
-/// users of the unified memory (the chat model's lazily touched KV pool,
-/// page cache, co-tenants) keep allocating.
+/// users of the unified memory (page cache, co-tenants) keep allocating.
 const FREE_MARGIN_GIB: f64 = 4.0;
+/// Owner of the sidecar's device allocations in the runtime's ledger.
+pub(super) const ALLOC_OWNER: &str = "qwen-image";
 
 #[derive(Deserialize)]
 pub struct ImageRequest {
@@ -71,21 +72,25 @@ pub struct ImageRequest {
 }
 
 pub(super) struct Sidecar {
-    pub(super) model_id: String,
     pub(super) pipeline: tokio::sync::Mutex<QwenImage>,
     pub(super) tokenizer: tokenizers::Tokenizer,
     /// Token count of the system prefix dropped from the encoder output.
     pub(super) sys_tokens: usize,
 }
 
-static SIDECAR: tokio::sync::OnceCell<Arc<Sidecar>> = tokio::sync::OnceCell::const_new();
+pub(super) static SLOT: LazyLock<SidecarSlot<Sidecar>> =
+    LazyLock::new(|| SidecarSlot::new(release));
 
-/// Resident device weight bytes, set once at load. 0 = not loaded.
+pub(crate) fn residency() -> &'static dyn Residency {
+    &*SLOT
+}
+
+/// Resident device weight bytes, set at load. 0 = not loaded.
 static SIDECAR_WEIGHTS_BYTES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
-/// /v1/stats residency probe: `Some(weights_bytes)` once the image sidecar
-/// is resident, `None` before its first request.
+/// /v1/stats residency probe: `Some(weights_bytes)` while the image sidecar
+/// is resident, `None` while it is not in memory.
 pub fn sidecar_stats() -> Option<usize> {
     match SIDECAR_WEIGHTS_BYTES.load(std::sync::atomic::Ordering::Relaxed) {
         0 => None,
@@ -121,166 +126,109 @@ pub(super) fn ensure_free_memory(
     Ok(())
 }
 
-/// Best-effort eviction BEFORE a generation's authoritative memory gate:
-/// when `need` + margin exceeds `MemAvailable` and an arena model is
-/// resident, unload it — it lazy-reloads on its next request. Large
-/// sizes (2048² needs ~7.4 GiB working memory, VAE decode dominating)
-/// otherwise 503 whenever a chat model's KV pool sits on the box, which
-/// is exactly the "swap models automatically" case the sidecar load
-/// already handles. Unlike the cross-process driver-pool situation,
-/// MemAvailable reflects an in-process unload immediately, so the
-/// ensure_free_memory gate inside the worker re-checks honestly.
-pub(super) async fn maybe_evict_for(state: &AppState, need: usize, what: &str) {
-    let Some(ctx) = state.hotswap.as_ref() else {
-        return;
-    };
-    let Some(free) = spark_runtime::meminfo::read().map(|m| m.mem_available) else {
-        return;
-    };
-    if free >= need + gib_bytes(FREE_MARGIN_GIB) {
-        return;
-    }
-    let gib = |b: usize| b as f64 / (1u64 << 30) as f64;
-    tracing::warn!(
-        "{what} needs {:.1} GiB + {FREE_MARGIN_GIB:.0} GiB margin but {:.1} GiB is available — \
-         evicting the arena model to make room (it lazy-reloads on its next request)",
-        gib(need),
-        gib(free),
-    );
-    match super::lazy_swap::unload_active(ctx).await {
-        Ok(_) => {}
-        Err(e) => tracing::warn!("arena eviction for {what} failed: {e:#}"),
-    }
+/// The compiled kernel target that serves image model `id`.
+fn kernel_target(id: &str) -> Option<atlas_kernels::TargetPtxSet> {
+    atlas_kernels::ptx_for_model_id(id, "qwen_image", 4096)
+        .filter(|t| t.target.model == "qwen-image-2.1")
 }
 
-/// Memory the KV-budget sizing must leave free while the sidecar is
-/// configured but not resident (`ATLAS_IMAGE_RESERVE_GB` overrides the
-/// weights + working-memory default).
-pub fn pending_reserve_bytes() -> usize {
-    let gib = std::env::var("ATLAS_IMAGE_RESERVE_GB")
-        .ok()
-        .and_then(|v| v.parse::<f64>().ok())
-        .filter(|g| *g >= 0.0)
-        .unwrap_or(WEIGHTS_RESERVE_GIB + WORKING_RESERVE_GIB);
-    gib_bytes(gib)
-}
-
-/// Load the sidecar for the handlers. When the memory preflight refuses
-/// the load and an arena model is resident, evict it — the lazy-swap
-/// machinery reloads it on its next request, by then with the small
-/// post-load reserve — and retry ONCE without the preflight: the GB10
+/// Load the pipeline for `model_id` into its slot. `sidecar_gate` calls
+/// this once nothing else is in memory; a resident pipeline is left alone.
+///
+/// `skip_preflight`: another model was unloaded just before. The GB10
 /// driver pool hands freshly freed allocations to new CUDA allocations
-/// immediately while `MemAvailable` lags minutes behind, so a re-check
-/// would false-negative. The loader's per-shard OOM guard remains as the
-/// safety net.
-pub(super) async fn sidecar_with_eviction(
-    state: &AppState,
-    model_id: &str,
-) -> anyhow::Result<Arc<Sidecar>> {
-    let first = sidecar(model_id, false).await;
-    let Err(e) = first else {
-        return first;
-    };
-    let memory_bound = format!("{e:#}").contains("not enough free memory");
-    let Some(ctx) = state.hotswap.as_ref().filter(|_| memory_bound) else {
-        return Err(e);
-    };
-    tracing::warn!(
-        "image sidecar load refused by the memory preflight ({e:#}); evicting arena \
-         model '{}' to make room (it lazy-reloads on its next request)",
-        ctx.active_model().model_id,
-    );
-    if !super::lazy_swap::unload_active(ctx).await? {
-        // Arena was already empty — eviction cannot free anything, the
-        // preflight verdict stands.
-        return Err(e);
-    }
-    sidecar(model_id, true).await
+/// immediately while `MemAvailable` lags behind, so the preflight would
+/// false-negative; the loader's per-shard OOM guard remains as the safety
+/// net.
+pub(super) async fn load(model_id: &str, skip_preflight: bool) -> anyhow::Result<()> {
+    let id = model_id.to_string();
+    SLOT.install(model_id, || {
+        crate::sidecars::load_blocking(ALLOC_OWNER, move || load_blocking(&id, skip_preflight))
+    })
+    .await
 }
 
-pub(super) async fn sidecar(model_id: &str, skip_preflight: bool) -> anyhow::Result<Arc<Sidecar>> {
-    let id = model_id.to_string();
-    SIDECAR
-        .get_or_try_init(|| async {
-            tokio::task::spawn_blocking(move || -> anyhow::Result<Arc<Sidecar>> {
-                let t0 = std::time::Instant::now();
-                // Sidecar allocations must never land in a hot-swap build's
-                // watermark set (they would be freed at that model's unload).
-                let _untracked = spark_runtime::cuda_backend::UntrackedAllocs::enter();
-                let model_dir = crate::model_resolver::resolve_diffusers_dir(&id, None)?;
-                let set = atlas_kernels::ptx_for_model_id(&id, "qwen_image", 4096)
-                    .filter(|t| t.target.model == "qwen-image-2.1")
-                    .ok_or_else(|| {
-                        anyhow::anyhow!(
-                            "no compiled kernel target for image model '{id}' \
-                             (supported: Qwen/Qwen-Image-2.1)"
-                        )
-                    })?;
-                let key = format!(
-                    "{}/{}/{}",
-                    set.target.arch, set.target.model, set.target.quant
-                );
-                let mut backend = spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(
-                    &key,
-                    &set.modules,
-                )?;
-                // Fairness: the sidecar renders on its OWN stream so a
-                // 40-step generation no longer FIFO-starves chat decode
-                // launches on the shared registry stream (measured 112 s
-                // for a 4.8 s chat reply before this).
-                backend.use_private_stream()?;
-                use spark_runtime::gpu::GpuBackend;
-                backend.bind_to_thread()?;
-                if skip_preflight {
-                    tracing::info!(
-                        "image sidecar: skipping the MemAvailable preflight after arena \
-                         eviction (freed allocations are CUDA-reusable before MemAvailable \
-                         reflects them)"
-                    );
-                } else {
-                    ensure_free_memory(
-                        &backend,
-                        gib_bytes(WEIGHTS_RESERVE_GIB)
-                            + QwenImage::working_bytes(DEFAULT_SIDE, DEFAULT_SIDE, 0),
-                        "to load the image pipeline",
-                    )?;
-                }
-                let pipeline = QwenImage::load(&model_dir, Box::new(backend))?;
-                SIDECAR_WEIGHTS_BYTES.store(
-                    pipeline.weights_bytes(),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
-                // The weights are now visible to the KV budget as Atlas-own
-                // memory; only the per-generation working set stays reserved.
-                let pending = pending_reserve_bytes();
-                spark_runtime::gpu::set_sidecar_pending_reserve_bytes(
-                    pending.min(gib_bytes(WORKING_RESERVE_GIB)),
-                );
+/// What a load needs before it touches any memory: the pipeline on disk
+/// and a compiled kernel target. `sidecar_gate` checks this before a
+/// request may evict another model for the pipeline.
+pub(super) fn load_source(
+    id: &str,
+) -> anyhow::Result<(std::path::PathBuf, atlas_kernels::TargetPtxSet)> {
+    let model_dir = crate::model_resolver::resolve_diffusers_dir(id, None)?;
+    let set = kernel_target(id).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no compiled kernel target for image model '{id}' \
+             (supported: Qwen/Qwen-Image-2.1)"
+        )
+    })?;
+    Ok((model_dir, set))
+}
 
-                let tokenizer = tokenizers::Tokenizer::from_file(
-                    model_dir.join("processor").join("tokenizer.json"),
-                )
-                .map_err(|e| anyhow::anyhow!("image tokenizer: {e}"))?;
-                let sys_tokens = tokenizer
-                    .encode(qwen_image::system_prefix(), false)
-                    .map_err(|e| anyhow::anyhow!("image tokenizer: {e}"))?
-                    .len();
-                tracing::info!(
-                    "Qwen-Image sidecar ready in {:.1}s ({:.1} GiB resident)",
-                    t0.elapsed().as_secs_f64(),
-                    pipeline.weights_bytes() as f64 / (1u64 << 30) as f64,
-                );
-                Ok(Arc::new(Sidecar {
-                    model_id: id,
-                    pipeline: tokio::sync::Mutex::new(pipeline),
-                    tokenizer,
-                    sys_tokens,
-                }))
-            })
-            .await?
-        })
-        .await
-        .cloned()
+fn load_blocking(id: &str, skip_preflight: bool) -> anyhow::Result<Sidecar> {
+    let t0 = std::time::Instant::now();
+    let (model_dir, set) = load_source(id)?;
+    let key = format!(
+        "{}/{}/{}",
+        set.target.arch, set.target.model, set.target.quant
+    );
+    let mut backend =
+        spark_runtime::cuda_backend::AtlasCudaBackend::new_for_target(&key, &set.modules)?;
+    // The pipeline renders on its OWN stream, off the shared
+    // registry stream the scheduler uses. The stream is never
+    // destroyed: each load leaks one stream handle.
+    backend.use_private_stream()?;
+    use spark_runtime::gpu::GpuBackend;
+    backend.bind_to_thread()?;
+    if skip_preflight {
+        tracing::info!(
+            "image sidecar: skipping the MemAvailable preflight after a model \
+             unload (freed allocations are CUDA-reusable before MemAvailable \
+             reflects them)"
+        );
+    } else {
+        ensure_free_memory(
+            &backend,
+            gib_bytes(WEIGHTS_RESERVE_GIB)
+                + QwenImage::working_bytes(DEFAULT_SIDE, DEFAULT_SIDE, 0),
+            "to load the image pipeline",
+        )?;
+    }
+    let pipeline = QwenImage::load(&model_dir, Box::new(backend))?;
+    SIDECAR_WEIGHTS_BYTES.store(
+        pipeline.weights_bytes(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+
+    let tokenizer =
+        tokenizers::Tokenizer::from_file(model_dir.join("processor").join("tokenizer.json"))
+            .map_err(|e| anyhow::anyhow!("image tokenizer: {e}"))?;
+    let sys_tokens = tokenizer
+        .encode(qwen_image::system_prefix(), false)
+        .map_err(|e| anyhow::anyhow!("image tokenizer: {e}"))?
+        .len();
+    tracing::info!(
+        "Qwen-Image sidecar ready in {:.1}s ({:.1} GiB resident)",
+        t0.elapsed().as_secs_f64(),
+        pipeline.weights_bytes() as f64 / (1u64 << 30) as f64,
+    );
+    Ok(Sidecar {
+        pipeline: tokio::sync::Mutex::new(pipeline),
+        tokenizer,
+        sys_tokens,
+    })
+}
+
+/// Unload: drop the pipeline (it frees its weights) and hand the rest of
+/// its device memory back.
+fn release(sidecar: Sidecar) {
+    let pipeline = sidecar.pipeline.into_inner();
+    let gpu = pipeline.gpu_backend();
+    if let Err(e) = gpu.bind_to_thread().and_then(|()| gpu.device_synchronize()) {
+        tracing::warn!("image sidecar unload: {e:#}");
+    }
+    drop(pipeline);
+    crate::sidecars::free_allocs(ALLOC_OWNER);
+    SIDECAR_WEIGHTS_BYTES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `"WxH"` → (width, height), snapped down to the 32 px latent grid.
@@ -545,16 +493,11 @@ pub async fn generations(
         Err(e) => return bad_request(e),
     };
 
-    let sc = match sidecar_with_eviction(&state, &model_id).await {
-        Ok(s) => s,
-        Err(e) => return failure("image sidecar init failed", &e),
+    let sc = match super::sidecar_gate::acquire(&state, SidecarKind::Image, &model_id, &SLOT).await
+    {
+        Ok(lease) => lease,
+        Err(resp) => return resp,
     };
-    if sc.model_id != model_id {
-        return bad_request(format!(
-            "image model '{}' is resident; only one image pipeline can be loaded per server",
-            sc.model_id
-        ));
-    }
 
     let prompt = if background == Background::Transparent {
         transparent_prompt(&req.prompt)
@@ -577,19 +520,14 @@ pub async fn generations(
             .map_or(0, |d| d.as_nanos() as u64)
     });
 
-    maybe_evict_for(
-        &state,
-        QwenImage::working_bytes(width, height, tokens.len()),
-        "this image size",
-    )
-    .await;
-
+    // The closure owns a lease of its own: the pipeline stays in memory
+    // until the GPU work is done, also when the client has gone away.
     let sc2 = sc.clone();
     let fmt = output_format.clone();
     let work = tokio::task::spawn_blocking(move || -> anyhow::Result<Vec<(u64, Vec<u8>)>> {
         let pipeline = sc2.pipeline.blocking_lock();
         pipeline.gpu_backend().bind_to_thread()?;
-        let _untracked = spark_runtime::cuda_backend::UntrackedAllocs::enter();
+        let _allocs = spark_runtime::cuda_backend::SidecarAllocs::enter(ALLOC_OWNER);
         ensure_free_memory(
             pipeline.gpu_backend(),
             QwenImage::working_bytes(width, height, tokens.len()),

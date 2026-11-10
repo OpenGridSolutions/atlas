@@ -93,8 +93,7 @@ pub struct PageJob<'a> {
     /// Deterministic seed base for the degeneration retries; retry `n`
     /// samples with `seed_base + n`. None = unseeded (legacy `/v1/ocr`).
     pub seed_base: Option<u64>,
-    /// Absolute deadline for this page (job deadline). Combined with the
-    /// server-wide `--request-timeout`; the earlier one wins.
+    /// Absolute deadline for this page (job deadline). None = no deadline.
     pub deadline: Option<Instant>,
     /// Cooperative cancel flag checked before every generation pass.
     pub cancel: Option<&'a AtomicBool>,
@@ -128,14 +127,6 @@ async fn generate_once(
 ) -> Result<(Vec<u32>, String), PageError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let session_hash = crate::session_manager::compute_session_hash(prompt_tokens);
-    let server_timeout = {
-        let secs = state.request_timeout as f32;
-        (secs > 0.0).then(|| Instant::now() + std::time::Duration::from_secs_f32(secs))
-    };
-    let timeout_at = match (server_timeout, deadline) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (a, b) => a.or(b),
-    };
     let request = InferenceRequest::Blocking {
         prompt_tokens: Arc::clone(prompt_tokens),
         session_hash,
@@ -166,7 +157,7 @@ async fn generate_once(
         grammar_spec: None,
         seed,
         top_logprobs: None,
-        timeout_at,
+        timeout_at: deadline,
         logit_probe: None,
         capture_hidden: false,
         response_tx: tx,
@@ -235,18 +226,18 @@ pub async fn ocr_page(job: PageJob<'_>) -> Result<PageOutput, PageError> {
         .tokenizer
         .expand_image_pads(prompt_tokens, &[pad_count]);
     let prompt_len = prompt_tokens.len();
-    if prompt_len >= job.state.max_seq_len {
+    if prompt_len >= job.state.max_seq_len() {
         return Err(PageError::Document(format!(
             "page produces {prompt_len} prompt tokens, at/over the context limit {} — \
              reduce the image resolution",
-            job.state.max_seq_len,
+            job.state.max_seq_len(),
         )));
     }
     let prompt_tokens = Arc::new(prompt_tokens);
     let max_tokens = job
         .max_tokens
         .unwrap_or(crate::ocr::MAX_OUTPUT_TOKENS)
-        .min(job.state.max_seq_len.saturating_sub(prompt_len));
+        .min(job.state.max_seq_len().saturating_sub(prompt_len));
 
     // Generation + degeneration retry, mirroring vllm.py::process_item:
     // pass 0 at (0.0, 0.1); retry n at (min(0.2·n, 0.8), 0.95).

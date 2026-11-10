@@ -50,7 +50,8 @@ Endpunkt ergibt `400 model_wrong_category`; ein unbekanntes Modell ergibt
 | `Qwen/Qwen3-VL-30B-A3B-Instruct-FP8` | 30B MoE (3B aktiv), **Vision** | Bild-Eingabe über `image_url` in den Messages. Kein Thinking. |
 | `nvidia/Qwen3.8-27B-NVFP4` | 27B dense, Reasoning + Vision | Thinking standardmäßig an (Budget 2048), FP8-KV. Langsamer (~10 tok/s), höhere Qualität pro Token. |
 
-**Lazy Swap:** Es ist immer nur **ein** generatives Modell im Speicher.
+**Lazy Swap:** Es ist immer nur **ein** Modell im Speicher — über alle
+Kategorien hinweg, Whisper und Qwen-Image eingeschlossen.
 Wird ein anderes angefragt, entlädt der Server das aktive Modell und lädt
 das gewünschte aus dem Snapshot. Die auslösende Anfrage zahlt den Wechsel
 (einige Sekunden bis ~30 s) und bekommt den Header `X-Atlas-Model-Swap: <ms>`.
@@ -72,9 +73,10 @@ Aktuellen Zustand zeigt `GET /admin/models` oder `GET /health`.
 
 Embed-, Rerank-, Translate- und OCR-Modelle laufen in derselben Arena wie die
 generativen Modelle und lösen ebenfalls einen Swap aus. Whisper und Qwen-Image
-sind **Sidecars**: Sie werden beim ersten Request geladen, bleiben resident
-und verdrängen das Chat-Modell nicht (außer der Speicher reicht nicht; dann
-wird das Arena-Modell entladen und beim nächsten Chat-Request neu geladen).
+sind **Sidecars** mit eigener Pipeline, für den Speicher aber Wechselziele wie
+jedes andere Modell: Ihr Request reiht sich in die Warteschlange ein, das
+aktive Modell wird entladen, und der nächste Request an ein Arena-Modell
+entlädt den Sidecar wieder.
 
 ## 3. Gemeinsame Konventionen
 
@@ -89,8 +91,12 @@ wird das Arena-Modell entladen und beim nächsten Chat-Request neu geladen).
   Header `X-Atlas-Accepted-Processing-Time`. Die Schätzung kommt immer im
   Antwort-Header `X-Atlas-Estimated-Seconds` zurück (bei `/convert` im Feld
   `estimated_seconds`). Details: [`design/deadline-admission.md`](design/deadline-admission.md).
-- **Kontextfenster:** Der Server läuft aktuell mit `--max-seq-len 16384`.
-  Überlaufende Chat-Historien werden komprimiert statt abgelehnt
+- **Kontextfenster:** je Modell verschieden. Die `MODEL.toml` des Modells
+  legt fest, wie viele Sessions parallel warm bleiben (`[serving] sessions`);
+  der Server teilt den KV-Cache gleichmäßig auf sie auf. Der aktuelle Wert
+  steht in `GET /internal/state` (`capacity_profile.max_context_tokens`).
+  Sessions, die ein Modellwechsel aus dem Speicher wirft, liegen im
+  NVMe-Store und werden beim nächsten Request zurückgeholt. Überlaufende Chat-Historien werden komprimiert statt abgelehnt
   (siehe [`design/context-compaction.md`](design/context-compaction.md)).
 - **Body-Limit:** 32 MB (`ATLAS_MAX_BODY_BYTES`).
 - **Request-ID:** jede Antwort trägt `X-Request-Id`.
@@ -306,7 +312,8 @@ ignoriert. `/v1/audio/translations` und `/v1/audio/speech` antworten 501.
 
 ### 4.9 Bildgenerierung — `POST /v1/images/generations`
 
-Qwen-Image-2.1 als Sidecar (ca. 27 GiB resident). Eine Generierung läuft zur
+Qwen-Image-2.1 als Sidecar (ca. 27 GiB; der erste Request nach einem anderen
+Modell zahlt den Wechsel). Eine Generierung läuft zur
 Zeit; weitere Requests warten. 1024² mit 40 Schritten dauert ca. 60 s, 2048²
 ca. 450 s. Über den Proxy (60 s Timeout) nur kleine Bilder; sonst lokal.
 
@@ -325,8 +332,8 @@ Felder: `prompt`, `n`, `size` (`"WxH"` oder `"auto"`), `aspect_ratio`
 liefert eine `data:`-URI, Atlas hostet keine Dateien), `output_format`
 (`png` | `jpeg` | `webp`), `background` (`auto` | `opaque` | `transparent`),
 `seed`, `num_inference_steps` (Alias `steps`), `accepted_processing_time`.
-Reicht der Speicher nicht, antwortet der Server 503 statt in den OOM-Killer
-zu laufen; vorher versucht er, das Chat-Modell zu entladen.
+Reicht der Speicher trotz entladenem Chat-Modell nicht, antwortet der Server
+503 statt in den OOM-Killer zu laufen.
 
 ### 4.10 Bildbearbeitung — `POST /v1/images/edits`
 

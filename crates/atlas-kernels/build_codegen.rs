@@ -183,6 +183,8 @@ pub(super) fn generate_target_ptx_rs(
              \x20           model_type_matches: vec![{}],\n\
              \x20           dflash: {},\n\
              \x20           estimate: {},\n\
+             \x20           sessions: {:?},\n\
+             \x20           moe_prefill_transpose: {:?},\n\
              \x20       }},\n",
             target.model, target.quant,
             fmt_cat(&target.sampling_thinking_text),
@@ -237,6 +239,8 @@ pub(super) fn generate_target_ptx_rs(
                     e.ocr_page_secs_p90, e.ocr_page_tokens_p90,
                 ),
             },
+            target.serving.sessions,
+            target.serving.moe_prefill_transpose,
         ));
     }
     g.push_str("    ]\n}\n");
