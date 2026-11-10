@@ -62,20 +62,25 @@ pub(crate) fn spawn(hotswap: Option<Arc<HotswapCtx>>) -> Option<tokio::task::Joi
                         .and_then(|kb| kb.parse::<i64>().ok())
                 })
                 .map_or(-1, |kb| kb / 1024);
+            // Device allocations made after the model build: memory the KV
+            // budget never saw (live now / high-water mark since the build).
+            let allocs = spark_runtime::cuda_backend::alloc_stats();
+            let late_alloc_mib = (allocs.late_live_bytes >> 20) as i64;
+            let late_peak_mib = (allocs.late_peak_bytes >> 20) as i64;
             let low = (avail_gb >= 0.0 && avail_gb < warn_avail_gb)
                 || (swap_gb >= 0.0 && swap_gb < warn_swap_gb);
             if low {
                 tracing::warn!(
                     target: "mem",
                     avail_gb, swap_gb, cuda_free_gb, pool_used, pool_total,
-                    arena_used_gb, arena_cap_gb, rss_mib,
+                    arena_used_gb, arena_cap_gb, rss_mib, late_alloc_mib, late_peak_mib,
                     "memory LOW — below warn threshold (early A1/A2/A8 signal)"
                 );
             } else {
                 tracing::info!(
                     target: "mem",
                     avail_gb, swap_gb, cuda_free_gb, pool_used, pool_total,
-                    arena_used_gb, arena_cap_gb, rss_mib,
+                    arena_used_gb, arena_cap_gb, rss_mib, late_alloc_mib, late_peak_mib,
                     "heartbeat"
                 );
             }

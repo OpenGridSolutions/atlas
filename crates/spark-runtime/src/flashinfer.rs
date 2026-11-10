@@ -145,6 +145,8 @@ fn workspaces() -> Result<&'static Workspaces> {
             bail!("cudaHostAlloc FlashInfer pinned int ws ({psz}B) failed: {s3}");
         }
     }
+    crate::cuda_backend::record_process_alloc(float_ws, fsz);
+    crate::cuda_backend::record_process_alloc(int_ws, isz);
     let _ = WS.set(Workspaces {
         float_ws,
         int_ws,

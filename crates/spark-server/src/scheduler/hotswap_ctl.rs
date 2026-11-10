@@ -198,11 +198,14 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
             .with_label_values(&[active.model_id.as_str()])
             .inc_by(since.elapsed().as_secs());
     }
-    let (freed, free_failed) = {
+    let (freed, free_failed, allocs) = {
         let gpu = model
             .gpu_backend()
             .context("model exposes no GPU backend — cannot tear down device allocations")?;
         gpu.device_synchronize()?;
+        // Read before the drain: what the build allocated, and what was
+        // allocated after it (never part of the KV budget, not freed here).
+        let allocs = gpu.alloc_stats();
         // Free everything build_model allocated and never freed (KV pool
         // slabs, SSM pools, transposes, dequants, buffers — trace.md §5).
         // The arena free-guard makes any arena view in the registry a no-op,
@@ -221,7 +224,7 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
         }
         gpu.set_alloc_tracking(false);
         gpu.device_synchronize()?;
-        (freed, failed)
+        (freed, failed, allocs)
     };
     // Drops the WeightStore index views and pinned host staging; all device
     // memory was released via the registry above. Weights live on in the
@@ -235,6 +238,14 @@ fn unload_model(model: Box<dyn Model>, hotswap: &HotswapCtx) -> Result<serde_jso
         "Hot-swap: model unloaded ({freed} device allocations freed, {free_failed} failed, \
          {duration_ms} ms); arena reset (base {} unchanged)",
         hotswap.arena.base()
+    );
+    tracing::info!(
+        "Hot-swap: device allocations of the unloaded model — build {:.2} GiB (freed); \
+         after the build: peak {:.1} MiB, still live {:.1} MiB in {} allocation(s) (not freed)",
+        gib(allocs.build_live_bytes),
+        allocs.late_peak_bytes as f64 / (1024.0 * 1024.0),
+        allocs.late_live_bytes as f64 / (1024.0 * 1024.0),
+        allocs.late_live_count,
     );
     let mem_after = spark_runtime::meminfo::read();
     let cuda_after = spark_runtime::cuda_backend::cuda_mem_get_info_raw();

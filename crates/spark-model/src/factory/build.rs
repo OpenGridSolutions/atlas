@@ -531,7 +531,12 @@ pub fn build_model(
             );
         }
     }
+    // The KV budget above saw every allocation up to this point. What the
+    // build allocates from here on must fit into `inference_reserve` —
+    // measured below instead of trusted.
+    let allocs_at_budget = gpu.alloc_stats().build_live_bytes;
     let kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
+    let allocs_with_kv = gpu.alloc_stats().build_live_bytes;
 
     // ── Step 6: Assemble model ──
     // Capture pointers for any post-construction sharing (DFlash drafter
@@ -631,6 +636,16 @@ pub fn build_model(
             );
         }
     }
+
+    let allocs_at_end = model.gpu_backend().alloc_stats().build_live_bytes;
+    tracing::info!(
+        "Build allocations: {:.2} GiB before the KV budget, KV pool {:.2} GiB, \
+         {:.2} GiB after the KV pool (reserve estimate {:.2} GiB)",
+        gib(allocs_at_budget),
+        gib(allocs_with_kv.saturating_sub(allocs_at_budget)),
+        gib(allocs_at_end.saturating_sub(allocs_with_kv)),
+        gib(inference_reserve),
+    );
 
     Ok(BuiltModel {
         model: Box::new(model),

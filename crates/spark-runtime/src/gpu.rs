@@ -48,6 +48,22 @@ pub fn sidecar_pending_reserve_bytes() -> usize {
     TEXT_SIDECAR_RESERVE_BYTES.load(Ordering::Relaxed)
 }
 
+/// Where the process's live device allocations stand, in bytes. Sidecar
+/// allocations are not included (they have their own ledger).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AllocStats {
+    /// Allocated during a model build (alloc tracking on) and still live —
+    /// what unload frees.
+    pub build_live_bytes: usize,
+    /// Allocated outside a model build and still live. The KV pool is sized
+    /// during the build, so these bytes were never part of its budget, and
+    /// unload does not free them.
+    pub late_live_bytes: usize,
+    pub late_live_count: usize,
+    /// High-water mark of `late_live_bytes` since the last build finished.
+    pub late_peak_bytes: usize,
+}
+
 /// Opaque device pointer wrapping a CUDA CUdeviceptr (u64).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DevicePtr(pub u64);
@@ -219,6 +235,12 @@ pub trait GpuBackend: Send + Sync {
     /// through `alloc`, so they never appear here anyway).
     fn take_tracked_allocs(&self) -> Vec<DevicePtr> {
         Vec::new()
+    }
+
+    /// Byte accounting of the device allocations made through this backend
+    /// (see [`AllocStats`]). Default: all zero for backends that keep none.
+    fn alloc_stats(&self) -> AllocStats {
+        AllocStats::default()
     }
 
     /// Get the default stream handle.

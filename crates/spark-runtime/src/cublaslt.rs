@@ -134,6 +134,7 @@ fn ctx() -> Result<&'static Ctx> {
     if st != 0 {
         bail!("cuMemAlloc cuBLASLt workspace failed: {st}");
     }
+    crate::cuda_backend::record_process_alloc(ws, ws_size);
     let _ = CTX.set(Ctx {
         handle,
         workspace: ws,

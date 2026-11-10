@@ -237,6 +237,7 @@ pub(crate) fn ctx() -> Result<&'static Ctx> {
     if status != 0 {
         bail!("cuMemAlloc CUTLASS workspace failed: {status}");
     }
+    crate::cuda_backend::record_process_alloc(workspace, ws_size);
     let _ = CTX.set(Ctx { workspace, ws_size });
     Ok(CTX.get().unwrap())
 }

@@ -42,7 +42,7 @@ use super::{
     cuMemcpyDtoHAsync_v2, cuMemcpyHtoDAsync_v2, cuMemsetD8Async, cuStreamBeginCapture,
     cuStreamCreate, cuStreamEndCapture, cuStreamSynchronize, cuStreamWaitEvent,
 };
-use crate::gpu::{DevicePtr, GpuBackend, GraphHandle, KernelHandle};
+use crate::gpu::{AllocStats, DevicePtr, GpuBackend, GraphHandle, KernelHandle};
 
 impl GpuBackend for AtlasCudaBackend {
     fn alloc(&self, bytes: usize) -> Result<DevicePtr> {
@@ -59,7 +59,7 @@ impl GpuBackend for AtlasCudaBackend {
                 total as f64 / (1024.0 * 1024.0 * 1024.0),
             );
         }
-        super::tracker_record(dptr);
+        super::tracker_record(dptr, bytes);
         Ok(DevicePtr(dptr))
     }
 
@@ -73,7 +73,7 @@ impl GpuBackend for AtlasCudaBackend {
                  Check system swap space: swapon --show"
             );
         }
-        super::tracker_record(dptr);
+        super::tracker_record(dptr, bytes);
         Ok(DevicePtr(dptr))
     }
 
@@ -102,6 +102,10 @@ impl GpuBackend for AtlasCudaBackend {
 
     fn take_tracked_allocs(&self) -> Vec<DevicePtr> {
         super::tracker_drain().into_iter().map(DevicePtr).collect()
+    }
+
+    fn alloc_stats(&self) -> AllocStats {
+        super::alloc_stats()
     }
 
     fn device_synchronize(&self) -> Result<()> {

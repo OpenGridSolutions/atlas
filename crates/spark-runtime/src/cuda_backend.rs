@@ -11,8 +11,12 @@ use std::ffi::c_void;
 use anyhow::{Result, bail};
 use atlas_core::registry::AtlasRegistry;
 
+mod alloc_tracker;
 mod gpu_impl;
 mod sidecar_ledger;
+pub use alloc_tracker::alloc_stats;
+pub(crate) use alloc_tracker::record_process_alloc;
+use alloc_tracker::{tracker_drain, tracker_record, tracker_set_recording, tracker_unrecord};
 pub use sidecar_ledger::{SidecarAllocs, free_sidecar_allocs};
 
 // ── Raw CUDA driver API for memory operations ──
@@ -179,23 +183,6 @@ pub struct AtlasCudaBackend {
 /// path another). All handles must agree on what is arena-owned.
 static PROTECTED_RANGES: std::sync::RwLock<Vec<(u64, u64)>> = std::sync::RwLock::new(Vec::new());
 
-/// Watermark allocation registry (see `GpuBackend::set_alloc_tracking`).
-/// Process-global for the same multiple-handles reason as
-/// `PROTECTED_RANGES`: allocations recorded through the model's backend
-/// handle must be drainable through any other handle at unload.
-struct AllocTracker {
-    recording: bool,
-    live: std::collections::HashSet<u64>,
-}
-
-static ALLOC_TRACKER: std::sync::LazyLock<std::sync::Mutex<AllocTracker>> =
-    std::sync::LazyLock::new(|| {
-        std::sync::Mutex::new(AllocTracker {
-            recording: false,
-            live: std::collections::HashSet::new(),
-        })
-    });
-
 thread_local! {
     /// Set while a sidecar (Whisper, Qwen-Image) allocates on this thread.
     static UNTRACKED_ALLOCS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -222,44 +209,6 @@ impl Drop for UntrackedAllocs {
     fn drop(&mut self) {
         UNTRACKED_ALLOCS.with(|c| c.set(self.prev));
     }
-}
-
-pub(super) fn tracker_record(ptr: u64) {
-    if UNTRACKED_ALLOCS.with(|c| c.get()) {
-        sidecar_ledger::record(ptr);
-        return;
-    }
-    let mut t = ALLOC_TRACKER.lock().expect("ALLOC_TRACKER poisoned");
-    if t.recording {
-        t.live.insert(ptr);
-    }
-}
-
-/// Unrecord on free — unconditionally, so tracked build-time allocations
-/// freed later (e.g. MoE transpose originals) never double-free at unload.
-pub(super) fn tracker_unrecord(ptr: u64) {
-    sidecar_ledger::unrecord(ptr);
-    ALLOC_TRACKER
-        .lock()
-        .expect("ALLOC_TRACKER poisoned")
-        .live
-        .remove(&ptr);
-}
-
-pub(super) fn tracker_set_recording(on: bool) {
-    ALLOC_TRACKER
-        .lock()
-        .expect("ALLOC_TRACKER poisoned")
-        .recording = on;
-}
-
-pub(super) fn tracker_drain() -> Vec<u64> {
-    ALLOC_TRACKER
-        .lock()
-        .expect("ALLOC_TRACKER poisoned")
-        .live
-        .drain()
-        .collect()
 }
 
 /// Stop recording, drain the global tracker, and `cuMemFree` every live

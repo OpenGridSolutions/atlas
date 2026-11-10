@@ -112,6 +112,14 @@ behind specific subsystems — see the
 
 ### Added
 
+- Device-allocation accounting by bytes. Every allocation is counted as
+  build (made during a model build, freed at unload), sidecar, or *late*
+  (made outside a build — never part of the KV budget, not freed at
+  unload; includes the cuBLASLt/CUTLASS/FlashInfer workspaces). Shown as
+  the load-time line `Build allocations: … before the KV budget, KV pool
+  …, … after the KV pool (reserve estimate …)`, the heartbeat fields
+  `late_alloc_mib` / `late_peak_mib`, and a line at unload. New trait
+  method `GpuBackend::alloc_stats` (defaulted).
 - **Prefill pacing** (`--prefill-max-pause-ms`, `--prefill-decode-share`;
   off by default): while a prompt is prefilled next to running sessions,
   the prefill chunk is sized by time instead of tokens — the scheduler

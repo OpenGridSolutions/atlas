@@ -109,13 +109,13 @@ mod tests {
 
     #[test]
     fn allocations_inside_a_scope_belong_to_its_owner() {
-        tracker_record(0xA000); // before the scope: nobody's
+        tracker_record(0xA000, 1); // before the scope: nobody's
         {
             let _scope = SidecarAllocs::enter("test-owner-a");
-            tracker_record(0xA100);
-            tracker_record(0xA200);
+            tracker_record(0xA100, 1);
+            tracker_record(0xA200, 1);
         }
-        tracker_record(0xA300); // after the scope: nobody's
+        tracker_record(0xA300, 1); // after the scope: nobody's
         assert_eq!(sorted(take("test-owner-a")), vec![0xA100, 0xA200]);
         assert!(take("test-owner-a").is_empty(), "take drains the owner");
     }
@@ -124,8 +124,8 @@ mod tests {
     fn a_freed_allocation_is_never_handed_out_again() {
         {
             let _scope = SidecarAllocs::enter("test-owner-b");
-            tracker_record(0xB100);
-            tracker_record(0xB200);
+            tracker_record(0xB100, 1);
+            tracker_record(0xB200, 1);
         }
         // The sidecar frees one buffer itself, outside any scope.
         tracker_unrecord(0xB100);
@@ -135,12 +135,12 @@ mod tests {
     #[test]
     fn owners_are_kept_apart_and_nested_scopes_restore() {
         let _outer = SidecarAllocs::enter("test-owner-c");
-        tracker_record(0xC100);
+        tracker_record(0xC100, 1);
         {
             let _inner = SidecarAllocs::enter("test-owner-d");
-            tracker_record(0xD100);
+            tracker_record(0xD100, 1);
         }
-        tracker_record(0xC200);
+        tracker_record(0xC200, 1);
         assert_eq!(take("test-owner-d"), vec![0xD100]);
         assert_eq!(sorted(take("test-owner-c")), vec![0xC100, 0xC200]);
     }
@@ -148,7 +148,7 @@ mod tests {
     #[test]
     fn a_scope_on_another_thread_does_not_leak_into_this_one() {
         let _scope = SidecarAllocs::enter("test-owner-e");
-        std::thread::spawn(|| tracker_record(0xE100))
+        std::thread::spawn(|| tracker_record(0xE100, 1))
             .join()
             .unwrap();
         assert!(take("test-owner-e").is_empty());
