@@ -22,6 +22,12 @@ behind specific subsystems — see the
 
 ### Fixed
 
+- Fused prefill+decode step (`mixed_forward`): chunks inside a cached
+  prefix now take the standard prefill path — the fused step has no cache
+  skip / SSM replay and recomputed them (re-advancing SSM state). It also
+  extends `kv_valid_tokens` now, so the prefix-cache insert of a prompt
+  that finishes on the standard path no longer stops at the first fused
+  chunk.
 - `/internal/state` and `POST /v1/atlas/session/state` were never routed
   (the handler file was not even compiled).
 - **KV-8**: the block-key chain only ever appended; rejected speculative

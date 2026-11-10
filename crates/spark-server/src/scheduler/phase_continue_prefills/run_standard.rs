@@ -75,6 +75,10 @@ pub(super) fn run_standard_chunk_loop(
     if !is_last && chunk_len >= 4 {
         chunk_len = (chunk_len / 4) * 4;
     }
+    // mixed_forward has no prefix-cache skip / SSM replay: it would recompute
+    // (and for SSM layers re-advance) what the chunk-0 lookup already
+    // restored. Chunks inside the cached prefix take the standard path.
+    let fuse_ok = p.seq.marconi_skip_to == 0 || p.chunk_offset >= p.seq.cached_prefix_tokens;
 
     // ── Mixed forward: fuse prefill chunk + decode in one pass ──
     // ATLAS_BISECT_NO_MIX=1 forces this branch to false so we can
@@ -85,6 +89,7 @@ pub(super) fn run_standard_chunk_loop(
         .map(|v| v == "1" || v.to_lowercase() == "true")
         .unwrap_or(false);
     let can_mix = !no_mix_bisect
+        && fuse_ok
         && !active.is_empty()
         && !model.is_ep()
         && !use_mtp
