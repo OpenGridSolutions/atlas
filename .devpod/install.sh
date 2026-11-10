@@ -2,10 +2,10 @@
 # One-time host setup for the Atlas quadlet. Run ON THE HOST as the user that
 # owns the rootless Podman store (NOT as root, NOT inside the container):
 #
-#   ./quadlets/install.sh
+#   ./.devpod/install.sh
 #
-# It installs files only. It does not stop the old compose container and does
-# not start the new unit - the cut-over steps are printed at the end.
+# It installs files only. It neither stops nor starts the unit - the next
+# steps are printed at the end.
 set -euo pipefail
 
 if [[ "$(id -u)" -eq 0 ]]; then
@@ -75,15 +75,16 @@ fi
 
 cat <<EOF
 
-Installed. Cut-over (ends every shell / Claude session in the old container):
+Installed. The unit is used from the next container start on. A (re)start
+ends every shell / Claude session in the container.
 
-  1. Memlock limit only applies to a fresh user manager - simplest: reboot.
-     Check afterwards:  systemctl --user show -p DefaultLimitMEMLOCK
-  2. Remove the old compose container (same name):
-       podman rm -f atlas-gb10
-  3. Start (and from then on at every boot; builds the image first):
-       systemctl --user start atlas-gb10
-  4. Watch:
+  1. First install only: the memlock limit applies to a fresh user manager -
+     simplest: reboot (the unit then starts on its own). Check afterwards:
+       systemd-run --user --pipe sh -c 'ulimit -l'    # expect: unlimited
+  2. Otherwise, to apply unit changes right away (builds the image first and
+     replaces an existing container of the same name):
+       systemctl --user restart atlas-gb10
+  3. Watch:
        systemctl --user status atlas-gb10
        journalctl --user -u atlas-gb10 -f
 

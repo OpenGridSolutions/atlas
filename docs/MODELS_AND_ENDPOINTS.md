@@ -36,7 +36,7 @@ curl -s "$ATLAS_BASE_URL/v1/models" -H "Authorization: Bearer $ATLAS_TOKEN" | jq
 ## 2. Modelle auf diesem Deployment
 
 Die Modelle sind per Kategorie konfiguriert (`ATLAS_PRESEED_<KATEGORIE>` in
-`serve.sh` / `.devpod/compose.yml`). Jedes Modell ist auf **eine** Kategorie
+`serve.sh` / `.devpod/atlas-gb10.env`). Jedes Modell ist auf **eine** Kategorie
 und damit auf **einen** Satz Endpunkte festgelegt. Ein Modell am falschen
 Endpunkt ergibt `400 model_wrong_category`; ein unbekanntes Modell ergibt
 `404 model_not_found` mit der Liste der verfügbaren Modelle im Body.

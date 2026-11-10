@@ -402,20 +402,25 @@ There is no published container image for this fork yet. Build it on a GB10 box.
 HuggingFace cache with the checkpoints you list, and an NVMe with room for one ATLASRAW
 snapshot per model (roughly the checkpoint size each) plus the KV store.
 
-**1. Dev container.** [`.devpod/compose.yml`](.devpod/compose.yml) builds a CUDA 13 dev
-image with persistent cargo and sccache volumes and the model registry as environment:
+**1. Container as a systemd service.** [`.devpod/`](.devpod/) holds a rootless Podman
+Quadlet: a CUDA 13 dev image with persistent cargo and sccache volumes, and the model
+registry and serve flags in [`.devpod/atlas-gb10.env`](.devpod/atlas-gb10.env). Install it
+once on the host (asks for sudo; reboot afterwards so the memlock limit applies):
 
 ```bash
-podman compose -f .devpod/compose.yml up -d
-podman exec -it atlas-gb10 bash
+./.devpod/install.sh
+systemctl --user start atlas-gb10
+podman exec -it atlas-gb10 bash      # dev shell in the running container
 ```
 
-**2. Build and serve.** Inside the container, [`serve.sh`](serve.sh) builds `spark-server`
-in release mode and starts the server with the registry from `ATLAS_PRESEED_*`:
+**2. Build and serve.** The container runs [`serve.sh`](serve.sh), which builds
+`spark-server` in release mode and starts the server with the registry from
+`ATLAS_PRESEED_*`. When the server exits (an OOM kill, say), the host page cache is dropped
+and the container restarts. To change flags, edit `.devpod/atlas-gb10.env` and restart:
 
 ```bash
-ATLAS_MAX_SEQ_LEN=16384 \
-ATLAS_SERVE_EXTRA_ARGS="--nvme-cache-dir /var/tmp/atlas-nvme" ./serve.sh
+systemctl --user restart atlas-gb10
+journalctl --user -u atlas-gb10 -f
 ```
 
 The first boot writes one snapshot per registered model (minutes per model, once). After

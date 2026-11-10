@@ -39,10 +39,10 @@ export ATLAS_SKIP_OOM_PREFLIGHT=1
 # Unset to fall back to the hand-written kernels.
 export ATLAS_CUBLAS_GEMM=1
 # Phase K bridge for containers created before the categorized preseed
-# vars landed in .devpod/compose.yml: the removed flat var must not leak
-# into the server (it hard-fails on it), and the five category vars get
-# the compose.yml defaults when the stale container env lacks them.
-# After a container recreation the compose-provided values win.
+# vars landed in the container env (.devpod/atlas-gb10.env): the removed
+# flat var must not leak into the server (it hard-fails on it), and the
+# category vars get these defaults when the container env lacks them.
+# Values from .devpod/atlas-gb10.env win.
 unset ATLAS_PRESEED_MODELS
 export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE:-[
   \"nvidia/Qwen3-Next-80B-A3B-Thinking-NVFP4\",
@@ -65,7 +65,7 @@ export ATLAS_PRESEED_IMAGE="${ATLAS_PRESEED_IMAGE:-[\"Qwen/Qwen-Image-2.1\"]}"
 # Retired checkpoint (2026-07-12, Plan.md Q): ig1's NVFP4 quant has a
 # defective vision encoder — container envs created before the swap still
 # list it; substitute the official FP8 release until the container is
-# recreated from the updated compose.yml.
+# recreated from the updated .devpod/atlas-gb10.env.
 export ATLAS_PRESEED_GENERATIVE="${ATLAS_PRESEED_GENERATIVE//ig1\/Qwen3-VL-30B-A3B-Instruct-NVFP4/Qwen\/Qwen3-VL-30B-A3B-Instruct-FP8}"
 LOG="/workspace/logs/serve-$(date +%Y%m%d-%H%M%S).log"
 echo "==> logging to ${LOG}"
