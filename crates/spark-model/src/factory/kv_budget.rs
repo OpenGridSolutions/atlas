@@ -8,7 +8,8 @@
 //!
 //!   used_so_far = total − free_now
 //!   manual override (ATLAS_KV_EXTERNAL_RESERVE_GB): used −= reserve
-//!   else auto: atlas_own = baseline − free_now, sanity-gated
+//!   else auto: atlas_own = baseline − free_now (both swap-inclusive,
+//!   neither clamped), sanity-gated
 //!   total_budget = total × utilization
 //!   kv = pinned override OR (total_budget − used − inference_reserve),
 //!        both clamped to (pinnable_free − inference_reserve) — swap-free
@@ -37,7 +38,8 @@ pub(crate) struct BudgetInputs {
     pub total_mem: usize,
     /// `gpu.free_memory()` right now — since Phase M this is
     /// `max(cudaMemGetInfo, MemAvailable + SwapFree)`. May exceed
-    /// `total_mem` (swap); `compute` clamps it to `total_mem`.
+    /// `total_mem` (swap); `compute` clamps it to `total_mem` for the raw
+    /// used figure and the physical cap, not for the baseline delta.
     pub actual_free: usize,
     /// `gpu::baseline_free_bytes()` captured at context init.
     pub baseline_free: Option<usize>,
@@ -74,25 +76,31 @@ pub(crate) struct BudgetResult {
 }
 
 pub(crate) fn compute(i: &BudgetInputs) -> BudgetResult {
-    // UMA basis clamp: free readings are `MemAvailable + SwapFree` and can
-    // exceed the CUDA total (swap is not part of `total_mem`). Comparing an
-    // unclamped baseline against `total_mem`-derived numbers made
-    // `atlas_own > raw_used` PERMANENTLY true once baseline > total
-    // (124.0 GB baseline vs 119.7 GB total, Memory_errors.log 2026-09-11),
-    // so every hot-swap load fell into the raw fallback that bills
-    // co-tenants and page cache to Atlas. Clamp both readings to
-    // `total_mem` so all arithmetic shares one basis.
+    // UMA basis: free readings are `MemAvailable + SwapFree` and can exceed
+    // the CUDA total (swap is not part of `total_mem`). `raw_used` needs
+    // the reading clamped to `total_mem`. The baseline delta must NOT be
+    // clamped: both readings carry the same swap term, so only their plain
+    // difference is this process's footprint. Clamping the baseline first
+    // dropped `baseline − total` (the swap size on an idle box) from
+    // Atlas-own and handed it to the pool — 2.8 to 3.5 GB too much on every
+    // load, 2026-11-10.
     let actual_free = i.actual_free.min(i.total_mem);
     let raw_used = i.total_mem - actual_free;
     let (used_so_far, source, cotenants) = if let Some(ext) = i.manual_external_reserve {
         (raw_used.saturating_sub(ext), UsedSource::Manual, 0)
-    } else if let Some(baseline) = i.baseline_free.map(|b| b.min(i.total_mem)) {
-        // Sanity gate identical to the original build.rs block: atlas_own
-        // positive and no larger than total used (co-tenants can't be
-        // negative); implausible numbers fall back to raw.
-        let atlas_own = baseline.saturating_sub(actual_free);
-        if atlas_own > 0 && atlas_own <= raw_used {
-            (atlas_own, UsedSource::AutoBaseline, raw_used - atlas_own)
+    } else if let Some(baseline) = i.baseline_free {
+        // Sanity gate: atlas_own positive and no larger than the device.
+        // The gate used to be `<= raw_used`, which a baseline above the
+        // total fails on every load (124.0 GB baseline vs 119.7 GB total,
+        // Memory_errors.log 2026-09-11) — the raw fallback then bills
+        // co-tenants and page cache to Atlas.
+        let atlas_own = baseline.saturating_sub(i.actual_free);
+        if atlas_own > 0 && atlas_own <= i.total_mem {
+            (
+                atlas_own,
+                UsedSource::AutoBaseline,
+                raw_used.saturating_sub(atlas_own),
+            )
         } else {
             (raw_used, UsedSource::AutoImplausible, 0)
         }
@@ -262,21 +270,92 @@ mod tests {
     }
 
     #[test]
-    fn baseline_above_total_is_clamped_not_implausible() {
+    fn baseline_above_total_stays_on_the_auto_path() {
         // The 2026-09-11 hot-swap failure: the boot baseline was captured
         // as MemAvailable + SwapFree (124.0 GB) and exceeds the CUDA total
-        // (119.7 GB). Unclamped, atlas_own > raw_used on EVERY later load,
-        // so the auto path was structurally dead and the raw fallback
-        // billed all resident memory to Atlas.
+        // (119.7 GB). Gated against `total − free`, atlas_own > raw_used on
+        // EVERY later load, so the auto path was structurally dead and the
+        // raw fallback billed all resident memory to Atlas.
         let mut i = failure_scene(gib(12.3));
         i.baseline_free = Some(gib(124.0));
         let r = compute(&i);
         assert_eq!(r.source, UsedSource::AutoBaseline);
-        // Clamped baseline (= total) − free-now: everything currently
-        // resident, but via the gate — not the fallback — and co-tenant
-        // free/alloc churn keeps self-correcting from here.
-        assert_eq!(r.used_so_far, gib(119.7) - gib(12.3));
+        // Both readings carry the same swap term, so their difference is
+        // the footprint — not `total − free-now`, which would hide the
+        // part of the baseline that lies above the CUDA total.
+        assert_eq!(r.used_so_far, gib(124.0) - gib(12.3));
         assert_eq!(r.cotenants, 0);
+    }
+
+    /// 2026-11-10, first day on a driver that reports its memory pools as
+    /// free (620.70.06): free readings are honest, the baseline sits above
+    /// the CUDA total by the swap size, and the pool fills the box.
+    fn honest_driver_scene(baseline: f64, free_now: f64, reserve: f64) -> BudgetInputs {
+        BudgetInputs {
+            total_mem: gib(119.69),
+            actual_free: gib(free_now),
+            baseline_free: Some(gib(baseline)),
+            manual_external_reserve: None,
+            gpu_memory_utilization: 0.90,
+            inference_reserve: gib(reserve),
+            kv_pool_override: None,
+            sidecar_reserve: 0,
+            // 8 GiB swap, all of it free at load time.
+            pinnable_free: Some(gib(free_now - 8.0)),
+        }
+    }
+
+    #[test]
+    fn swap_above_total_is_not_dropped_from_atlas_own() {
+        // 80B, serve log 17:50: baseline 122.5, free-now 72.4, reserve 4.64.
+        // The baseline was clamped to the total before the subtraction, so
+        // the log said "Atlas-own 47.3 GB" for a 50.1 GB footprint and the
+        // pool got the missing 2.8 GB (55.8 GB; MemAvailable 3.9 GiB left).
+        let i = honest_driver_scene(122.5, 72.4, 4.64);
+        let r = compute(&i);
+        assert_eq!(r.source, UsedSource::AutoBaseline);
+        assert!(
+            (as_gib(r.used_so_far) - 50.1).abs() < 0.05,
+            "{}",
+            as_gib(r.used_so_far)
+        );
+        assert!(
+            (as_gib(r.kv_budget) - 52.98).abs() < 0.05,
+            "{}",
+            as_gib(r.kv_budget)
+        );
+        assert!(r.used_so_far + r.kv_budget + i.inference_reserve <= r.total_budget);
+    }
+
+    #[test]
+    fn crash_replay_27b_stays_under_the_ceiling() {
+        // 27B, serve log 18:01: baseline 123.2, free-now 80.4. Logged
+        // "Atlas-own 39.3 GB" (real: 42.8) and a 64.1 GB pool next to
+        // 8.2 GB of SSM pools: 115 GB of a 107.7 GB ceiling. RAM and swap
+        // ran out during the first request and the host killed the server.
+        // With the full footprint and the model's own reserve (8.54):
+        let i = honest_driver_scene(123.2, 80.4, 8.54);
+        let r = compute(&i);
+        assert!(
+            (as_gib(r.used_so_far) - 42.8).abs() < 0.05,
+            "{}",
+            as_gib(r.used_so_far)
+        );
+        assert!(
+            (as_gib(r.kv_budget) - 56.38).abs() < 0.05,
+            "{}",
+            as_gib(r.kv_budget)
+        );
+        assert!(r.used_so_far + r.kv_budget + i.inference_reserve <= r.total_budget);
+    }
+
+    #[test]
+    fn small_footprint_below_the_swap_size_is_still_measured() {
+        // A 3 GB model on an idle box: both readings exceed the CUDA total.
+        // Clamped, the difference was 0 and the gate called it implausible.
+        let r = compute(&honest_driver_scene(123.7, 120.7, 0.5));
+        assert_eq!(r.source, UsedSource::AutoBaseline);
+        assert!((as_gib(r.used_so_far) - 3.0).abs() < 0.01);
     }
 
     #[test]

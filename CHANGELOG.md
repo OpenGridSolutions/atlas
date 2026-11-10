@@ -56,6 +56,16 @@ behind specific subsystems — see the
 
 ### Fixed
 
+- KV pool sized past `--gpu-memory-utilization` on drivers that report
+  their memory pools as free (620.70.06): the free-memory baseline
+  (`MemAvailable + SwapFree`) was clamped to the device total before the
+  current reading was subtracted, which dropped the swap size from the
+  measured Atlas-own footprint (80B: 47.3 instead of 50.1 GB), and a lazy
+  load replaced the target's reserve estimate with a stored measurement of
+  a different quantity (27B: 4.3 instead of 8.5 GiB). The 27B got a 64 GB
+  pool where 56 GB fit, and the host killed the server during the first
+  request. The footprint is the unclamped difference now, and the reserve
+  is always the estimate.
 - Fused prefill+decode step (`mixed_forward`): chunks inside a cached
   prefix now take the standard prefill path — the fused step has no cache
   skip / SSM replay and recomputed them (re-advancing SSM state). It also
