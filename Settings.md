@@ -103,7 +103,7 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 
 | Flag | Default | Tuning |
 |---|---|---|
-| `--gpu-memory-utilization` | 0.9 | Gesamt-Cap (vLLM-Semantik) |
+| `--gpu-memory-utilization` | 0.9 | Gesamt-Cap (vLLM-Semantik): Gewichte + KV-Pool + Reserve des geladenen Modells bleiben darunter. Rechnung und Messwerte in `docs/design/memory-model.md` |
 | `--max-seq-len` | aus | Festes Kontextfenster für alle Modelle (Testläufe). Ohne Flag gilt `[serving].sessions` aus MODEL.toml; Targets ohne `[serving]` und `--high-speed-swap` bekommen 32768. Ein festes Fenster treibt den KV-Boot-Check (mit `ATLAS_KV_OVERCOMMIT=1` nur Warnung) |
 | `--max-batch-size` | 8 | Parallele Decode-Sequenzen (Prod: 4, 8 nach Todo 0.6) |
 | `--block-size` | 16 | KV-Blockgröße |
@@ -149,7 +149,8 @@ Targets** — Kandidaten für den Test-Bench-Sweep (Todo 0.7d).
 | `ATLAS_SKIP_OOM_PREFLIGHT=1` | Loader-Preflight aus (UMA-False-Negatives) |
 | `ATLAS_MEM_DEBUG=1` (+ `RUST_LOG=off,memdebug=debug`) | Per-Request-KV-Tracing (Doku.md §7) |
 | `ATLAS_DISABLE_WATCHDOGS=1` | ALLE Auto-Watchdogs aus — **nie in Produktion** |
-| `ATLAS_CUBLAS_GEMM=1` | cuBLASLt-Route für BF16-Dense-GEMMs (Plan.md H.2) |
+| `ATLAS_MEM_HEARTBEAT_SECS` / `ATLAS_MEM_WARN_AVAIL_GB` / `ATLAS_MEM_WARN_SWAP_GB` | Speicher-Heartbeat (Log-Target `mem`): Intervall (60, 0 = aus) und Warnschwellen für `MemAvailable` (8) und freien Swap (2). Die Zeile nennt auch `late_alloc_mib` / `late_peak_mib` — Geräte-Allokationen nach dem Modell-Build, die das KV-Budget nicht kennt |
+| `ATLAS_CUBLAS_GEMM=1` | cuBLASLt-Route für BF16-Dense-GEMMs (Plan.md H.2). Gilt nur für Gewichte, die als BF16 vorliegen; FP8-Gewichte laufen auf den FP8-Kerneln |
 | `ATLAS_FAST_LOAD=0` / `ATLAS_FAST_LOAD_PREFETCH_SHARDS=1` | Loader-Varianten |
 | `ATLAS_VISION_MAX_PIXELS` | wie `--vision-max-pixels` |
 | `RUST_LOG` | Tracing-Filter (Default info) |

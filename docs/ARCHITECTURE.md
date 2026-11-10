@@ -80,7 +80,7 @@ Skip mode (`ATLAS_SKIP_BUILD=1`): emits a stub registry. Used by CI for GPU-free
 
 ### `spark-runtime`
 GPU-side runtime primitives:
-- `cuda_backend.rs` — `GpuBackend` trait + `AtlasCudaBackend` (cudarc-based) impl. Wraps device pointers, kernel handles, streams, allocator.
+- `cuda_backend.rs` — `GpuBackend` trait + `AtlasCudaBackend` (cudarc-based) impl. Wraps device pointers, kernel handles, streams, allocator. `cuda_backend/alloc_tracker.rs` counts every device allocation as build, sidecar or late (`docs/design/memory-model.md`).
 - `buffers.rs` — pinned-host + device scratch arenas sized per-batch.
 - `kv_cache.rs` — paged KV cache with FP8 / NVFP4 / BF16 dtype variants.
 - `sampler.rs` — host-side sampling (top-k, top-p, temperature, repetition penalty, DRY, Lloyd–Max). The GPU produces logits; host samples.

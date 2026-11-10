@@ -131,6 +131,12 @@ Watermark-Alloc-Tracker (`take_tracked_allocs`) liefert die realen
 Post-Build-Bytes; Wert gemessen persistieren und in `kv_budget.rs` als
 Override vor die Schätzung aus `preflight.rs:116-190` schalten.
 
+Stand 2026-11-10: Der Override ist wieder entfernt. Der gemessene Wert enthält
+alles, was der Build vor dem KV-Budget allokiert, und ist damit nicht die Größe,
+für die die Reserve steht; als Override machte er den KV-Pool zu groß. Die
+Reserve ist immer die Schätzung, der Messwert bleibt als Diagnose in
+`swap_costs.json` (siehe `memory-model.md` §3 und §6).
+
 ### 2.6 Druck-Scheduler + Swap-Ablauf (SCH-*, PRI-*, DRN-*, Abschnitt 10)
 
 Kern-Designentscheidung: **der GPU-Scheduler-Thread bleibt, wie er ist**

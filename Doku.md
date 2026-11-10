@@ -97,8 +97,8 @@ crates/
   per-Layer-Dtypes (BF16/FP8/NVFP4-Mischbetrieb), Prefix-Cache-Refcounts.
   Publiziert Belegungszähler nach `kv_stats.rs` (für /v1/stats).
 - **`meminfo.rs`**: /proc/meminfo-Leser (MemAvailable + SwapFree,
-  HugePages-Fall) — Anzeige in /v1/stats, Grundlage für den geplanten
-  KV-Budget-Fix.
+  HugePages-Fall) — Anzeige in /v1/stats und Grundlage der Frei-Messung
+  im KV-Budget.
 - **`sampler.rs`**: Sampling (top-k/p, min-p, Penalties, DRY, Seeds).
 
 ### 2.4 `spark-model` — Modelle & Layer
@@ -214,15 +214,18 @@ Laden eines Arena-Modells werden alle Sidecars entladen
 Geräte-Puffer über das Allokations-Ledger freigegeben
 (`spark-runtime/src/cuda_backend/sidecar_ledger.rs`).
 
-Speicher-Eigenheit der GB10 (gemessen 2026-10-02): der NVIDIA-Treiber
-gibt freigegebenen Gerätespeicher — beendete Prozesse, der beim
-Boot-Preseed entladene KV-Pool — nicht sofort an den Kernel zurück,
-sondern hält ihn minutenlang in einem Pool. In `MemAvailable` zählt er
-als belegt (im KV-Budget-Log die „co-tenants"-Zeile), neue
-CUDA-Allokationen werden aber daraus bedient. Folge: KV-Budget,
-Sidecar-Reserve und Preflight sehen weniger freien Speicher als für
-Gerätespeicher real verfügbar ist und entscheiden konservativ;
-Host-Speicher (Weights-Arena) kann den Pool dagegen nicht nutzen.
+Speicher-Eigenheit der GB10: der NVIDIA-Treiber gibt freigegebenen
+Gerätespeicher — beendete Prozesse, entladene KV-Pools — nicht sofort an
+den Kernel zurück, sondern hält ihn in eigenen Pools. Treiber des
+610er-Zweigs verbuchen diese Pools nicht: In `MemAvailable` zählen sie
+als belegt (im KV-Budget-Log die „co-tenants"-Zeile), KV-Budget und
+Preflight sehen zu wenig freien Speicher (gemessen 2026-10-02; 80B-Pool
+11 GB). Seit 620.70.06 zählen die Pools als frei (gemessen 2026-11-10;
+80B-Pool 52 GB).
+
+Wie der KV-Pool bemessen wird, was die Reserve abdeckt und wie der
+Server Geräte-Allokationen nach dem Build mitzählt, steht in
+`docs/design/memory-model.md`.
 
 ---
 
@@ -489,6 +492,7 @@ Umsetzung des Anforderungsdokuments vom 2026-10-05 (Analyse:
 | Warte-SSE (`: queued`/`: waiting`) | `api/queued_sse.rs` |
 | Embed/Rerank-Sidecars (seit 2026-11-10 per Default aus) | `main_modules/text_sidecar.rs` |
 | Ein Modell zur Zeit: Sidecar-Gate, Slots, Allokations-Ledger | `api/sidecar_gate.rs`, `sidecars.rs`, `spark-runtime/src/cuda_backend/sidecar_ledger.rs` |
+| KV-Budget, Reserve-Schätzung, Buchführung der Geräte-Allokationen (`docs/design/memory-model.md`) | `spark-model/src/factory/kv_budget.rs`, `serve_phases/preflight.rs`, `spark-runtime/src/cuda_backend/alloc_tracker.rs`, `main_modules/heartbeat.rs` |
 | Sessions je Modell → Kontextfenster (`[serving] sessions`) | `atlas-kernels/build_serving.rs`, `spark-model/src/factory/context_window.rs`, `serve_phases/context_window.rs` |
 | MoE-Prefill-Kopien je Modell (`[serving] moe_prefill_transpose`) | `atlas-kernels/build_serving.rs`, `spark-model/src/weight_loader/moe_prefill_copies.rs` |
 | `/internal/state`, neue Metriken | `api/internal_state.rs`, `metrics.rs` |

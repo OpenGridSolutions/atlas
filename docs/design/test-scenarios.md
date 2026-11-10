@@ -113,6 +113,10 @@ und T-PRI-03 sind gestrichen.
 | T-MEM-02 | P2 · On-Box – Fremdprozess belegt und beendet; Budget nutzt Baseline. | MEM-5 | offen |
 | T-MEM-03 | P2 · On-Box – Whisper, Qwen-Image, Embed nacheinander; Budget wird neu berechnet, kein OOM. | MEM-1, MEM-6 | offen |
 | T-MEM-04 | P2 · Unit – Gemischte Layer-Dtypes; Bytes/Token = Summe. | MEM-3, MEM-9 | Unit `kv_budget.rs` teilweise |
+| T-MEM-05 | P1 · Unit – Baseline über dem Gerätespeicher (Swap): Atlas-eigen ist die unbegrenzte Differenz; Replay der Loads vom 2026-11-10 (80B, 27B) bleibt unter dem Budget. | `memory-model.md` §1, §6 | Unit `kv_budget.rs` |
+| T-MEM-06 | P1 · Unit – Reserve-Formel des SSM-Zustands-Pools gleich der Allokation des Pools (mit Dummy-Slot, mit und ohne Spekulation). | `memory-model.md` §3 | Unit `ssm_pool.rs` |
+| T-MEM-07 | P1 · Unit – Allokationen außerhalb eines Builds zählen als late, bleiben beim Entladen stehen; Höchststand beginnt je Build neu. | `memory-model.md` §5 | Unit `alloc_tracker.rs` |
+| T-MEM-08 | P1 · On-Box – Je Modell laden und 4k-Prefill: Budget eingehalten, Allokationen nach dem Pool ≤ Reserve, `late_alloc_mib` ≤ 64. | `memory-model.md` §7 | On-Box 2026-11-10, alle zehn Arena-Modelle, leichte Last; Lastlauf offen (Todo 4.1) |
 | T-MOD-01 bis 04 | P2 – Messung, Persistenz, Verwurf bei neuem Hash, EWMA. | MOD-5..8 | Unit `swap_costs.rs` teilweise; On-Box offen |
 | T-MOD-05 | P2 · Integration – Laden schlägt fehl; vorheriges Modell zurück, Wartende 503. | MOD-10 | Unit **neu** `queued_sse_tests.rs::rejected_ticket_reports_the_failed_load` (Stream-Seite); Integration offen |
 | T-MOD-06 | P2 · Integration – Embed unter `sidecar_small_max_gib` als Sidecar, Arena unverändert (nur noch mit explizitem Flag; Default 0 = aus). | MOD-3, MOD-4 | offen (`text_sidecar.rs` ohne Tests) |

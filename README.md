@@ -173,6 +173,8 @@ Where to read more: [`docs/hotswap/task6-decisions.md`](docs/hotswap/task6-decis
 [`docs/hotswap/trace.md`](docs/hotswap/trace.md) (the load-path trace that made the arena
 possible), [`HOTSWAP_MVP_PLAN.md`](HOTSWAP_MVP_PLAN.md),
 [`TASK6_MULTIMODEL_PLAN.md`](TASK6_MULTIMODEL_PLAN.md),
+[`docs/design/memory-model.md`](docs/design/memory-model.md) (how the KV pool is sized,
+measured per model),
 [`crates/spark-server/src/arena_sched/`](crates/spark-server/src/arena_sched/),
 [`crates/spark-server/src/swap_costs.rs`](crates/spark-server/src/swap_costs.rs),
 [`crates/spark-runtime/src/weights_arena.rs`](crates/spark-runtime/src/weights_arena.rs).
@@ -409,7 +411,7 @@ HuggingFace cache with the checkpoints you list, and an NVMe with room for one A
 snapshot per model (roughly the checkpoint size each) plus the KV store. Avoid the 610
 driver branch: it keeps freed GPU memory cached without reporting it as free, and the
 server then sizes the KV pool far too small (80B on 610.43.02: 11 GB, on 620.70.06:
-55 GB). 615.71.09 and later report it.
+52 GB). 615.71.09 and later report it.
 
 **1. Container as a systemd service.** [`.devpod/`](.devpod/) holds a rootless Podman
 Quadlet: a CUDA 13 dev image with persistent cargo and sccache volumes, and the model
@@ -504,7 +506,7 @@ crates/spark-storage/     NVMe block store, io_uring / O_DIRECT backends, high-s
 crates/atlas-kernels/     build.rs that turns kernels/<hw>/<model>/<quant>/ into PTX bundles
 kernels/gb10/<model>/     CUDA kernels + MODEL.toml (sampling, behaviour, kernel registration)
 tests/                    on-box harnesses: switch_bench.py, nvme_session_sweep.py, single_gpu_suite.py, …
-docs/design/              NVMe tier, deadline admission, context compaction, test scenarios
+docs/design/              NVMe tier, memory model, deadline admission, context compaction, test scenarios
 docs/hotswap/, docs/adr/  hot-swap decisions and trace; architecture decision records
 Settings.md, Doku.md      flag reference (German); component map and operations notes (German)
 ```
