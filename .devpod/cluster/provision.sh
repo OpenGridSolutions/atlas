@@ -118,7 +118,10 @@ NODE_PODMAN="$(remote "${TARGET}" 'podman --version' </dev/null | tr -d '\r')"
 echo "    driver: here ${HERE_DRIVER:-unknown}, node ${NODE_DRIVER:-unknown}"
 echo "    podman: here ${HERE_PODMAN}, node ${NODE_PODMAN}"
 if [[ "${HERE_DRIVER}" != "${NODE_DRIVER}" ]]; then
-    echo "    WARNING: different drivers - the 610 branch under-reports free memory (README, Quick start)" >&2
+    echo "    WARNING: different drivers - the server is tested with this host's (${HERE_DRIVER:-unknown})" >&2
+fi
+if [[ "${NODE_DRIVER}" == 610.* ]]; then
+    echo "    WARNING: the 610 branch under-reports free memory, the KV pool comes out far too small - update the node's driver (README, Quick start)" >&2
 fi
 if [[ "${HERE_PODMAN}" != "${NODE_PODMAN}" ]]; then
     echo "    WARNING: different Podman versions - the unit is only tested with this host's" >&2

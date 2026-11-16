@@ -13,6 +13,14 @@ if [[ -e /run/.containerenv ]]; then
     exit 1
 fi
 
+# Tools this host needs itself (the node's are checked by provision.sh).
+for tool in git ssh rsync; do
+    if ! command -v "${tool}" >/dev/null; then
+        echo "${tool} is missing on this host - install it first: sudo apt install ${tool}" >&2
+        exit 1
+    fi
+done
+
 CLUSTER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEVPOD_DIR="$(dirname "${CLUSTER_DIR}")"
 REPO="$(dirname "${DEVPOD_DIR}")"
