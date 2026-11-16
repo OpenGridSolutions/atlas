@@ -14,6 +14,12 @@
 ARG CUDA_IMAGE=docker.io/nvidia/cuda:13.0.0-devel-ubuntu24.04@sha256:1e8ac7a54c184a1af8ef2167f28fa98281892a835c981ebcddb1fad04bdd452d
 FROM ${CUDA_IMAGE}
 
+# Full-rebuild key: `rebuild.sh --full` rewrites .stamp-full, and a changed
+# file invalidates this layer and with it every layer below. Do not use
+# `podman build --no-cache` for that: the unit's own ExecStartPre build would
+# afterwards match the OLD cached layers again and move the tag back to them.
+COPY .stamp-full /etc/atlas-build/stamp-full
+
 ARG DEBIAN_FRONTEND=noninteractive
 ENV TZ=Europe/Berlin
 RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
@@ -59,10 +65,6 @@ ENV RUSTC_WRAPPER=sccache \
     SCCACHE_CACHE_SIZE=20G \
     CARGO_INCREMENTAL=0
 
-# --- Claude Code (native installer pulls the linux-arm64 binary) --------------
-RUN curl -fsSL https://claude.ai/install.sh | bash \
-    && ln -sf /root/.local/bin/claude /usr/local/bin/claude
-
 # --- atlas multi-target build selectors (match prod builder env) --------------
 ENV ATLAS_TARGET_HW=gb10 \
     ATLAS_TARGET_MODEL=* \
@@ -90,6 +92,14 @@ RUN mkdir -p /tmp/pdfium && \
     cp /tmp/pdfium/lib/libpdfium.so /usr/lib/ && \
     ldconfig && \
     rm -rf /tmp/pdfium
+
+# --- Claude Code (native installer pulls the linux-arm64 binary) --------------
+# Deliberately the LAST layer that does work: rebuild.sh rewrites .stamp-claude
+# on every run, so exactly this install is repeated (and picks up the current
+# release) while everything above stays cached.
+COPY .stamp-claude /etc/atlas-build/stamp-claude
+RUN curl -fsSL https://claude.ai/install.sh | bash \
+    && ln -sf /root/.local/bin/claude /usr/local/bin/claude
 
 WORKDIR /workspace
 
