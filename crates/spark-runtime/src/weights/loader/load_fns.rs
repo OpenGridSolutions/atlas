@@ -179,7 +179,10 @@ pub(super) fn load_sharded(
     }
 
     if skipped > 0 {
-        tracing::info!("EP: skipped {} remote expert tensors", skipped);
+        tracing::info!(
+            "Skipped {} tensors (remote experts under EP, or not loaded for this model)",
+            skipped
+        );
     }
     tracing::info!("Loaded {} weight tensors", weights.len());
     Ok(weights)

@@ -54,6 +54,7 @@ pub enum WeightDtype {
     FP8E8M0,
     UInt8,
     Int64,
+    UInt32,
 }
 
 impl WeightDtype {
@@ -65,6 +66,7 @@ impl WeightDtype {
             Self::FP8E8M0 => 1,
             Self::UInt8 => 1,
             Self::Int64 => 8,
+            Self::UInt32 => 4,
         }
     }
 
@@ -78,6 +80,7 @@ impl WeightDtype {
             Self::FP8E8M0 => 3,
             Self::UInt8 => 4,
             Self::Int64 => 5,
+            Self::UInt32 => 6,
         }
     }
 
@@ -90,6 +93,7 @@ impl WeightDtype {
             3 => Self::FP8E8M0,
             4 => Self::UInt8,
             5 => Self::Int64,
+            6 => Self::UInt32,
             other => bail!("unknown WeightDtype code {other}"),
         })
     }
@@ -105,6 +109,9 @@ impl WeightDtype {
             safetensors::Dtype::F8_E4M3 => Ok(Self::FP8E4M3),
             safetensors::Dtype::F8_E8M0 => Ok(Self::FP8E8M0),
             safetensors::Dtype::I64 => Ok(Self::Int64),
+            // U32: exception records of csf-compressed NVFP4 block scales
+            // (Qwen3.8-Flash-Next routed experts).
+            safetensors::Dtype::U32 => Ok(Self::UInt32),
             other => bail!("Unsupported safetensors dtype: {other:?}"),
         }
     }
@@ -127,9 +134,23 @@ impl WeightTensor {
     }
 }
 
+/// A checkpoint tensor that is not loaded: where its bytes are on disk.
+/// Used for tables whose rows are read on demand (`crate::row_table`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiskTensor {
+    /// Checkpoint file holding the tensor.
+    pub path: std::path::PathBuf,
+    /// Byte offset of the tensor's data in that file.
+    pub data_offset: u64,
+    pub shape: Vec<usize>,
+    pub dtype: WeightDtype,
+}
+
 /// All model weights loaded onto the GPU, keyed by HuggingFace name.
 pub struct WeightStore {
     weights: HashMap<String, WeightTensor>,
+    /// Tensors deliberately left on disk, keyed like `weights`.
+    on_disk: HashMap<String, DiskTensor>,
 }
 
 impl WeightStore {
@@ -137,13 +158,36 @@ impl WeightStore {
     pub fn empty() -> Self {
         Self {
             weights: HashMap::new(),
+            on_disk: HashMap::new(),
         }
     }
 
     /// Crate-internal: wrap a pre-built map. Used by alternate loaders
     /// (e.g. `fast_weights::FastSafetensorsLoader`).
     pub(crate) fn from_map(weights: HashMap<String, WeightTensor>) -> Self {
-        Self { weights }
+        Self {
+            weights,
+            on_disk: HashMap::new(),
+        }
+    }
+
+    /// Records tensors that stay on disk (see [`DiskTensor`]). A name must
+    /// not be both loaded and on disk.
+    pub fn register_on_disk(&mut self, tensors: Vec<(String, DiskTensor)>) -> Result<()> {
+        for (name, t) in tensors {
+            if self.weights.contains_key(&name) {
+                bail!("tensor '{name}' is loaded and cannot also be registered as on-disk");
+            }
+            self.on_disk.insert(name, t);
+        }
+        Ok(())
+    }
+
+    /// Location of a tensor that was left on disk. Fails fast if unknown.
+    pub fn on_disk(&self, name: &str) -> Result<&DiskTensor> {
+        self.on_disk
+            .get(name)
+            .ok_or_else(|| anyhow::anyhow!("Tensor '{name}' is not registered as on-disk"))
     }
 
     /// Get a weight tensor by name. Fails fast if not found.
@@ -224,6 +268,10 @@ pub struct SafetensorsLoader {
     /// Set from QuantFormat::peak_memory_multiplier() in the caller.
     /// When None, the pre-flight uses its own heuristic (1.3x NVFP4 / 1.5x FP8).
     pub peak_memory_multiplier: Option<f64>,
+    /// Model-specific filter: tensors it names are not loaded (tables that
+    /// stay on disk, parts of a checkpoint the model code does not use).
+    /// `None` loads every tensor.
+    pub skip_tensor: Option<fn(&str) -> bool>,
 }
 
 impl Default for SafetensorsLoader {
@@ -240,6 +288,7 @@ impl SafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_tensor: None,
         }
     }
 
@@ -250,13 +299,17 @@ impl SafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_tensor: None,
         }
     }
 
-    /// Check if a tensor should be skipped under EP.
-    /// Skips `*.experts.{E}.*` tensors where E is not in local range.
+    /// Check if a tensor should be skipped: by the model's filter, or under
+    /// EP `*.experts.{E}.*` tensors where E is not in local range.
     /// MTP head experts are never skipped (small, fully replicated).
     fn should_skip_tensor(&self, name: &str) -> bool {
+        if self.skip_tensor.is_some_and(|skip| skip(name)) {
+            return true;
+        }
         if self.ep_world_size <= 1 {
             return false;
         }
@@ -291,6 +344,8 @@ pub(crate) fn parse_expert_index(name: &str) -> Option<usize> {
     None
 }
 
+#[cfg(test)]
+mod dtype_tests;
 mod loader;
 pub mod mlx_int8;
 pub(crate) use loader::{check_oom_guard, estimate_has_fp8, estimate_load_bytes};

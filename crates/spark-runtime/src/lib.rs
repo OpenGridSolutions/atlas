@@ -40,6 +40,7 @@ pub mod meminfo;
 pub mod metal_backend;
 pub mod prefix_cache;
 pub mod radix_tree;
+pub mod row_table;
 pub mod sampler;
 #[cfg(unix)]
 pub mod snapshot;

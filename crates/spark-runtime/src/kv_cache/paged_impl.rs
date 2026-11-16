@@ -78,6 +78,8 @@ impl PagedKvCache {
             free_blocks,
             block_ref_counts,
             config,
+            aux_pools: Vec::new(),
+            aux_block_bytes: 0,
         })
     }
 

@@ -437,6 +437,9 @@ pub struct PagedKvCache {
     /// Default: 1 on alloc, freed when decremented to 0.
     block_ref_counts: Vec<u32>,
     config: KvCacheConfig,
+    /// Auxiliary planes, one per layer (see `aux.rs`); empty without.
+    aux_pools: Vec<DevicePtr>,
+    aux_block_bytes: usize,
 }
 
 /// Clear the /v1/stats residency counters when the pool is torn down
@@ -448,9 +451,13 @@ impl Drop for PagedKvCache {
     }
 }
 
+mod aux;
 mod paged_impl;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod tests_aux;
 
 #[cfg(test)]
 mod tests_tq_plus;

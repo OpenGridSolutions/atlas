@@ -29,6 +29,9 @@ use std::sync::mpsc::sync_channel;
 
 mod direct_io;
 mod header;
+mod locate;
+
+pub use locate::locate_tensors;
 
 use header::{parse_header, resolve_shards};
 
@@ -39,6 +42,8 @@ pub struct FastSafetensorsLoader {
     pub ep_world_size: usize,
     pub num_experts: usize,
     pub peak_memory_multiplier: Option<f64>,
+    /// Model-specific filter, see [`crate::weights::SafetensorsLoader::skip_tensor`].
+    pub skip_tensor: Option<fn(&str) -> bool>,
     /// When true (default), attempt `O_DIRECT`; fall back to buffered reads if
     /// the filesystem rejects it (tmpfs, overlayfs, some FUSE backends).
     pub try_direct_io: bool,
@@ -76,6 +81,7 @@ impl FastSafetensorsLoader {
             ep_world_size: 1,
             num_experts: 0,
             peak_memory_multiplier: None,
+            skip_tensor: None,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
@@ -88,6 +94,7 @@ impl FastSafetensorsLoader {
             ep_world_size,
             num_experts,
             peak_memory_multiplier: None,
+            skip_tensor: None,
             try_direct_io: true,
             direct_io_tensor_cap: DEFAULT_DIRECT_IO_TENSOR_CAP,
             prefetch_shards: false,
@@ -95,6 +102,9 @@ impl FastSafetensorsLoader {
     }
 
     fn should_skip_tensor(&self, name: &str) -> bool {
+        if self.skip_tensor.is_some_and(|skip| skip(name)) {
+            return true;
+        }
         if self.ep_world_size <= 1 {
             return false;
         }
@@ -114,6 +124,18 @@ impl FastSafetensorsLoader {
             false
         }
     }
+}
+
+/// Name under which the index lists a shard: its path relative to the model
+/// directory. Checkpoints may keep their shards in a subdirectory
+/// (`tensors/model-00001-of-00021.safetensors`), so the bare file name is
+/// not enough.
+fn shard_index_key(model_dir: &Path, shard_path: &Path) -> String {
+    shard_path
+        .strip_prefix(model_dir)
+        .unwrap_or(shard_path)
+        .to_string_lossy()
+        .into_owned()
 }
 
 impl WeightLoader for FastSafetensorsLoader {
@@ -184,10 +206,8 @@ impl WeightLoader for FastSafetensorsLoader {
         for (i, shard_path) in shard_files.iter().enumerate() {
             // When an index is present, only load the tensors it routes here;
             // otherwise load everything in the shard. `None` means "load all".
-            let shard_name = shard_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or_default();
+            let shard_name = shard_index_key(model_dir, shard_path);
+            let shard_name = shard_name.as_str();
             let tensor_filter: Option<Vec<String>> = tensor_to_shard.as_ref().map(|map| {
                 map.iter()
                     .filter(|(_, s)| *s == shard_name)
@@ -427,3 +447,22 @@ fn advise_prefetch_shard(file: &File, shard_path: &Path, file_size: u64) {
 
 #[cfg(not(target_os = "linux"))]
 fn advise_prefetch_shard(_file: &File, _shard_path: &Path, _file_size: u64) {}
+
+#[cfg(test)]
+mod shard_key_tests {
+    use super::shard_index_key;
+    use std::path::Path;
+
+    #[test]
+    fn index_key_is_the_path_relative_to_the_model_directory() {
+        let dir = Path::new("/models/snap");
+        assert_eq!(
+            shard_index_key(dir, &dir.join("model-00001-of-00002.safetensors")),
+            "model-00001-of-00002.safetensors"
+        );
+        assert_eq!(
+            shard_index_key(dir, &dir.join("tensors/model-00001-of-00021.safetensors")),
+            "tensors/model-00001-of-00021.safetensors"
+        );
+    }
+}
