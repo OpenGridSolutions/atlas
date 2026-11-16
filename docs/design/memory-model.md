@@ -190,6 +190,13 @@ Speicherwerte in GiB.
 | Qwen3-VL-Reranker-8B | 23,7 | 83,5 | 0,00 / 0,50 | 4 / 4 | 260.560 | 6,8 |
 | TranslateGemma-12B | 31,2 | 76,0 | 0,00 / 0,50 | 3 / 4 | 92.192 | 7,3 |
 | Chandra-OCR-2 | 20,0 | 84,4 | 2,89 / 3,39 | 11 / 11 | 251.280 | 6,4 |
+| Qwen3.8-Flash-Next (2026-11-11) | 73,2 | 27,15 | 6,88 / 7,38 | 4 / 4 (vorläufig) | 256.432 | 9,5–11,9 |
+
+Zur Flash-Next-Zeile: Der KV-Pool enthält dort 3,67 GiB Index-Daten der
+Blockauswahl (Aux-Ebene, 5120 Byte je Block und Attention-Schicht) neben
+23,5 GiB K/V in BF16; die 26,9 GiB der N-Gramm-Tabelle liegen nicht im
+Speicher. Beim Laden aus dem Snapshot fiel der freie Swap kurzzeitig von 7,9
+auf 2,3 GiB, obwohl `MemAvailable` über 50 GiB lag.
 
 Ablesen lässt sich daraus:
 
