@@ -813,7 +813,9 @@ pub(crate) async fn serve(mut args: cli::ServeArgs) -> Result<()> {
                 256 * 1024 * 1024,
                 reload_args.snapshot_read_qd,
             )?;
-            let store = spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
+            let mut store =
+                spark_runtime::weights_arena::store_from_manifest(&ctx.arena, &manifest)?;
+            serve_phases::register_on_disk_tensors(&mut store, &prep.config, &prep.model_dir)?;
             let mut config = prep.config;
             serve_phases::auto_detect_weight_prefix(&store, &mut config);
 

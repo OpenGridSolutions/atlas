@@ -18,6 +18,7 @@ qwen3_vl_moe = "hermes"       # Qwen3-VL-30B
 mistral     = "mistral"       # Mistral Small 4 — native [TOOL_CALLS]name[ARGS]{json}
 gemma4      = "gemma4"        # Gemma-4 — native format: <|tool_call>call:name{...}<tool_call|>
 minimax_m2  = "minimax_xml"    # MiniMax M2 — <minimax:tool_call><invoke name=""><parameter name="">...
+qwen4_exp   = "qwen3_xml"     # Qwen3.8-Flash-Next — XML format of the model card's serve command
 
 # Default reasoning parser per model_type.
 # Override at runtime with --reasoning-parser <format>.
@@ -42,3 +43,20 @@ qwen3_next  = "qwen"
 qwen3_vl_moe = "qwen"
 mistral     = "mistral"
 minimax_m2  = "minimax"        # MiniMax M2/M2.7 — <think>...</think>, own identity
+qwen4_exp   = "qwen"
+
+# Value of the chat-template variable `reasoning_effort` while thinking is
+# on. Templates accept different levels and reject unknown ones. Per model
+# type: `default` for requests that name no effort, then the template level
+# for each effort a request may name (`reasoning_effort` / `reasoning.effort`).
+# Model types without an entry always get "high" (Mistral's level).
+#
+# Qwen3.8-Flash-Next: the template knows xhigh (its own default), medium, low.
+[template_reasoning_effort.qwen4_exp]
+default = "low"
+minimal = "low"
+low     = "low"
+medium  = "medium"
+high    = "xhigh"
+xhigh   = "xhigh"
+max     = "xhigh"

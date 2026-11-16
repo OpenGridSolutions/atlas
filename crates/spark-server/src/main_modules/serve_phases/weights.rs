@@ -11,7 +11,12 @@ use atlas_core::config::ModelConfig;
 use crate::cli;
 
 pub(crate) fn quant_multiplier(config: &ModelConfig) -> Option<f64> {
-    if config.model_type == "minimax_m2" || config.model_type == "step3p7" {
+    // qwen4_exp computes every weight in its checkpoint format: no derived
+    // copies are built at load time.
+    if config.model_type == "minimax_m2"
+        || config.model_type == "step3p7"
+        || config.model_type == "qwen4_exp"
+    {
         Some(1.02)
     } else if config
         .quantization_config
@@ -35,9 +40,12 @@ pub(crate) fn load_weight_store(
 ) -> Result<spark_runtime::weights::WeightStore> {
     use spark_runtime::weights::WeightLoader;
     let mult = quant_multiplier(config);
+    // Families that leave part of the checkpoint on disk or unused.
+    let filter = spark_model::factory::loader_for_config(config)?.tensor_filter();
+    let skip_tensor = filter.map(|f| f.skip);
     let use_fast_load =
         !args.no_fast_load && std::env::var("ATLAS_FAST_LOAD").ok().as_deref() != Some("0");
-    let store = if use_fast_load {
+    let mut store = if use_fast_load {
         #[cfg(unix)]
         {
             tracing::info!("Using fast weight loader (O_DIRECT + pipelined read/copy)");
@@ -51,6 +59,7 @@ pub(crate) fn load_weight_store(
                 spark_runtime::fast_weights::FastSafetensorsLoader::new()
             };
             loader.peak_memory_multiplier = mult;
+            loader.skip_tensor = skip_tensor;
             loader.prefetch_shards = args.fast_load_prefetch_shards
                 || std::env::var("ATLAS_FAST_LOAD_PREFETCH_SHARDS")
                     .ok()
@@ -73,12 +82,34 @@ pub(crate) fn load_weight_store(
             spark_runtime::weights::SafetensorsLoader::new()
         };
         loader.peak_memory_multiplier = mult;
+        loader.skip_tensor = skip_tensor;
         loader
             .load(model_dir, gpu, oom_reserve_bytes)
             .context("Failed to load model weights")?
     };
+    register_on_disk_tensors(&mut store, config, model_dir)?;
     tracing::info!("Loaded {} weight tensors", store.len());
     Ok(store)
+}
+
+/// Records where the tensors are that the model's family leaves in the
+/// checkpoint files (`TensorFilter::on_disk`). Every path that builds a
+/// weight store calls this: the safetensors load above and the snapshot
+/// reload of a model switch, which restores only the loaded tensors.
+pub(crate) fn register_on_disk_tensors(
+    store: &mut spark_runtime::weights::WeightStore,
+    config: &ModelConfig,
+    model_dir: &Path,
+) -> Result<()> {
+    let Some(filter) = spark_model::factory::loader_for_config(config)?.tensor_filter() else {
+        return Ok(());
+    };
+    let on_disk = spark_runtime::fast_weights::locate_tensors(model_dir, filter.on_disk)?;
+    tracing::info!(
+        "{} tensors stay on disk and are read on demand",
+        on_disk.len()
+    );
+    store.register_on_disk(on_disk)
 }
 
 /// Arena + manifest produced by the post-load migration; consumed by the

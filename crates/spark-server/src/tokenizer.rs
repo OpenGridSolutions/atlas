@@ -62,6 +62,7 @@ fn normalize_tool_call_arguments(messages: &[serde_json::Value]) -> Vec<serde_js
 
 /// Wraps a HuggingFace tokenizer with Jinja chat template support.
 mod chat_impl;
+mod effort;
 mod jinja_helpers;
 
 pub struct ChatTokenizer {
@@ -76,6 +77,9 @@ pub struct ChatTokenizer {
     /// OpenAI-variant template: gates historical `<think>` wrappers on enable_thinking.
     /// Falls back to jinja_env if no openai/ variant exists.
     openai_jinja_env: Option<minijinja::Environment<'static>>,
+    /// Levels of the template variable `reasoning_effort` while thinking is
+    /// on (`tool_defaults.toml`, `[template_reasoning_effort]`).
+    thinking_effort: effort::TemplateEffort,
 }
 
 /// Wrapper around tokenizers::DecodeStream that hides the generic parameters.

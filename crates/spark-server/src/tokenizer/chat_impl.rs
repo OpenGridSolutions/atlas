@@ -62,6 +62,7 @@ impl ChatTokenizer {
             chat_template,
             jinja_env,
             openai_jinja_env,
+            thinking_effort: super::effort::TemplateEffort::for_model_type(model_type),
         })
     }
 
@@ -116,6 +117,25 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
     ) -> Result<Vec<u32>> {
+        self.render_jinja(
+            messages,
+            tools,
+            enable_thinking,
+            None,
+            disable_tool_steering,
+        )
+    }
+
+    /// [`Self::apply_chat_template_jinja`] with the reasoning effort the
+    /// request names, if any.
+    fn render_jinja(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+        effort: Option<&str>,
+        disable_tool_steering: bool,
+    ) -> Result<Vec<u32>> {
         let tmpl = self
             .jinja_env
             .get_template("chat")
@@ -154,7 +174,7 @@ impl ChatTokenizer {
         // Mistral's template defaults `reasoning_effort` to "high" when
         // undefined, so we must explicitly pass "none" to disable thinking.
         let reasoning_effort: minijinja::Value = if enable_thinking {
-            "high".into()
+            self.thinking_effort.level(effort).into()
         } else {
             "none".into()
         };
@@ -207,6 +227,25 @@ impl ChatTokenizer {
         enable_thinking: bool,
         disable_tool_steering: bool,
     ) -> Result<Vec<u32>> {
+        self.apply_chat_template_openai_effort(
+            messages,
+            tools,
+            enable_thinking,
+            None,
+            disable_tool_steering,
+        )
+    }
+
+    /// [`Self::apply_chat_template_openai`] with the reasoning effort the
+    /// request names (`None`: the model type's default level).
+    pub fn apply_chat_template_openai_effort(
+        &self,
+        messages: &[serde_json::Value],
+        tools: Option<&[serde_json::Value]>,
+        enable_thinking: bool,
+        effort: Option<&str>,
+        disable_tool_steering: bool,
+    ) -> Result<Vec<u32>> {
         if let Some(ref env) = self.openai_jinja_env {
             let tmpl = env
                 .get_template("chat")
@@ -218,7 +257,7 @@ impl ChatTokenizer {
             let messages_val = minijinja::Value::from_serialize(&messages_for_render);
             let tools_val = tools.map(minijinja::Value::from_serialize);
             let reasoning_effort: minijinja::Value = if enable_thinking {
-                "high".into()
+                self.thinking_effort.level(effort).into()
             } else {
                 "none".into()
             };
@@ -236,7 +275,13 @@ impl ChatTokenizer {
                 .map_err(|e| anyhow::anyhow!("Failed to render OpenAI Jinja template: {e}"))?;
             self.encode(&rendered)
         } else {
-            self.apply_chat_template_jinja(messages, tools, enable_thinking, disable_tool_steering)
+            self.render_jinja(
+                messages,
+                tools,
+                enable_thinking,
+                effort,
+                disable_tool_steering,
+            )
         }
     }
 

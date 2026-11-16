@@ -90,10 +90,18 @@ pub(super) fn render_template(
             None
         };
 
-    let prompt_tokens = match rt.tokenizer.apply_chat_template_openai(
+    // The effort the request names, if any; the tokenizer maps it to a level
+    // the model's template knows (`tool_defaults.toml`).
+    let effort = req
+        .reasoning
+        .as_ref()
+        .and_then(|r| r.effort.as_deref())
+        .or(req.reasoning_effort.as_deref());
+    let prompt_tokens = match rt.tokenizer.apply_chat_template_openai_effort(
         &json_messages,
         jinja_tools.as_deref(),
         template_thinking,
+        effort,
         rt.behavior.disable_tool_steering,
     ) {
         Ok(t) => t,
