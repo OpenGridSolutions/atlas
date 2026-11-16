@@ -698,6 +698,12 @@ fn resolve_targets(workspace_root: &std::path::Path) -> Vec<Target> {
         .unwrap_or("nvidia")
         .to_string();
     println!("cargo:rerun-if-changed={}", hw_toml_path.display());
+    // A wildcard build enumerates the model directories: watch the hardware
+    // directory itself so a newly added target re-runs this script (the
+    // per-target triggers below only cover targets that already existed).
+    if model_spec == "*" {
+        println!("cargo:rerun-if-changed={}", hw_dir.display());
+    }
 
     // Expand model wildcard (exclude the `common/` shared-kernel dir,
     // which has no MODEL.toml).
