@@ -14,7 +14,7 @@ if [[ -e /run/.containerenv ]]; then
 fi
 
 # Tools this host needs itself (the node's are checked by provision.sh).
-for tool in git ssh rsync; do
+for tool in git ssh rsync tmux curl; do
     if ! command -v "${tool}" >/dev/null; then
         echo "${tool} is missing on this host - install it first: sudo apt install ${tool}" >&2
         exit 1
@@ -46,10 +46,68 @@ if [[ ! "${API_PORT}" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-# One SSH connection per node, reused by every ssh/rsync call to it.
-SSH_CTL="$(mktemp -d)"
-trap 'ssh_close_all; rm -rf "${SSH_CTL}"' EXIT
-SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=${SSH_CTL}/%C" -o ControlPersist=120)
+# Push notifications: the server's ntfy channel and server from
+# atlas-gb10.env (same convention as serve.sh). No topic there = no pushes.
+NTFY_TOPIC="$(sed -n 's/^ATLAS_NTFY_TOPIC=//p' "${DEVPOD_DIR}/atlas-gb10.env")"
+NTFY_URL="$(sed -n 's/^ATLAS_NTFY_URL=//p' "${DEVPOD_DIR}/atlas-gb10.env")"
+NTFY_URL="${NTFY_URL:-https://ntfy.sh}"
+
+# notify TITLE MESSAGE [PRIORITY] [TAGS]: push to the ntfy channel. A failed
+# push never fails the script.
+notify() {
+    [[ -n "${NTFY_TOPIC}" ]] || return 0
+    curl -fsS -m 10 -H "Title: $1" -H "Priority: ${3:-default}" -H "Tags: ${4:-computer}" \
+        -d "$2" "${NTFY_URL}/${NTFY_TOPIC}" >/dev/null 2>&1 || true
+}
+
+# step TEXT: print a step header and remember it for the failure push.
+CURRENT_STEP="start"
+step() {
+    CURRENT_STEP="$*"
+    echo "==> $*"
+}
+
+# cluster_init SESSION ARGS...: call right after sourcing, with the
+# script's original arguments.
+#  - Interactive and not yet in tmux: re-runs the script inside the tmux
+#    session SESSION (or attaches to it if it is already running), so a
+#    dropped SSH connection to this host does not stop it. Detach with
+#    Ctrl-b d, come back with: tmux attach -t SESSION
+#  - Sets up the shared SSH connections and the exit handler, which pushes
+#    a notification when the script fails or is interrupted.
+cluster_init() {
+    local session="${1//[.:]/-}"
+    shift
+    TMUX_SESSION="${session}"
+    if [[ -z "${TMUX:-}" && -t 0 && -t 1 ]]; then
+        if tmux has-session -t "=${session}" 2>/dev/null; then
+            echo "already running in tmux session '${session}' - attaching"
+            exec tmux attach -t "=${session}"
+        fi
+        local self
+        self="$(realpath "$0")"
+        echo "starting in tmux session '${session}' (detach: Ctrl-b d, back: tmux attach -t ${session})"
+        exec tmux new-session -s "${session}" bash -c \
+            '"$0" "$@"; rc=$?; echo; read -rp "finished (exit ${rc}) - Enter closes this tmux session " _' \
+            "${self}" "$@"
+    fi
+    SSH_CTL="$(mktemp -d)"
+    SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=${SSH_CTL}/%C" -o ControlPersist=120)
+    trap on_exit EXIT
+    [[ -n "${NTFY_TOPIC}" ]] || echo "    (no ATLAS_NTFY_TOPIC in atlas-gb10.env - no push notifications)"
+}
+
+# Set by each script: a short name for the pushes, e.g. "provision spark2".
+JOB_NAME="$(basename "$0" .sh)"
+on_exit() {
+    local rc=$?
+    ssh_close_all
+    rm -rf "${SSH_CTL}"
+    if [[ ${rc} -ne 0 ]]; then
+        notify "Atlas ${JOB_NAME}: failed" "Step: ${CURRENT_STEP} (exit ${rc}) on $(hostname)" high warning
+    fi
+}
+
 ssh_close_all() {
     local sock
     for sock in "${SSH_CTL}"/*; do
@@ -107,6 +165,14 @@ INSTALL_INPUTS=(.devpod/install.sh .devpod/atlas-gb10.container.in .devpod/atlas
 # its own after it).
 remote_install() {
     remote "$1" 'cd "$HOME/$1" && ./.devpod/install.sh' "${REPO_REL}"
+}
+
+# need_input TARGET WHAT: push "input needed" when sudo on TARGET will ask
+# for a password (no cached credentials, no NOPASSWD rule).
+need_input() {
+    if ! remote "$1" 'sudo -n true' </dev/null >/dev/null 2>&1; then
+        notify "Atlas ${JOB_NAME}: input needed" "$2 - tmux attach -t ${TMUX_SESSION:-?} on $(hostname)" high bell
+    fi
 }
 
 # driver_version [TARGET]: NVIDIA driver here or on TARGET.

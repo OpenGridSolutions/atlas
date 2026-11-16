@@ -21,6 +21,9 @@
 #
 # The nodes get origin/<branch>, not this working tree: commit and push first.
 # A failing node does not stop the others; the summary lists it.
+# Runs inside the tmux session atlas-update (started on its own; detach with
+# Ctrl-b d, back with tmux attach -t atlas-update) and pushes to the ntfy
+# channel of atlas-gb10.env: input needed, node failed, done.
 set -euo pipefail
 
 usage() {
@@ -28,6 +31,7 @@ usage() {
     sed -n '2,/^set -euo pipefail/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" | sed '/^#/d'
 }
 
+ORIG_ARGS=("$@")
 DELETE_MODELS=()
 ALLOW_UNPUSHED=0
 NODES=()
@@ -43,6 +47,8 @@ done
 
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+JOB_NAME="update"
+cluster_init atlas-update "${ORIG_ARGS[@]}"
 
 if [[ ${#NODES[@]} -eq 0 ]]; then
     if [[ ! -r "${NODES_FILE}" ]]; then
@@ -57,7 +63,7 @@ if [[ ${#NODES[@]} -eq 0 ]]; then
 fi
 
 BRANCH="$(git -C "${REPO}" rev-parse --abbrev-ref HEAD)"
-echo "==> state to roll out: origin/${BRANCH}"
+step "state to roll out: origin/${BRANCH}"
 git -C "${REPO}" fetch --quiet origin "${BRANCH}"
 TARGET_SHA="$(git -C "${REPO}" rev-parse "origin/${BRANCH}")"
 echo "    $(git -C "${REPO}" log -1 --format='%h %s' "${TARGET_SHA}")"
@@ -90,6 +96,7 @@ update_node() {
 
     echo "  -> [3/4] install.sh"
     if [[ "${old}" != "${new}" ]] && ! git -C "${REPO}" diff --quiet "${old}" "${new}" -- "${INSTALL_INPUTS[@]}"; then
+        need_input "${target}" "sudo password for install.sh on ${target}"
         remote_install "${target}"
     else
         echo "     not needed (unit and helper unchanged)"
@@ -103,7 +110,7 @@ systemctl --user is-active ${UNIT}"
 
 FAILED=()
 for node in "${NODES[@]}"; do
-    echo "==> ${node}"
+    step "${node}"
     # Subshell: set -e aborts this node only. Not inside `if`/`||`, where
     # bash would switch set -e off for the whole function.
     set +e
@@ -112,6 +119,7 @@ for node in "${NODES[@]}"; do
     set -e
     if [[ ${rc} -ne 0 ]]; then
         echo "  !! ${node} failed (exit ${rc})" >&2
+        notify "Atlas update: ${node} failed" "exit ${rc} - see tmux attach -t atlas-update on $(hostname)" high warning
         FAILED+=("${node}")
     fi
 done
@@ -120,7 +128,9 @@ echo
 echo "Updated $(( ${#NODES[@]} - ${#FAILED[@]} )) of ${#NODES[@]} node(s) to ${TARGET_SHA:0:9}."
 if [[ ${#FAILED[@]} -gt 0 ]]; then
     printf 'Failed: %s\n' "${FAILED[@]}" >&2
+    CURRENT_STEP="failed nodes: ${FAILED[*]}"
     exit 1
 fi
+notify "Atlas update: done" "${#NODES[@]} node(s) at ${TARGET_SHA:0:9}, servers restarting" default white_check_mark
 echo "serve.sh now rebuilds the binary on each node; follow one with:"
 echo "    ssh <node> journalctl --user -u ${UNIT} -f"

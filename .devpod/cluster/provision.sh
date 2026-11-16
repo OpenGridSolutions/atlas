@@ -28,6 +28,12 @@
 #      the unit; the first start builds the image and the release binary, and
 #      writes one snapshot per model - that takes a while
 #
+# Runs inside the tmux session atlas-provision-<host> (started on its own;
+# detach with Ctrl-b d, come back with tmux attach -t atlas-provision-<host>),
+# so a dropped SSH connection to this host does not stop it. Pushes to the
+# ntfy channel of atlas-gb10.env (ATLAS_NTFY_TOPIC): models synced, input
+# needed (sudo password), done, failed.
+#
 # Idempotent: re-running it on a provisioned node only applies what differs.
 # What the node runs is origin/<branch>: commit and push first - uncommitted
 # or unpushed changes on this host do not reach the node.
@@ -38,6 +44,7 @@ usage() {
     sed -n '2,/^set -euo pipefail/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" | sed '/^#/d'
 }
 
+ORIG_ARGS=("$@")
 TARGET=""
 ALLOW_FROM=""
 while [[ $# -gt 0 ]]; do
@@ -59,6 +66,8 @@ fi
 
 # shellcheck source=common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/common.sh"
+JOB_NAME="provision ${TARGET}"
+cluster_init "atlas-provision-${TARGET#*@}" "${ORIG_ARGS[@]}"
 
 ORIGIN_URL="$(git -C "${REPO}" remote get-url origin)"
 BRANCH="$(git -C "${REPO}" rev-parse --abbrev-ref HEAD)"
@@ -67,7 +76,7 @@ if [[ "${BRANCH}" == HEAD ]]; then
     exit 1
 fi
 
-echo "==> [1/7] prerequisites on ${TARGET}"
+step "[1/7] prerequisites on ${TARGET}"
 remote "${TARGET}" '
 if [[ "$(id -u)" -eq 0 ]]; then
     echo "    log in as the Podman user, not as root" >&2
@@ -127,10 +136,12 @@ if [[ "${HERE_PODMAN}" != "${NODE_PODMAN}" ]]; then
     echo "    WARNING: different Podman versions - the unit is only tested with this host's" >&2
 fi
 
-echo "==> [2/7] HF models ${HF_HUB} -> ${TARGET}:~/${HF_HUB_REL}"
+step "[2/7] HF models ${HF_HUB} -> ${TARGET}:~/${HF_HUB_REL}"
+SYNC_START=${SECONDS}
 sync_models "${TARGET}"
+notify "Atlas ${JOB_NAME}: models synced" "HF hub copied in $(( (SECONDS - SYNC_START) / 60 )) min, continuing with the checkout" default package
 
-echo "==> [3/7] checkout ${ORIGIN_URL} (${BRANCH}) -> ${TARGET}:~/${REPO_REL}"
+step "[3/7] checkout ${ORIGIN_URL} (${BRANCH}) -> ${TARGET}:~/${REPO_REL}"
 remote "${TARGET}" '
 dir="$HOME/$1" url="$2" branch="$3"
 if [[ -d "$dir/.git" ]]; then
@@ -150,10 +161,11 @@ else
 fi
 ' "${REPO_REL}" "${ORIGIN_URL}" "${BRANCH}"
 
-echo "==> [4/7] ${TARGET}:~/${REPO_REL}/.devpod/host.env (API port on 0.0.0.0)"
+step "[4/7] ${TARGET}:~/${REPO_REL}/.devpod/host.env (API port on 0.0.0.0)"
 remote "${TARGET}" 'echo "ATLAS_PUBLISH_ADDR=0.0.0.0" > "$HOME/$1/.devpod/host.env"' "${REPO_REL}"
 
-echo "==> [5/7] firewall: ${ALLOW_FROM} -> port ${API_PORT}/tcp"
+need_input "${TARGET}" "sudo password for the firewall rule and install.sh"
+step "[5/7] firewall: ${ALLOW_FROM} -> port ${API_PORT}/tcp"
 remote "${TARGET}" '
 port="$1" cidr="$2"
 if command -v ufw >/dev/null && sudo ufw status | grep -q "^Status: active"; then
@@ -171,7 +183,7 @@ else
 fi
 ' "${API_PORT}" "${ALLOW_FROM}"
 
-echo "==> [6/7] install.sh on ${TARGET}"
+step "[6/7] install.sh on ${TARGET}"
 # Bind-mount sources of the unit that must exist before the first start.
 remote "${TARGET}" 'mkdir -p "$HOME/.claude" "$HOME/$1/logs"' "${REPO_REL}"
 REBOOTED=0
@@ -182,7 +194,7 @@ remote_install "${TARGET}" || {
     REBOOTED=1
 }
 
-echo "==> [7/7] register in ${NODES_FILE} and start"
+step "[7/7] register in ${NODES_FILE} and start"
 if [[ ! -e "${NODES_FILE}" ]] || ! grep -qxF "${TARGET}" "${NODES_FILE}"; then
     echo "${TARGET}" >> "${NODES_FILE}"
     echo "    added"
@@ -196,6 +208,7 @@ else
     echo "    started"
 fi
 
+notify "Atlas ${JOB_NAME}: done" "Node provisioned$([[ ${REBOOTED} -eq 1 ]] && echo ", rebooting"). First start builds image, binary and snapshots." default white_check_mark
 NODE_HOST="${TARGET#*@}"
 cat <<EOF
 
