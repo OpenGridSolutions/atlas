@@ -79,7 +79,7 @@ lazy_static = "1"
 tower-http = { version = "0.7", features = ["catch-panic", "cors"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 scraper = "0.20"
-md-5 = "0.10"
+md-5 = "0.11"
 ego-tree = "0.6"
 pdfium-render = "0.8"
 # PR C observability: ntfy push (blocking client on the observer thread;
