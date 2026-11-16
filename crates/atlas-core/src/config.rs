@@ -283,6 +283,11 @@ pub struct ModelConfig {
     #[serde(skip)]
     pub vision: Option<VisionConfig>,
 
+    /// Parameters of the `qwen4_exp` family (Qwen3.8-Flash-Next). None for
+    /// every other model.
+    #[serde(skip)]
+    pub qwen4_exp: Option<Qwen4ExpConfig>,
+
     /// Advertised quantization format + algorithm + per-module ignore list.
     /// Populated from `config.json::quantization_config` or a sibling
     /// `hf_quant_config.json` at `parse_config` time. `None` for
@@ -500,11 +505,12 @@ mod parsers;
 mod tests;
 
 pub use dispatch::parse_config;
+pub use parsers::{Qwen4ExpConfig, parse_mistral_params, parse_quantization_config};
 pub(crate) use parsers::{
     parse_deepseek_v4, parse_gemma3_params, parse_gemma4_params, parse_minimax_m2,
-    parse_qwen3_dense, parse_qwen3_vl_dense, parse_step3p7, parse_vision_config, parse_whisper,
+    parse_qwen3_dense, parse_qwen3_vl_dense, parse_qwen4_exp, parse_step3p7, parse_vision_config,
+    parse_whisper,
 };
-pub use parsers::{parse_mistral_params, parse_quantization_config};
 
 pub(crate) fn finalize_config(config: &mut ModelConfig, raw: &serde_json::Value) -> Result<()> {
     if config.quantization_config.is_none() {

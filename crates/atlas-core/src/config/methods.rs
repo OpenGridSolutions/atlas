@@ -227,6 +227,10 @@ impl ModelConfig {
         if self.kv_lora_rank > 0 {
             return true;
         }
+        // qwen4_exp: every weight is computed in its checkpoint format.
+        if self.qwen4_exp.is_some() {
+            return true;
+        }
         if self.model_type == "gemma4" && self.num_experts == 0 {
             // Allow rollback via env for A/B testing.
             return std::env::var("ATLAS_GEMMA4_LMHEAD_NVFP4").ok().as_deref() != Some("1");
@@ -262,6 +266,13 @@ impl ModelConfig {
         }
     }
 
+    /// Bytes of the GDN convolution history alone: `[conv_dim, d_conv]` FP32.
+    pub fn gdn_conv_state_bytes(&self) -> usize {
+        let conv_dim = self.linear_num_key_heads * self.linear_key_head_dim * 2
+            + self.linear_num_value_heads * self.linear_value_head_dim;
+        conv_dim * self.linear_conv_kernel_dim * 4
+    }
+
     /// Per-layer SSM conv state size in bytes (FP32).
     pub fn ssm_conv_state_bytes(&self) -> usize {
         let d_conv = self.linear_conv_kernel_dim;
@@ -269,10 +280,14 @@ impl ModelConfig {
             // Mamba-2: conv: [d_xBC, d_conv] FP32
             self.mamba2_d_xbc() * d_conv * 4
         } else {
-            // GDN: conv: [conv_dim, d_conv] FP32
-            let conv_dim = self.linear_num_key_heads * self.linear_key_head_dim * 2
-                + self.linear_num_value_heads * self.linear_value_head_dim;
-            conv_dim * d_conv * 4
+            // GDN: conv: [conv_dim, d_conv] FP32, followed for qwen4_exp by
+            // the n-gram layer's convolution history. Every SSM layer gets
+            // the same slot size, so the state follows the sequence through
+            // slot moves, snapshots and the NVMe tier.
+            self.gdn_conv_state_bytes()
+                + self.qwen4_exp.as_ref().map_or(0, |q| {
+                    q.ple_conv_state_bytes(self.hc_mult * self.hidden_size)
+                })
         }
     }
 

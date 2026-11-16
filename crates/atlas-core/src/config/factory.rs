@@ -71,6 +71,7 @@ impl ModelConfig {
             routed_scaling_factor: 1.0,
             moe_latent_size: 0,
             vision: None,
+            qwen4_exp: None,
             quantization_config: None,
             attn_gated: true,
             nested_config: false,

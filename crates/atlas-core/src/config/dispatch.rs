@@ -12,8 +12,8 @@ use super::{
     LayerType, ModelConfig, default_conv_kernel, default_partial_rotary, default_rms_eps,
     default_rope_theta, finalize_config, parse_deepseek_v4, parse_gemma3_params,
     parse_gemma4_params, parse_minimax_m2, parse_mistral_params, parse_quantization_config,
-    parse_qwen3_dense, parse_qwen3_vl_dense, parse_step3p7, parse_vision_config, parse_whisper,
-    validate_config,
+    parse_qwen3_dense, parse_qwen3_vl_dense, parse_qwen4_exp, parse_step3p7, parse_vision_config,
+    parse_whisper, validate_config,
 };
 
 pub fn parse_config(json: &str) -> Result<ModelConfig> {
@@ -194,6 +194,7 @@ pub fn parse_config(json: &str) -> Result<ModelConfig> {
         "minimax_m2" => parse_minimax_m2(&raw),
         "step3p7" => parse_step3p7(&raw),
         "deepseek_v4" => parse_deepseek_v4(json),
+        "qwen4_exp" => parse_qwen4_exp(&raw),
         _ => {
             // Flat config (qwen3_next, etc.)
             let mut config: ModelConfig =

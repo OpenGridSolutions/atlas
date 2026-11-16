@@ -8,6 +8,8 @@ use super::*;
 
 #[path = "tests/multiclass.rs"]
 mod multiclass;
+#[path = "tests/qwen4_exp.rs"]
+mod qwen4_exp;
 
 #[test]
 fn test_qwen3_default_config() {
