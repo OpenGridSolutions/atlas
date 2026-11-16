@@ -2,9 +2,9 @@
 # Stop the Atlas unit, rebuild its image, start it again. Run ON THE HOST as
 # the user that owns the rootless Podman store (like install.sh):
 #
-#   ./.devpod/rebuild.sh          # reinstall Claude Code (current release),
+#   ./.devpod/build.sh          # reinstall Claude Code (current release),
 #                                 # everything else from the layer cache
-#   ./.devpod/rebuild.sh --full   # rebuild every layer: apt packages, Rust
+#   ./.devpod/build.sh --full   # rebuild every layer: apt packages, Rust
 #                                 # toolchain, sccache, pdfium, Claude Code
 #
 # How a rebuild is forced: the Containerfile COPYs two stamp files,
