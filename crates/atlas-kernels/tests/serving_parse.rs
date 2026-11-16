@@ -85,6 +85,7 @@ fn deployment_targets_declare_sessions() {
         "qwen3-next-80b-a3b",
         "qwen3-vl-30b-a3b",
         "qwen3.8-27b",
+        "qwen3.8-flash-next",
         "chandra-ocr-2",
         "qwen3-dense-8b",
         "qwen3-vl-dense-8b",

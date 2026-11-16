@@ -1,0 +1,6 @@
+[build]
+extra_nvcc_flags = ["--fmad=false"]
+
+# File stem → module name overrides on top of common/KERNEL.toml.
+# Any .cu file not listed uses its file stem as the module name.
+[modules]

@@ -1,0 +1,51 @@
+# Qwen3.8-Flash-Next (model_type `qwen4_exp`): 36 GDN + 12 sparse-attention
+# layers over 4 residual streams, 512-expert MoE, hashed n-gram embedding.
+# See docs/design/qwen4-exp-port.md.
+[model]
+name = "Qwen3.8-Flash-Next"
+hf_id = "nvidia/Qwen3.8-Flash-Next-FP4-Local"
+
+# Sampling: the base model card (Qwen/Qwen3.8-Flash-Next, "Best Practices").
+# Thinking mode 1.0 / 0.95 / 20 (also the checkpoint's generation_config.json);
+# non-thinking mode 0.7 / 0.80 / 20 with presence_penalty 1.5.
+[sampling.thinking_text]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[sampling.thinking_coding]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[sampling.non_thinking]
+temperature = 0.7
+top_p = 0.80
+top_k = 20
+presence_penalty = 1.5
+
+[sampling.tools]
+temperature = 1.0
+top_p = 0.95
+top_k = 20
+
+[[model_types]]
+model_type = "qwen4_exp"
+
+[behavior]
+# The model thinks by default (base model card: enable_thinking on,
+# reasoning_effort xhigh). Reports on the checkpoint show occasional
+# thinking that never terminates, so the budget is capped and the loop
+# watchdog stays on.
+enable_loop_watchdog = true
+thinking_default = true
+thinking_in_tools = true
+max_thinking_budget = 4096
+# The attention kernels of this target read a BF16 KV cache.
+default_kv_dtype = "bf16"
+
+# PROVISIONAL: the smallest value the deployment accepts
+# (--max-batch-size 4). To be set by the operator from the first memory
+# measurement (docs/NEUES_MODELL_UND_KERNEL.md, step 6).
+[serving]
+sessions = 4
