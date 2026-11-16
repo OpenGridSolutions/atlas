@@ -133,6 +133,8 @@ extend-exclude = [
     "docs/design/test-scenarios.md",
     "docs/design/nvme-tier-analysis.md",
     "docs/design/context-compaction.md",
+    "docs/design/qwen4-exp-port.md",
+    "docs/NEUES_MODELL_UND_KERNEL.md",
     # Server logs written by serve.sh on the box; not source.
     "logs/",
 ]

@@ -67,6 +67,9 @@ A real build + test cycle requires a CUDA-capable host; see
 ## Adding a new model
 
 High-level walkthrough — the patterns to follow are already in-tree.
+The end-to-end process for a model that needs new kernels (selection,
+analysis, reference-engine comparison, kernels, measurement) is in
+[`docs/NEUES_MODELL_UND_KERNEL.md`](docs/NEUES_MODELL_UND_KERNEL.md).
 
 1. **Model-type dispatch.** Add a new arm in
    `crates/spark-model/src/factory.rs` that returns a new
