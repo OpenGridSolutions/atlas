@@ -138,3 +138,8 @@ refenv/
 # Qwen-Image-2.1 golden reference tensors (~280 MB) for the manual
 # `qwen_image_golden` example. Regenerate with scripts/qwen_image_ref_dump.py.
 /golden/
+
+# Host-local Quadlet settings (.devpod/install.sh) and the cluster node list
+# (.devpod/cluster/) - they describe one machine / one network, not the repo.
+/.devpod/host.env
+/.devpod/cluster/nodes

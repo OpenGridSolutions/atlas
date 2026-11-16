@@ -1,7 +1,9 @@
 # Podman Quadlet for the Atlas GB10 dev/serve container (rootless, user unit).
 #
 # Template: .devpod/install.sh replaces @REPO@ with the checkout path and
-# writes the result to ~/.config/containers/systemd/atlas-gb10.container.
+# @PUBLISH_ADDR@ with ATLAS_PUBLISH_ADDR from the host-local .devpod/host.env
+# (not in git), and writes the result to
+# ~/.config/containers/systemd/atlas-gb10.container.
 # The image is built from .devpod/Containerfile before every start.
 #
 # Lifecycle: serve.sh is PID 1. When the server dies (e.g. OOM kill, status
@@ -21,7 +23,9 @@ StartLimitBurst=5
 Image=localhost/atlas-gb10-dev:local
 ContainerName=atlas-gb10
 Exec=./serve.sh
-PublishPort=127.0.0.1:11434:11434
+# Host address the API port is published on: 127.0.0.1 behind a local
+# reverse proxy, 0.0.0.0 on a cluster node (.devpod/cluster/provision.sh).
+PublishPort=@PUBLISH_ADDR@:11434:11434
 AddDevice=nvidia.com/gpu=all
 AddCapability=IPC_LOCK
 Ulimit=memlock=-1:-1

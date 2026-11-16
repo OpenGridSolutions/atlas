@@ -5,7 +5,12 @@
 #   ./.devpod/install.sh
 #
 # No flags: every setting comes from .devpod/atlas-gb10.env (the same file
-# the container reads), so the checkout is the single source of truth.
+# the container reads), so the checkout is the single source of truth. The
+# one per-host setting, the address the API port is published on, lives in
+# .devpod/host.env (not in git):
+#
+#   ATLAS_PUBLISH_ADDR=127.0.0.1   # behind a reverse proxy on this host
+#   ATLAS_PUBLISH_ADDR=0.0.0.0     # reachable from the network (cluster node)
 #
 # Idempotent: every step writes only what differs, so re-running it is safe.
 # It never stops or starts the Atlas unit itself. Settings that only apply
@@ -38,11 +43,23 @@ MEMLOCK_DROPIN=/etc/systemd/system/user@.service.d/atlas-memlock.conf
 MEMLOCK_LOGIN=/etc/security/limits.d/90-atlas-memlock.conf
 HUGEPAGES_CONF=/etc/sysctl.d/90-atlas-hugepages.conf
 ENV_FILE="${HERE}/atlas-gb10.env"
+HOST_ENV="${HERE}/host.env"
 
 # Huge-page pool size: required, no implicit default.
 HUGEPAGES_GB="$(sed -n 's/^ATLAS_HUGEPAGES_GB=//p' "${ENV_FILE}")"
 if [[ ! "${HUGEPAGES_GB}" =~ ^[0-9]+$ ]]; then
     echo "ATLAS_HUGEPAGES_GB must be set to a whole number of GiB in ${ENV_FILE} (0 = no pool)" >&2
+    exit 1
+fi
+
+# Publish address: per host, required, no implicit default.
+if [[ ! -r "${HOST_ENV}" ]]; then
+    echo "${HOST_ENV} is missing - create it with ATLAS_PUBLISH_ADDR=127.0.0.1 (local reverse proxy) or 0.0.0.0 (reachable from the network)" >&2
+    exit 1
+fi
+PUBLISH_ADDR="$(sed -n 's/^ATLAS_PUBLISH_ADDR=//p' "${HOST_ENV}")"
+if [[ ! "${PUBLISH_ADDR}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+    echo "ATLAS_PUBLISH_ADDR must be an IPv4 address in ${HOST_ENV}, got '${PUBLISH_ADDR}'" >&2
     exit 1
 fi
 
@@ -65,8 +82,9 @@ install_file() {
     echo "    updated"
 }
 
-echo "==> [1/7] quadlet unit -> ${UNIT_DIR}/atlas-gb10.container"
-sed "s|@REPO@|${REPO}|g" "${HERE}/atlas-gb10.container.in" > "${TMP}"
+echo "==> [1/7] quadlet unit -> ${UNIT_DIR}/atlas-gb10.container (port on ${PUBLISH_ADDR})"
+sed -e "s|@REPO@|${REPO}|g" -e "s|@PUBLISH_ADDR@|${PUBLISH_ADDR}|g" \
+    "${HERE}/atlas-gb10.container.in" > "${TMP}"
 install_file "${UNIT_DIR}/atlas-gb10.container" 0644
 
 echo "==> [2/7] cache-drop helper -> ${DROP_BIN} (root-owned)"

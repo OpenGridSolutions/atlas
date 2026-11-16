@@ -419,10 +419,18 @@ registry and serve flags in [`.devpod/atlas-gb10.env`](.devpod/atlas-gb10.env). 
 once on the host (asks for sudo; it offers the reboot that the memlock limit needs):
 
 ```bash
+echo ATLAS_PUBLISH_ADDR=127.0.0.1 > .devpod/host.env   # per host, not in git; 0.0.0.0 = LAN
 ./.devpod/install.sh
 systemctl --user start atlas-gb10
 podman exec -it atlas-gb10 bash      # dev shell in the running container
 ```
+
+**More sparks.** [`.devpod/cluster/`](.devpod/cluster/) sets up further sparks the same
+way over SSH, run from the main spark's host: `provision.sh <user@host> --allow-from
+<cidr>` copies the HF hub with rsync, clones origin, opens the API port in the node's
+firewall for that network and installs and starts the unit. `update.sh` then rolls out to
+every node it recorded: rsync the models, `git pull`, restart. Nodes run
+`origin/<branch>`, so push first.
 
 **2. Build and serve.** The container runs [`serve.sh`](serve.sh), which builds
 `spark-server` in release mode and starts the server with the registry from
