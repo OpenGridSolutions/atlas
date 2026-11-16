@@ -84,12 +84,23 @@ cluster_init() {
             echo "already running in tmux session '${session}' - attaching"
             exec tmux attach -t "=${session}"
         fi
-        local self
+        local self log
         self="$(realpath "$0")"
-        echo "starting in tmux session '${session}' (detach: Ctrl-b d, back: tmux attach -t ${session})"
-        exec tmux new-session -s "${session}" bash -c \
-            '"$0" "$@"; rc=$?; echo; read -rp "finished (exit ${rc}) - Enter closes this tmux session " _' \
-            "${self}" "$@"
+        mkdir -p "${REPO}/logs/cluster"
+        log="${REPO}/logs/cluster/${session}.log"
+        echo "starting in tmux session '${session}'"
+        echo "  leave it running: Ctrl-b d (Ctrl-C stops the script), back: tmux attach -t ${session}"
+        echo "  output is also written to ${log}"
+        # The output goes to a log as well, so it survives the session. The
+        # pane waits for Enter at the end (or an hour, if stdin is gone), so
+        # a failure stays readable.
+        exec tmux new-session -s "${session}" bash -c '
+log="$1"; shift
+echo "=== $(date -Is) $0 $*" >> "$log"
+"$0" "$@" 2>&1 | tee -a "$log"; rc=${PIPESTATUS[0]}
+echo
+read -rp "finished (exit ${rc}, log: ${log}) - Enter closes this tmux session " _ || sleep 3600' \
+            "${self}" "${log}" "$@"
     fi
     SSH_CTL="$(mktemp -d)"
     SSH_OPTS=(-o ControlMaster=auto -o "ControlPath=${SSH_CTL}/%C" -o ControlPersist=120)

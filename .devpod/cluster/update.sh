@@ -22,7 +22,8 @@
 # The nodes get origin/<branch>, not this working tree: commit and push first.
 # A failing node does not stop the others; the summary lists it.
 # Runs inside the tmux session atlas-update (started on its own; detach with
-# Ctrl-b d, back with tmux attach -t atlas-update) and pushes to the ntfy
+# Ctrl-b d - Ctrl-C stops it -, back with tmux attach -t atlas-update; output
+# also in logs/cluster/atlas-update.log) and pushes to the ntfy
 # channel of atlas-gb10.env: input needed, node failed, done.
 set -euo pipefail
 

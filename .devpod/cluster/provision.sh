@@ -29,10 +29,11 @@
 #      writes one snapshot per model - that takes a while
 #
 # Runs inside the tmux session atlas-provision-<host> (started on its own;
-# detach with Ctrl-b d, come back with tmux attach -t atlas-provision-<host>),
-# so a dropped SSH connection to this host does not stop it. Pushes to the
-# ntfy channel of atlas-gb10.env (ATLAS_NTFY_TOPIC): models synced, input
-# needed (sudo password), done, failed.
+# detach with Ctrl-b d - Ctrl-C stops it -, come back with tmux attach -t
+# atlas-provision-<host>), so a dropped SSH connection to this host does not
+# stop it. The output also goes to logs/cluster/atlas-provision-<host>.log.
+# Pushes to the ntfy channel of atlas-gb10.env (ATLAS_NTFY_TOPIC): models
+# synced, input needed (sudo password), done, failed.
 #
 # Idempotent: re-running it on a provisioned node only applies what differs.
 # What the node runs is origin/<branch>: commit and push first - uncommitted
