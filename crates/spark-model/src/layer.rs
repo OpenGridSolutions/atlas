@@ -196,6 +196,22 @@ pub struct GdnPrefillBuffers {
     pub total_len: usize,
 }
 
+/// Input of [`TransformerLayer::prepare_decode`]: host-side work for the
+/// next decode step or prefill chunk that cannot be part of a captured
+/// decode graph (e.g. reading table rows for `tokens` from disk). The model
+/// calls the hook on every layer before the kernels are launched or replayed.
+pub struct DecodePrep<'a> {
+    /// The sequence's tokens before `tokens`.
+    pub history: &'a [u32],
+    /// The tokens the next call processes: one for `decode`, a chunk for
+    /// `prefill`.
+    pub tokens: &'a [u32],
+    /// Whether the next call is `prefill` (else `decode`).
+    pub prefill: bool,
+    pub gpu: &'a dyn GpuBackend,
+    pub stream: u64,
+}
+
 /// Shared context for a single forward pass step.
 ///
 /// Provides access to GPU, buffers, and config without coupling

@@ -72,6 +72,11 @@ impl TransformerModel {
         prompt_tokens: &[u32],
         media_digests: &[spark_runtime::block_keys::MediaDigest],
     ) -> spark_runtime::block_keys::BlockKeyChain {
+        // Token-serial families never reuse cached blocks: an inert chain
+        // keeps their sequences out of the prefix cache and the NVMe tier.
+        if self.token_serial {
+            return spark_runtime::block_keys::BlockKeyChain::default();
+        }
         let block_size = self.kv_cache.lock().block_size();
         spark_runtime::block_keys::BlockKeyChain::new(
             self.block_key_seed,

@@ -44,6 +44,9 @@ impl TransformerModel {
         stream: u64,
     ) -> Result<DevicePtr> {
         let n = tokens.len();
+        if self.token_serial {
+            return self.prefill_token_serial(tokens, seq, 0, n, stream);
+        }
         if n <= 1 {
             // Single token: use decode path (CUDA graph optimized)
             for &token in tokens {

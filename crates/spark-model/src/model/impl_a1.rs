@@ -434,6 +434,8 @@ impl TransformerModel {
             // (see line ~3881), so graphs work for MLA too. The zero_all call
             // at line ~3751 runs in Phase 1 BEFORE begin_capture, so it is
             // naturally outside the captured region.
+            token_serial: false,
+            serial_prefill_rows: 1,
             suppress_graphs: std::sync::atomic::AtomicBool::new(
                 has_fp8_calibration
                     || std::env::var("ATLAS_DIAG_GEMMA4").is_ok_and(|v| v == "1" || v == "true")

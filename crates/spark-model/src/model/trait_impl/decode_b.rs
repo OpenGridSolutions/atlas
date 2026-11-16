@@ -66,6 +66,7 @@ impl TransformerModel {
         // Use padded_n (not n_decode) because padding slots consume hidden buffer space.
         if self.comm.is_some()
             || self.is_mla_dispatch()
+            || self.token_serial
             || (padded_n_guard + n_prefill) > self.buffers.max_batch_tokens()
             || n_decode == 0
         {

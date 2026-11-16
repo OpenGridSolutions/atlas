@@ -500,6 +500,10 @@ impl TransformerModel {
         seq: &SequenceState,
         writer: &mut dyn std::io::Write,
     ) -> Result<()> {
+        // The swap format holds K/V and recurrent state only.
+        if self.kv_cache.lock().aux_block_bytes() > 0 {
+            anyhow::bail!("sequence swap is not supported for models with a KV aux plane");
+        }
         let gpu = self.gpu.as_ref();
 
         // Phase 1: Copy all KV block data from GPU to host buffers under the lock.

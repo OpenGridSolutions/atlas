@@ -109,6 +109,12 @@ pub struct TransformerModel {
     /// pay the tail-checkpoint split to leave a block-aligned SSM resume
     /// point behind (SSM-4).
     pub(super) nvme_tier_active: std::sync::atomic::AtomicBool,
+    /// The model family advances its per-sequence state itself; see
+    /// `token_serial.rs`.
+    pub(super) token_serial: bool,
+    /// Largest chunk the layers' `prefill` takes in that mode; 1 = the
+    /// layers only decode.
+    pub(super) serial_prefill_rows: usize,
     /// MTP draft proposer (built from mtp_weights at init).
     pub(super) proposer: Option<Arc<dyn DraftProposer>>,
     /// Dedicated buffer for saving hidden state before MTP head runs.

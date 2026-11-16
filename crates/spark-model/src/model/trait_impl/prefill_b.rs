@@ -55,6 +55,9 @@ impl TransformerModel {
             chunk_start + chunk_len <= total,
             "chunk_start({chunk_start}) + chunk_len({chunk_len}) > total({total})"
         );
+        if self.token_serial {
+            return self.prefill_token_serial(tokens, seq, chunk_start, chunk_len, stream);
+        }
 
         // Tail-checkpoint split (issue #15 follow-up, 2026-07-02): a warm
         // multi-turn hit matches the radix at BLOCK granularity, and the

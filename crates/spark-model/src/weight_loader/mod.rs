@@ -26,6 +26,7 @@ mod qwen35;
 mod qwen35_dense;
 mod qwen3_dense;
 mod qwen3_vl;
+pub mod qwen4_exp;
 mod step3p7;
 
 pub use deepseek_v4::DeepSeekV4WeightLoader;
@@ -40,6 +41,7 @@ pub use nemotron::NemotronHWeightLoader;
 pub use qwen3::Qwen3WeightLoader;
 pub use qwen3_dense::Qwen3DenseWeightLoader;
 pub use qwen3_vl::Qwen3VLWeightLoader;
+pub use qwen4_exp::Qwen4ExpWeightLoader;
 pub use qwen35::Qwen35WeightLoader;
 pub use qwen35_dense::Qwen35DenseWeightLoader;
 pub use step3p7::Step3p7WeightLoader;
@@ -123,6 +125,16 @@ impl WeightFormat {
     pub fn is_fp8(&self) -> bool {
         matches!(self, Self::Fp8BlockScaled)
     }
+}
+
+/// Tensors of a checkpoint that are not loaded onto the device.
+#[derive(Clone, Copy)]
+pub struct TensorFilter {
+    /// True for every tensor the weight loaders must not load.
+    pub skip: fn(&str) -> bool,
+    /// The subset of skipped tensors the model reads from the checkpoint
+    /// files on demand; their location is registered in the weight store.
+    pub on_disk: fn(&str) -> bool,
 }
 
 /// Loads weights from a [`WeightStore`] into typed layer objects.
@@ -232,6 +244,38 @@ pub trait ModelWeightLoader {
     /// layer. Indexed by attention layer index (same as layer_kv_dtypes).
     fn kv_layer_dims(&self, _config: &ModelConfig) -> Vec<(usize, usize)> {
         Vec::new()
+    }
+
+    /// Bytes every KV block needs per attention layer besides keys and
+    /// values (`PagedKvCache::alloc_aux`). Default: none.
+    fn kv_aux_block_bytes(&self, _config: &ModelConfig, _kv_block_size: usize) -> usize {
+        0
+    }
+
+    /// Filter for checkpoints that are not loaded whole. `None` (the
+    /// default) loads every tensor.
+    fn tensor_filter(&self) -> Option<TensorFilter> {
+        None
+    }
+
+    /// True when the layers of this family advance their per-sequence state
+    /// themselves, in prompt order only. The model then runs prompts through
+    /// `decode` (or `prefill` chunks, see `serial_prefill_rows`), serves
+    /// batches sequence by sequence and does not reuse cached prefixes.
+    fn token_serial(&self) -> bool {
+        false
+    }
+
+    /// With `token_serial`: the largest chunk of one sequence the layers'
+    /// `prefill` takes. 1 means the layers only implement `decode`.
+    fn serial_prefill_rows(&self) -> usize {
+        1
+    }
+
+    /// `(module, function)` of the kernel applied to the last layer's output
+    /// before the LM head. It must have the launch signature of `rms_norm`.
+    fn final_norm_kernel(&self) -> (&'static str, &'static str) {
+        ("norm", "rms_norm")
     }
 
     /// Load DFlash drafter weights from a separate `WeightStore` pointing

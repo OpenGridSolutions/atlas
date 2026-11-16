@@ -88,6 +88,9 @@ impl TransformerModel {
         if n == 0 {
             return Ok(Vec::new());
         }
+        if self.token_serial {
+            return self.prefill_batch_token_serial(streams, stream);
+        }
         if n == 1 {
             // Fast path: N=1 has no batching to do. Delegate to the
             // single-stream dispatch and skip the per-stream-loop bookkeeping.

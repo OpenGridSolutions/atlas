@@ -7,7 +7,7 @@ use atlas_core::config::ModelConfig;
 use spark_runtime::gpu::{DevicePtr, GpuBackend};
 use spark_runtime::kv_cache::PagedKvCache;
 
-use super::{BatchedAttnMetadata, ForwardContext, GdnPrefillBuffers, LayerState};
+use super::{BatchedAttnMetadata, DecodePrep, ForwardContext, GdnPrefillBuffers, LayerState};
 
 mod default_loops;
 
@@ -493,4 +493,8 @@ pub trait TransformerLayer: Send + Sync {
     /// - `EmptyLayerState` for pure attention layers
     /// - `SsmLayerState` for SSM/recurrent layers
     fn alloc_state(&self, gpu: &dyn GpuBackend) -> Result<Box<dyn LayerState>>;
+    /// Host work before a decode step's kernels run; see [`DecodePrep`].
+    fn prepare_decode(&self, _prep: &DecodePrep) -> Result<()> {
+        Ok(())
+    }
 }

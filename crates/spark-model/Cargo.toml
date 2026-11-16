@@ -89,6 +89,30 @@ name = "bf16_target_smoke"
 required-features = ["cuda", "gpu-examples"]
 
 [[example]]
+name = "qwen4_gated_residual_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "qwen4_mxfp8_gemv_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "qwen4_csf_expand_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "qwen4_ple_layer_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "qwen4_layers_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
+name = "qwen4_qsa_microtest"
+required-features = ["cuda", "gpu-examples"]
+
+[[example]]
 name = "whisper_kernel_microtest"
 required-features = ["cuda", "gpu-examples"]
 

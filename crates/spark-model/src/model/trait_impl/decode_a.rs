@@ -128,6 +128,8 @@ impl TransformerModel {
         // layers read the correct `tid2eid[token_id]`). Single token at offset 0.
         self.gpu
             .copy_h2d_async(&token.to_le_bytes(), self.buffers.token_ids(), stream)?;
+        // Layers with host work per token (table rows read from disk).
+        self.prepare_layers_for_decode(seq, token, stream)?;
 
         let attn_metadata = AttnMetadataDev {
             positions: meta_base,

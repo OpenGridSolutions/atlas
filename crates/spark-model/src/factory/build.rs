@@ -398,6 +398,11 @@ pub fn build_model(
     // budget-driven sum. This is the *whole point* of the HBM-shrink
     // feature — the production cache becomes write staging only; older
     // blocks live on disk under the orchestrator's control.
+    // Per-block data some attention variants keep next to K/V.
+    let kv_aux_block_bytes = loader.kv_aux_block_bytes(&config, kv_block_size);
+    if kv_aux_block_bytes > 0 && hss_cache_blocks_per_seq.is_some() {
+        anyhow::bail!("--high-speed-swap is not supported for models with a KV aux plane");
+    }
     let num_kv_blocks = match hss_cache_blocks_per_seq {
         Some(cap) => {
             // Phase 6.3 (original): pool = max_batch × cap + 1 dummy + 1 spare per seq.
@@ -456,7 +461,11 @@ pub fn build_model(
                     (used_so_far + inference_reserve) as f64 / (1024.0 * 1024.0 * 1024.0),
                 );
             }
-            let n = PagedKvCache::compute_num_blocks(&kv_config, kv_budget)?;
+            let n = PagedKvCache::compute_num_blocks_with_aux(
+                &kv_config,
+                kv_budget,
+                kv_aux_block_bytes,
+            )?;
             let max_kv_tokens = n * kv_block_size;
             tracing::info!(
                 "KV cache: {:.1} GB total × {:.0}% util = {:.1} GB budget; \
@@ -535,7 +544,10 @@ pub fn build_model(
     // build allocates from here on must fit into `inference_reserve` —
     // measured below instead of trusted.
     let allocs_at_budget = gpu.alloc_stats().build_live_bytes;
-    let kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
+    let mut kv_cache = PagedKvCache::new(kv_config, num_kv_blocks, gpu.as_ref())?;
+    if kv_aux_block_bytes > 0 {
+        kv_cache.alloc_aux(kv_aux_block_bytes, gpu.as_ref())?;
+    }
     let allocs_with_kv = gpu.alloc_stats().build_live_bytes;
 
     // ── Step 6: Assemble model ──
@@ -548,6 +560,15 @@ pub fn build_model(
     // GEMM uses w4a16 instead of a BF16 dense_gemm on NVFP4-packed bytes.
     let target_lm_head_nvfp4_for_dflash = lm_head_nvfp4;
     let target_hidden_for_dflash = config.hidden_size;
+
+    // Family traits declared by the loader: resolved before `gpu` moves
+    // into the model.
+    let final_norm_kernel = {
+        let (module, func) = loader.final_norm_kernel();
+        gpu.kernel(module, func)?
+    };
+    let token_serial = loader.token_serial();
+    let serial_prefill_rows = loader.serial_prefill_rows();
 
     let mut model = TransformerModel::new(
         config,
@@ -575,6 +596,8 @@ pub fn build_model(
         ssm_cache_slots,
         ssm_checkpoint_interval,
     )?;
+
+    model.set_family_traits(token_serial, serial_prefill_rows, final_norm_kernel);
 
     // ── Step 6b: DeepSeek-V4 MTP proposer (optional, post-construction) ──
     //

@@ -14,8 +14,8 @@ use crate::mistral_loader::MistralWeightLoader;
 use crate::weight_loader::{
     DeepSeekV4WeightLoader, DflashConfig, Gemma3WeightLoader, Gemma4WeightLoader,
     MinimaxM2WeightLoader, ModelWeightLoader, NemotronHWeightLoader, Qwen3DenseWeightLoader,
-    Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen35DenseWeightLoader, Qwen35WeightLoader,
-    Step3p7WeightLoader,
+    Qwen3VLWeightLoader, Qwen3WeightLoader, Qwen4ExpWeightLoader, Qwen35DenseWeightLoader,
+    Qwen35WeightLoader, Step3p7WeightLoader,
 };
 
 /// DFlash speculative-decoding build arguments. `None` for non-DFlash runs;
@@ -95,9 +95,12 @@ pub fn loader_for_config(config: &ModelConfig) -> Result<Box<dyn ModelWeightLoad
         "step3p7" => Ok(Box::new(Step3p7WeightLoader)),
         // DeepSeek-V4 family (Flash) — MLA + MoE + CSA/HCA hybrid attention + mHC.
         "deepseek_v4" => Ok(Box::new(DeepSeekV4WeightLoader)),
+        // Qwen3.8-Flash-Next — GDN + block-sparse attention over gated
+        // residual streams, 512-expert MoE, hashed n-gram embedding table.
+        "qwen4_exp" => Ok(Box::new(Qwen4ExpWeightLoader)),
         _ => bail!(
             "Unsupported model type: '{}' (normalized: '{}'). \
-             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4",
+             Supported: qwen3_next, qwen3_5_moe, qwen3_5, qwen3_6_moe, holo3_1_moe, qwen3_vl_moe, nemotron_h, gemma4, mistral, minimax_m2, deepseek_v4, qwen4_exp",
             config.model_type,
             normalized,
         ),

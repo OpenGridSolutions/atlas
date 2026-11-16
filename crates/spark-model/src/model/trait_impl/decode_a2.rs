@@ -87,7 +87,7 @@ impl TransformerModel {
         // not the default.
         let mla_perseq_fallback = self.is_mla_dispatch()
             && std::env::var("ATLAS_MLA_PERSEQ_FALLBACK").is_ok_and(|v| v == "1" || v == "true");
-        if mla_perseq_fallback {
+        if mla_perseq_fallback || self.token_serial {
             use std::sync::atomic::Ordering;
             let logits = self.decode_logits_ptr();
             let v = self.config.vocab_size;

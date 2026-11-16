@@ -44,6 +44,9 @@ impl TransformerModel {
         if total_len == 0 {
             return Ok(DevicePtr::NULL);
         }
+        if self.token_serial {
+            return self.prefill_dispatch(tokens, seq, stream);
+        }
 
         // Fall back to standard chunked prefill if the arena cannot hold all
         // tokens at once (hidden_states buffer is sized for max_batch_tokens).
