@@ -73,22 +73,36 @@ if [[ "$(id -u)" -eq 0 ]]; then
     echo "    log in as the Podman user, not as root" >&2
     exit 1
 fi
+# Command -> package. Quiet apt: no debconf dialog, no needrestart scan.
+declare -A pkg=([podman]=podman [git]=git [rsync]=rsync [nvidia-ctk]=nvidia-container-toolkit)
+apt_install() {
+    sudo DEBIAN_FRONTEND=noninteractive NEEDRESTART_SUSPEND=1 apt-get install -y -qq "$@"
+}
 missing=()
-for c in podman git rsync; do
-    command -v "$c" >/dev/null || missing+=("$c")
+for c in podman git rsync nvidia-ctk; do
+    command -v "$c" >/dev/null || missing+=("${pkg[$c]}")
 done
 if [[ ${#missing[@]} -gt 0 ]]; then
     echo "    installing: ${missing[*]}"
     sudo apt-get update -qq
-    sudo apt-get install -y "${missing[@]}"
+    # The container toolkit comes from the NVIDIA apt repository; add it
+    # (the documented install path) when no configured source offers it.
+    if [[ " ${missing[*]} " == *" nvidia-container-toolkit "* ]] &&
+        ! apt-cache policy nvidia-container-toolkit | grep -q "Candidate: [^(]"; then
+        echo "    adding the NVIDIA container toolkit apt repository"
+        keyring=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey |
+            sudo gpg --batch --yes --dearmor -o "$keyring"
+        curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
+            sed "s#deb https://#deb [signed-by=$keyring] https://#g" |
+            sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list >/dev/null
+        sudo apt-get update -qq
+    fi
+    apt_install "${missing[@]}"
 fi
 if ! grep -q "^$(id -un):" /etc/subuid; then
     echo "    no /etc/subuid range for $(id -un) - rootless Podman needs one:" >&2
     echo "    sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $(id -un)" >&2
-    exit 1
-fi
-if ! command -v nvidia-ctk >/dev/null; then
-    echo "    nvidia-ctk not found - install the NVIDIA Container Toolkit" >&2
     exit 1
 fi
 if ! nvidia-ctk cdi list 2>/dev/null | grep -qx "nvidia.com/gpu=all"; then
