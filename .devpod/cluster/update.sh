@@ -9,6 +9,7 @@
 #   --delete-models   also delete models on the nodes that are gone here
 #   --allow-unpushed  roll out although this checkout has commits that are
 #                     not on origin (the nodes then run an older state)
+#   -h, --help        this text
 #
 # Per node:
 #   1. rsync the HF hub (~/.cache/huggingface/hub) to the node
@@ -23,7 +24,8 @@
 set -euo pipefail
 
 usage() {
-    sed -n '4,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # The header comment above, up to `set -euo pipefail`.
+    sed -n '2,/^set -euo pipefail/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" | sed '/^#/d'
 }
 
 DELETE_MODELS=()

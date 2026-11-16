@@ -4,12 +4,15 @@
 #
 #   ./.devpod/cluster/provision.sh <ssh-target> --allow-from <cidr>
 #
-#   <ssh-target>  user@host of the node; that user becomes the node's Podman
-#                 user (not root; needs sudo). Set up key login first:
-#                 ssh-copy-id <ssh-target>
+#   <ssh-target>  user@host of the node, e.g. jgroth@192.168.4.95; that user
+#                 becomes the node's Podman user (not root; needs sudo).
+#                 The SSH password is asked once (all steps share one
+#                 connection), the sudo password per step that needs it.
+#                 Optional: ssh-copy-id <ssh-target> saves the SSH password.
 #   --allow-from  network allowed to reach the API port through the node's
-#                 firewall, e.g. 192.168.4.0/24. The server runs without
-#                 --require-auth, so keep this as narrow as possible.
+#                 firewall, e.g. 192.168.4.0/24 (the server runs without
+#                 --require-auth).
+#   -h, --help    this text
 #
 # Steps:
 #   1. prerequisites on the node (podman/git/rsync, CDI spec for the GPU,
@@ -31,7 +34,8 @@
 set -euo pipefail
 
 usage() {
-    sed -n '4,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # The header comment above, up to `set -euo pipefail`.
+    sed -n '2,/^set -euo pipefail/s/^# \{0,1\}//p' "${BASH_SOURCE[0]}" | sed '/^#/d'
 }
 
 TARGET=""
