@@ -199,6 +199,17 @@ echo
 echo "A host reboot is required:"
 printf '  - %s\n' "${REBOOT_REASONS[@]}"
 echo "After it: atlas-gb10 comes up on its own."
+# ATLAS_INSTALL_REBOOT=yes|no answers the prompt (cluster/provision.sh and
+# update.sh run unattended); unset = ask.
+if [[ "${ATLAS_INSTALL_REBOOT:-}" == no ]]; then
+    echo "Not rebooting. Run: sudo systemctl reboot"
+    exit 0
+fi
+if [[ "${ATLAS_INSTALL_REBOOT:-}" == yes ]]; then
+    echo "Rebooting (ATLAS_INSTALL_REBOOT=yes)."
+    sudo systemctl reboot
+    exit 0
+fi
 if [[ ! -t 0 ]]; then
     echo "Not rebooting (no terminal). Run: sudo systemctl reboot"
     exit 0

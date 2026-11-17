@@ -15,7 +15,8 @@
 #   1. rsync the HF hub (~/.cache/huggingface/hub) to the node
 #   2. git pull --ff-only in the node's checkout
 #   3. install.sh again if the pull changed the unit template, the cache-drop
-#      helper or install.sh itself (asks for sudo there)
+#      helper or install.sh itself (sudo: the password of such nodes is asked
+#      once at the start; a reboot it needs is reported, not done)
 #   4. systemctl --user restart atlas-gb10 - the restart rebuilds the image if
 #      the Containerfile changed, and serve.sh rebuilds the binary
 #
@@ -98,7 +99,7 @@ update_node() {
     echo "  -> [3/4] install.sh"
     if [[ "${old}" != "${new}" ]] && ! git -C "${REPO}" diff --quiet "${old}" "${new}" -- "${INSTALL_INPUTS[@]}"; then
         need_input "${target}" "sudo password for install.sh on ${target}"
-        remote_install "${target}"
+        remote_install "${target}" no
     else
         echo "     not needed (unit and helper unchanged)"
     fi
@@ -108,6 +109,17 @@ update_node() {
 systemctl --user restart ${UNIT}
 systemctl --user is-active ${UNIT}"
 }
+
+# Nodes whose pull will change the installer inputs need sudo for
+# install.sh: ask their passwords now, so the rest runs unattended.
+step "sudo passwords (only nodes that need install.sh)"
+for node in "${NODES[@]}"; do
+    old="$(remote "${node}" 'git -C "$HOME/$1" rev-parse HEAD' "${REPO_REL}" </dev/null 2>/dev/null | tr -d '\r')" || continue
+    [[ -n "${old}" && "${old}" != "${TARGET_SHA}" ]] || continue
+    if ! git -C "${REPO}" diff --quiet "${old}" "${TARGET_SHA}" -- "${INSTALL_INPUTS[@]}" 2>/dev/null; then
+        sudo_setup "${node}" || echo "    no sudo for ${node} - install.sh there will ask" >&2
+    fi
+done
 
 FAILED=()
 for node in "${NODES[@]}"; do

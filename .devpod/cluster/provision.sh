@@ -6,8 +6,10 @@
 #
 #   <ssh-target>  user@host of the node, e.g. jgroth@192.168.4.95; that user
 #                 becomes the node's Podman user (not root; needs sudo).
-#                 The SSH password is asked once (all steps share one
-#                 connection), the sudo password per step that needs it.
+#                 SSH and sudo password are asked once at the start (all
+#                 steps share one connection; sudo_setup in common.sh keeps
+#                 the sudo password in RAM on the node until the run ends),
+#                 the rest runs unattended.
 #                 Optional: ssh-copy-id <ssh-target> saves the SSH password.
 #   --allow-from  network allowed to reach the API port through the node's
 #                 firewall, e.g. 192.168.4.0/24 (the server runs without
@@ -23,8 +25,8 @@
 #   4. .devpod/host.env with ATLAS_PUBLISH_ADDR=0.0.0.0 (the API port is
 #      published on the network, not on 127.0.0.1 as behind a local proxy)
 #   5. firewall: allow <cidr> to the API port (ufw or firewalld, if active)
-#   6. .devpod/install.sh on the node (sudo; on a fresh host it offers the
-#      reboot the memlock limit needs - the unit then comes up on its own)
+#   6. .devpod/install.sh on the node (sudo; a fresh host reboots right
+#      away for the memlock limit - the unit then comes up on its own)
 #   7. record the node in .devpod/cluster/nodes (update.sh's list) and start
 #      the unit; the first start builds the image and the release binary, and
 #      writes one snapshot per model - that takes a while
@@ -34,7 +36,7 @@
 # atlas-provision-<host>), so a dropped SSH connection to this host does not
 # stop it. The output also goes to logs/cluster/atlas-provision-<host>.log.
 # Pushes to the ntfy channel of atlas-gb10.env (ATLAS_NTFY_TOPIC): models
-# synced, input needed (sudo password), done, failed.
+# synced, done, failed.
 #
 # Idempotent: re-running it on a provisioned node only applies what differs.
 # What the node runs is origin/<branch>: commit and push first - uncommitted
@@ -77,6 +79,9 @@ if [[ "${BRANCH}" == HEAD ]]; then
     echo "this checkout is on a detached HEAD - check out the branch the nodes should follow" >&2
     exit 1
 fi
+
+step "passwords for ${TARGET} (asked here once - the rest runs unattended)"
+sudo_setup "${TARGET}"
 
 step "[1/7] prerequisites on ${TARGET}"
 remote "${TARGET}" '
@@ -186,9 +191,6 @@ fi
 step "[4/7] ${TARGET}:~/${REPO_REL}/.devpod/host.env (API port on 0.0.0.0)"
 remote "${TARGET}" 'echo "ATLAS_PUBLISH_ADDR=0.0.0.0" > "$HOME/$1/.devpod/host.env"' "${REPO_REL}"
 
-# sudo caches the password per terminal, and every remote call gets a new
-# one: each sudo step asks again, so each one pushes "input needed".
-need_input "${TARGET}" "sudo password for the firewall rule"
 step "[5/7] firewall: ${ALLOW_FROM} -> port ${API_PORT}/tcp"
 remote "${TARGET}" '
 port="$1" cidr="$2"
@@ -207,12 +209,11 @@ else
 fi
 ' "${API_PORT}" "${ALLOW_FROM}"
 
-need_input "${TARGET}" "sudo password for install.sh"
 step "[6/7] install.sh on ${TARGET}"
 # Bind-mount sources of the unit that must exist before the first start.
 remote "${TARGET}" 'mkdir -p "$HOME/.claude" "$HOME/$1/logs"' "${REPO_REL}"
 REBOOTED=0
-remote_install "${TARGET}" || {
+remote_install "${TARGET}" yes || {
     rc=$?
     # 255 = the SSH connection dropped: install.sh rebooted the node.
     [[ ${rc} -eq 255 ]] || exit "${rc}"

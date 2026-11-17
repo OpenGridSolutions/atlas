@@ -112,6 +112,7 @@ read -rp "finished (exit ${rc}, log: ${log}) - Enter closes this tmux session " 
 JOB_NAME="$(basename "$0" .sh)"
 on_exit() {
     local rc=$?
+    sudo_cleanup
     ssh_close_all
     rm -rf "${SSH_CTL}"
     if [[ ${rc} -ne 0 ]]; then
@@ -142,7 +143,13 @@ remote() {
             return 2
         fi
     done
-    b64="$(printf 'set -euo pipefail\n%s\n' "${script}" | base64 -w0)"
+    # Preamble: when sudo_setup stored a password on the node, every sudo
+    # of the script (and of what it calls, e.g. install.sh) takes it from there.
+    b64="$(printf '%s\n%s\n' 'set -euo pipefail
+_atlas_sudo="/run/user/$(id -u)/atlas-sudo"
+if [[ -x "${_atlas_sudo}/sudo" ]]; then
+    export PATH="${_atlas_sudo}:${PATH}" SUDO_ASKPASS="${_atlas_sudo}/askpass"
+fi' "${script}" | base64 -w0)"
     # shellcheck disable=SC2029  # expanded locally on purpose
     ssh "${SSH_OPTS[@]}" "${tty}" "${target}" \
         "bash -c \"\$(echo ${b64} | base64 -d)\" atlas-remote $*"
@@ -171,16 +178,75 @@ sync_models() {
 # the installer itself); everything else only needs a unit restart.
 INSTALL_INPUTS=(.devpod/install.sh .devpod/atlas-gb10.container.in .devpod/atlas-drop-caches.sh)
 
-# remote_install TARGET: run install.sh on TARGET (asks for sudo, may offer
-# the reboot a fresh host needs for the memlock limit - the unit comes up on
-# its own after it).
+# remote_install TARGET yes|no: run install.sh on TARGET (sudo). yes =
+# reboot right away if the node needs it (memlock limit of a fresh host -
+# the unit comes up on its own after it), no = only report it.
 remote_install() {
-    remote "$1" 'cd "$HOME/$1" && ./.devpod/install.sh' "${REPO_REL}"
+    remote "$1" 'cd "$HOME/$1" && ATLAS_INSTALL_REBOOT="$2" ./.devpod/install.sh' "${REPO_REL}" "$2"
+}
+
+# sudo_setup TARGET: ask TARGET's sudo password once, up front, so the run
+# needs nobody at the keyboard later. sudo caches a password only per
+# terminal, and every remote call opens a new one - without this, each sudo
+# step would ask again. The password goes over SSH (stdin, never a command
+# line) into /run/user/<uid>/atlas-sudo on the node: RAM only, mode 700, the
+# node user's own. An askpass helper and a `sudo -A` wrapper there feed it to
+# every sudo of the remote scripts. Removed when the script ends (on_exit) or
+# the node reboots. Nothing is stored on this host.
+declare -A SUDO_DIRS=()
+sudo_setup() {
+    local target="$1" pw uid try
+    if remote "${target}" 'sudo -n true' </dev/null >/dev/null 2>&1; then
+        echo "    sudo on ${target}: no password needed"
+        return 0
+    fi
+    uid="$(remote "${target}" 'id -u' </dev/null | tr -d '\r')"
+    for try in 1 2 3; do
+        read -rsp "sudo password of ${target} (asked once, for the whole run): " pw </dev/tty
+        echo
+        if printf '%s\n' "${pw}" | remote "${target}" '
+d="/run/user/$(id -u)"
+if [[ ! -d "$d" || ! -w "$d" ]]; then
+    echo "    no runtime directory $d on the node" >&2
+    exit 1
+fi
+d="$d/atlas-sudo"
+real="$(PATH=/usr/bin:/bin:/usr/sbin:/sbin command -v sudo)"
+rm -rf "$d"
+mkdir -m 700 "$d"
+(umask 077; cat > "$d/pw")
+printf "#!/bin/sh\nexec cat \"%s/pw\"\n" "$d" > "$d/askpass"
+printf "#!/bin/sh\nexec %s -A \"\$@\"\n" "$real" > "$d/sudo"
+chmod 700 "$d/askpass" "$d/sudo"
+"$real" -k
+if ! SUDO_ASKPASS="$d/askpass" "$real" -A -v 2>/dev/null; then
+    rm -rf "$d"
+    exit 1
+fi
+'; then
+            SUDO_DIRS["${target}"]="/run/user/${uid}/atlas-sudo"
+            echo "    sudo password ok - kept in RAM on the node until the end of the run"
+            return 0
+        fi
+        echo "    wrong password (or no runtime directory) - try ${try}/3" >&2
+    done
+    return 1
+}
+
+# sudo_cleanup: remove the stored sudo passwords again. Never prompts (the
+# node may be rebooting - then /run is gone anyway).
+sudo_cleanup() {
+    local target
+    for target in "${!SUDO_DIRS[@]}"; do
+        ssh "${SSH_OPTS[@]}" -o BatchMode=yes -o ConnectTimeout=5 -T "${target}" \
+            "rm -rf ${SUDO_DIRS[${target}]}" </dev/null >/dev/null 2>&1 || true
+    done
 }
 
 # need_input TARGET WHAT: push "input needed" when sudo on TARGET will ask
-# for a password (no cached credentials, no NOPASSWD rule).
+# for a password (no sudo_setup, no cached credentials, no NOPASSWD rule).
 need_input() {
+    [[ -z "${SUDO_DIRS[$1]:-}" ]] || return 0
     if ! remote "$1" 'sudo -n true' </dev/null >/dev/null 2>&1; then
         notify "Atlas ${JOB_NAME}: input needed" "$2 - tmux attach -t ${TMUX_SESSION:-?} on $(hostname)" high bell
     fi
