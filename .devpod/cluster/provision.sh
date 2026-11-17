@@ -15,8 +15,9 @@
 #   -h, --help    this text
 #
 # Steps:
-#   1. prerequisites on the node (podman/git/rsync, CDI spec for the GPU,
-#      subuid range); compares driver and Podman with this host
+#   1. prerequisites on the node (grow the LVM volume holding $HOME into the
+#      free NVMe space, podman/git/rsync, CDI spec for the GPU, subuid
+#      range); compares driver and Podman with this host
 #   2. rsync the HF hub (~/.cache/huggingface/hub) to the node
 #   3. git clone this checkout's origin + branch to the same path below $HOME
 #   4. .devpod/host.env with ATLAS_PUBLISH_ADDR=0.0.0.0 (the API port is
@@ -83,6 +84,26 @@ if [[ "$(id -u)" -eq 0 ]]; then
     echo "    log in as the Podman user, not as root" >&2
     exit 1
 fi
+# Disk: the Ubuntu installer leaves most of the NVMe unused (a 100 GiB root
+# LV in a 3.7 TB volume group). Grow the LV holding $HOME (models, images,
+# snapshots) into all free space of its VG; -r grows ext4/xfs online.
+home_dev="$(findmnt -no SOURCE -T "$HOME")"
+home_fs="$(findmnt -no FSTYPE -T "$HOME")"
+if [[ "$home_dev" == /dev/mapper/* ]] && sudo lvs "$home_dev" >/dev/null 2>&1; then
+    vg="$(sudo lvs --noheadings -o vg_name "$home_dev" | tr -d " ")"
+    free="$(sudo vgs --noheadings --units b --nosuffix -o vg_free "$vg" | tr -d " ")"
+    if (( free < 1073741824 )); then
+        echo "    disk: $home_dev already uses its whole volume group"
+    elif [[ "$home_fs" != ext4 && "$home_fs" != xfs ]]; then
+        echo "    disk: $(( free >> 30 )) GiB free in $vg, but $home_fs is not grown online - left as is" >&2
+    else
+        echo "    disk: growing $home_dev by $(( free >> 30 )) GiB (all free space of $vg)"
+        sudo lvextend -r -l +100%FREE "$home_dev"
+    fi
+else
+    echo "    disk: $home_dev is no LVM volume - not resized"
+fi
+df -h "$HOME" | sed "s/^/    /"
 # Command -> package. Quiet apt: no debconf dialog, no needrestart scan.
 declare -A pkg=([podman]=podman [git]=git [rsync]=rsync [nvidia-ctk]=nvidia-container-toolkit)
 apt_install() {
