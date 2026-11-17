@@ -66,20 +66,7 @@ fi
 
 BRANCH="$(git -C "${REPO}" rev-parse --abbrev-ref HEAD)"
 step "state to roll out: origin/${BRANCH}"
-git -C "${REPO}" fetch --quiet origin "${BRANCH}"
-TARGET_SHA="$(git -C "${REPO}" rev-parse "origin/${BRANCH}")"
-echo "    $(git -C "${REPO}" log -1 --format='%h %s' "${TARGET_SHA}")"
-UNPUSHED="$(git -C "${REPO}" rev-list --count "origin/${BRANCH}..HEAD")"
-if [[ "${UNPUSHED}" -gt 0 ]]; then
-    if [[ ${ALLOW_UNPUSHED} -eq 0 ]]; then
-        echo "    ${UNPUSHED} local commit(s) not on origin - push first, or pass --allow-unpushed" >&2
-        exit 1
-    fi
-    echo "    WARNING: ${UNPUSHED} local commit(s) not on origin are NOT rolled out" >&2
-fi
-if [[ -n "$(git -C "${REPO}" status --porcelain --untracked-files=no)" ]]; then
-    echo "    note: uncommitted changes in this checkout are NOT rolled out"
-fi
+check_pushed "${BRANCH}" "${ALLOW_UNPUSHED}"
 
 # update_node TARGET: steps 1-4 for one node.
 update_node() {

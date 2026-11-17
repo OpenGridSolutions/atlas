@@ -174,6 +174,28 @@ sync_models() {
         "${HF_HUB}/" "${target}:${HF_HUB_REL}/"
 }
 
+# check_pushed BRANCH ALLOW_UNPUSHED: the nodes get origin/BRANCH, not this
+# working tree. Fetches it, sets TARGET_SHA, and stops when this checkout
+# has commits that are not on origin (the nodes would run an older state -
+# e.g. an older install.sh) unless ALLOW_UNPUSHED is 1.
+check_pushed() {
+    local branch="$1" allow="$2" unpushed
+    git -C "${REPO}" fetch --quiet origin "${branch}"
+    TARGET_SHA="$(git -C "${REPO}" rev-parse "origin/${branch}")"
+    echo "    $(git -C "${REPO}" log -1 --format='%h %s' "${TARGET_SHA}")"
+    unpushed="$(git -C "${REPO}" rev-list --count "origin/${branch}..HEAD")"
+    if [[ "${unpushed}" -gt 0 ]]; then
+        if [[ "${allow}" -ne 1 ]]; then
+            echo "    ${unpushed} local commit(s) not on origin - push first, or pass --allow-unpushed" >&2
+            exit 1
+        fi
+        echo "    WARNING: ${unpushed} local commit(s) not on origin do NOT reach the nodes" >&2
+    fi
+    if [[ -n "$(git -C "${REPO}" status --porcelain --untracked-files=no)" ]]; then
+        echo "    note: uncommitted changes in this checkout do NOT reach the nodes"
+    fi
+}
+
 # Files whose change needs install.sh on a node (unit, root-owned helper,
 # the installer itself); everything else only needs a unit restart.
 INSTALL_INPUTS=(.devpod/install.sh .devpod/atlas-gb10.container.in .devpod/atlas-drop-caches.sh)
