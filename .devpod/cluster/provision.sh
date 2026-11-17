@@ -186,7 +186,9 @@ fi
 step "[4/7] ${TARGET}:~/${REPO_REL}/.devpod/host.env (API port on 0.0.0.0)"
 remote "${TARGET}" 'echo "ATLAS_PUBLISH_ADDR=0.0.0.0" > "$HOME/$1/.devpod/host.env"' "${REPO_REL}"
 
-need_input "${TARGET}" "sudo password for the firewall rule and install.sh"
+# sudo caches the password per terminal, and every remote call gets a new
+# one: each sudo step asks again, so each one pushes "input needed".
+need_input "${TARGET}" "sudo password for the firewall rule"
 step "[5/7] firewall: ${ALLOW_FROM} -> port ${API_PORT}/tcp"
 remote "${TARGET}" '
 port="$1" cidr="$2"
@@ -205,6 +207,7 @@ else
 fi
 ' "${API_PORT}" "${ALLOW_FROM}"
 
+need_input "${TARGET}" "sudo password for install.sh"
 step "[6/7] install.sh on ${TARGET}"
 # Bind-mount sources of the unit that must exist before the first start.
 remote "${TARGET}" 'mkdir -p "$HOME/.claude" "$HOME/$1/logs"' "${REPO_REL}"
